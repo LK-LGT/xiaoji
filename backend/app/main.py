@@ -125,7 +125,7 @@ except Exception as e:
 
 try:
     from .routes.v1 import system as system_routes
-    app.include_router(system_routes.router, prefix="/v1")
+    app.include_router(system_routes.router)
     print("[APP] System router registered successfully")
 except Exception as e:
     print(f"[APP] WARNING: Failed to register system router: {e}")
