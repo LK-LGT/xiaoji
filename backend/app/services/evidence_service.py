@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -25,6 +26,8 @@ from ..domain.enums import (
     Visibility,
 )
 from ..domain.models import Evidence, MetricValue
+
+logger = logging.getLogger(__name__)
 
 # 考勤类来源的集合 —— 进入此集合的来源一律不得进算分集
 ATTENDANCE_SOURCES: frozenset[str] = frozenset({EvidenceSource.ATTENDANCE.value})
@@ -179,6 +182,10 @@ def list_scoring_evidence(
       但在返回里用 is_reference_only 标记，让调用方（主管评分页）加标注。
     - 排除 visibility = private_draft
     - 排除 status = rejected
+    - **传入 period 时按周期过滤**：考勤证据的周期写在 source_ref 里
+      （形如 `{employee_id}|2026-11|attendance|late`）。
+      不加这个过滤，评 10 月绩效会混进 11 月的考勤异常（口径错误）。
+      支持 `202611` 与 `2026-11` 两种周期格式。
     """
     q = select(Evidence).where(
         Evidence.employee_id == employee_id,
@@ -186,7 +193,34 @@ def list_scoring_evidence(
         Evidence.status != EvidenceStatus.REJECTED.value,
     )
     rows = list(db.execute(q).scalars().all())
+
+    if period:
+        from .period import to_dashed_period
+
+        target = to_dashed_period(period)
+        if target is None:
+            # 周期无法解析时不做过滤，避免把全部证据误清空。
+            logger.warning("无法解析的考核周期：%s，已跳过周期过滤", period)
+            return rows
+        rows = [r for r in rows if _evidence_period(r) == target]
+
     return rows
+
+
+def _evidence_period(row: Evidence) -> str | None:
+    """从考勤证据的 source_ref 中解析周期段。
+
+    source_ref 格式：`{employee_id}|{period}|attendance|{anomaly_type}`
+    非考勤来源没有周期段，返回 None。
+    """
+    if not row.source_ref:
+        return None
+    parts = row.source_ref.split("|")
+    if len(parts) < 2:
+        return None
+    from .period import to_dashed_period
+
+    return to_dashed_period(parts[1])
 
 
 def split_by_usage(rows: list[Evidence]) -> tuple[list[Evidence], list[Evidence]]:

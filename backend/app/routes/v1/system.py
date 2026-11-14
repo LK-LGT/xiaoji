@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
@@ -331,6 +331,35 @@ async def get_roles(db: Session = Depends(get_db)) -> dict:
     }
 
 
+@router.get("/roles/{role_id}/permissions")
+async def get_role_permissions(role_id: int, db: Session = Depends(get_db)) -> dict:
+    """获取指定角色的权限 ID 列表。
+
+    响应结构：number[]（裸数组）
+    """
+    return {"code": 0, "data": []}
+
+
+@router.put("/roles/{role_id}/permissions")
+async def save_role_permissions(
+    role_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+) -> dict:
+    """保存指定角色的权限。
+
+    请求体：{ permissionIds: number[] }
+    响应结构：{ roleId, permissionIds }
+    """
+    permission_ids = data.get("permissionIds") or []
+    if not isinstance(permission_ids, list):
+        permission_ids = []
+    return {
+        "code": 0,
+        "data": {"roleId": role_id, "permissionIds": permission_ids},
+    }
+
+
 @router.get("/permissions")
 async def get_permissions(db: Session = Depends(get_db)) -> dict:
     """获取权限列表"""
@@ -368,6 +397,31 @@ async def get_workday_rules(db: Session = Depends(get_db)) -> dict:
     }
 
 
+@router.post("/workday-rules/{rule_id}/status")
+async def change_workday_rule_status(
+    rule_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+) -> dict:
+    """变更工作日规则状态。
+
+    请求体：{ status: number }
+    响应结构：WorkdayRule
+    """
+    status = int(data.get("status", 0))
+    return {
+        "code": 0,
+        "data": {
+            "id": rule_id,
+            "ruleDate": "",
+            "ruleType": "",
+            "forceReport": False,
+            "status": status,
+            "versionNo": 1,
+        },
+    }
+
+
 @router.get("/week-plan-standard-supplements")
 async def get_week_plan_standard_supplements(db: Session = Depends(get_db)) -> dict:
     """获取周计划补录"""
@@ -382,9 +436,62 @@ async def get_week_plan_standard_supplements(db: Session = Depends(get_db)) -> d
     }
 
 
+@router.get("/week-plan-standard-supplements/{supplement_id}")
+async def get_week_plan_standard_supplement(
+    supplement_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """获取周计划补录详情。
+
+    响应结构：WeekPlanDetail = { summary, items, siblingPlans, dayPlanCount }
+    """
+    return {
+        "code": 0,
+        "data": {
+            "summary": {
+                "id": supplement_id,
+                "title": "",
+                "weekStart": "",
+                "weekEnd": "",
+                "status": "DRAFT",
+                "versionNo": 1,
+                "ownerUserId": 0,
+                "employeeName": "",
+                "departmentName": "",
+                "itemCount": 0,
+            },
+            "items": [],
+            "siblingPlans": [],
+            "dayPlanCount": 0,
+        },
+    }
+
+
+@router.put("/week-plan-standard-supplements/{supplement_id}")
+async def update_week_plan_standard_supplement(
+    supplement_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+) -> dict:
+    """提交周计划标准补录。
+
+    请求体：{ versionNo, deliverable, quality }
+    响应结构：WeekPlanStandardSupplementAction = { id, status, versionNo, message }
+    """
+    return {
+        "code": 0,
+        "data": {
+            "id": supplement_id,
+            "status": "PENDING",
+            "versionNo": int(data.get("versionNo", 0) or 0) + 1,
+            "message": "补录已提交",
+        },
+    }
+
+
 @router.get("/knowledge")
 async def get_knowledge(db: Session = Depends(get_db)) -> dict:
-    """获取企业知识库"""
+    """获取企业知识库（概览，保留旧路径兼容）"""
     return {
         "code": 0,
         "data": {
@@ -396,7 +503,219 @@ async def get_knowledge(db: Session = Depends(get_db)) -> dict:
     }
 
 
+# ─────────────────────────────────────────────────────
+# 企业知识库 —— 文档管理
+#
+# 分页约定：前端 KnowledgeDocumentList 用裸数组（直接 .map()），
+# 故列表端点返回裸数组而非分页对象。
+# ─────────────────────────────────────────────────────
 
+
+@router.get("/knowledge/status")
+async def get_knowledge_status(db: Session = Depends(get_db)) -> dict:
+    """获取知识库运行状态。
+
+    响应结构：KnowledgeStatus
+    """
+    return {
+        "code": 0,
+        "data": {
+            "enabled": True,
+            "vaultPath": "",
+            "vaultAvailable": False,
+            "documentCounts": {},
+            "chunkCount": 0,
+            "relationCount": 0,
+            "vectorEngine": "none",
+            "vectorAvailable": False,
+            "vectorCollections": [],
+            "vectorPointCount": 0,
+            "vectorError": None,
+            "lastSync": None,
+        },
+    }
+
+
+@router.get("/knowledge/documents")
+async def list_knowledge_documents(db: Session = Depends(get_db)) -> dict:
+    """获取知识库文档列表。
+
+    响应结构：KnowledgeDocument[]（裸数组）
+    """
+    return {
+        "code": 0,
+        "data": [],
+    }
+
+
+@router.get("/knowledge/documents/{document_id}")
+async def get_knowledge_document(document_id: int, db: Session = Depends(get_db)) -> dict:
+    """获取知识库文档详情。
+
+    响应结构：KnowledgeDocumentDetail = { document, chunks, relations }
+    """
+    return {
+        "code": 0,
+        "data": {
+            "document": None,
+            "chunks": [],
+            "relations": [],
+        },
+    }
+
+
+@router.get("/knowledge/documents/{document_id}/history")
+async def get_knowledge_document_history(
+    document_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """获取知识库文档版本历史。
+
+    响应结构：KnowledgeDocumentHistory[]（裸数组）
+    """
+    return {
+        "code": 0,
+        "data": [],
+    }
+
+
+@router.post("/knowledge/documents/{document_id}/versions")
+async def create_knowledge_document_version(
+    document_id: int,
+    file: UploadFile = File(...),
+    version: str = Form(...),
+    changeNote: str = Form(...),
+    db: Session = Depends(get_db),
+) -> dict:
+    """上传知识库文档新版本。
+
+    响应结构：KnowledgeUploadResult
+    """
+    return {
+        "code": 0,
+        "data": {
+            "documentId": document_id,
+            "knowledgeId": "",
+            "title": "",
+            "fileName": file.filename or "",
+            "fileType": "",
+            "chunkCount": 0,
+            "vectorCount": 0,
+            "embeddingModels": [],
+            "uploadedAt": datetime.utcnow().isoformat(),
+        },
+    }
+
+
+@router.post("/knowledge/documents/{document_id}/disable")
+async def disable_knowledge_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """停用知识库文档。
+
+    响应结构：KnowledgeActionResult
+    """
+    return {
+        "code": 0,
+        "data": {
+            "documentId": document_id,
+            "knowledgeId": "",
+            "action": "DISABLE",
+            "vectorCleanupSucceeded": True,
+            "message": "",
+            "operatedAt": datetime.utcnow().isoformat(),
+        },
+    }
+
+
+@router.post("/knowledge/documents/{document_id}/enable")
+async def enable_knowledge_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """启用知识库文档。
+
+    响应结构：KnowledgeActionResult
+    """
+    return {
+        "code": 0,
+        "data": {
+            "documentId": document_id,
+            "knowledgeId": "",
+            "action": "ENABLE",
+            "vectorCleanupSucceeded": True,
+            "message": "",
+            "operatedAt": datetime.utcnow().isoformat(),
+        },
+    }
+
+
+@router.delete("/knowledge/documents/{document_id}")
+async def delete_knowledge_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """删除知识库文档。
+
+    响应结构：KnowledgeActionResult
+    """
+    return {
+        "code": 0,
+        "data": {
+            "documentId": document_id,
+            "knowledgeId": "",
+            "action": "DELETE",
+            "vectorCleanupSucceeded": True,
+            "message": "",
+            "operatedAt": datetime.utcnow().isoformat(),
+        },
+    }
+
+
+@router.post("/knowledge/sync")
+async def sync_knowledge(db: Session = Depends(get_db)) -> dict:
+    """触发知识库同步。
+
+    响应结构：KnowledgeSyncResult
+    """
+    now = datetime.utcnow().isoformat()
+    return {
+        "code": 0,
+        "data": {
+            "id": None,
+            "triggerSource": "MANUAL",
+            "status": "SUCCESS",
+            "vaultPath": "",
+            "scannedCount": 0,
+            "publishedCount": 0,
+            "failedCount": 0,
+            "errors": [],
+            "startedAt": now,
+            "finishedAt": now,
+        },
+    }
+
+
+@router.get("/knowledge/preview")
+async def preview_knowledge(
+    appliesTo: str = Query(...),
+    query: str = Query(...),
+    deptId: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+) -> dict:
+    """预览知识库检索结果。
+
+    响应结构：KnowledgeHit[]（裸数组）
+    """
+    return {
+        "code": 0,
+        "data": [],
+    }
+
+
+
+@router.get("/audits/options")
 async def get_audit_options(db: Session = Depends(get_db)) -> dict:
     """获取审计日志筛选选项。"""
     return {

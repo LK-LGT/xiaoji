@@ -155,6 +155,42 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    from .routes import leader as leader_routes
+    app.include_router(leader_routes.router)
+    print("[APP] Leader router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register leader router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import employee as employee_routes
+    app.include_router(employee_routes.router)
+    print("[APP] Employee router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register employee router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import dispute as dispute_routes
+    app.include_router(dispute_routes.router)
+    print("[APP] Dispute router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register dispute router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import planning as planning_routes
+    app.include_router(planning_routes.router)
+    print("[APP] Planning router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register planning router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     from .routes.v1 import system as system_routes
     app.include_router(system_routes.router)
     print("[APP] System router registered successfully")
@@ -178,6 +214,15 @@ try:
     print("[APP] Attendance router registered successfully")
 except Exception as e:
     print(f"[APP] WARNING: Failed to register attendance router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes.v1 import assessment_records as assessment_records_routes
+    app.include_router(assessment_records_routes.router)
+    print("[APP] Assessment records router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register assessment records router: {e}")
     import traceback
     traceback.print_exc()
 
@@ -302,6 +347,13 @@ def health() -> dict[str, Any]:
     }
 
 
+def _period_display(period: str | None) -> str | None:
+    """把紧凑周期 `202611` 转成展示用的 `2026-11`。"""
+    from .services.period import to_dashed_period
+
+    return to_dashed_period(period)
+
+
 @app.get("/api/employees")
 def list_employees(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     rows = db.execute(select(Employee)).scalars().all()
@@ -319,10 +371,18 @@ def list_employees(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
 
 @app.get("/api/records/{record_id}")
 def get_record(record_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """查一条考核记录的全貌：分数、草稿、证据。"""
+    """查一条考核记录的全貌：分数、草稿、证据。
+
+    证据按**考核周期**过滤：考勤证据的周期写在 source_ref 里，
+    必须用考核任务自身的 period 去筛，否则评 10 月绩效会混进 11 月的考勤异常。
+    """
     rec = db.get(AssessmentRecord, record_id)
     if rec is None:
         raise HTTPException(status_code=404, detail="考核记录不存在")
+
+    # 取考核任务的周期（紧凑格式 YYYYMM），用于过滤考勤证据
+    task = db.get(AssessmentTask, rec.task_id)
+    period = task.period if task is not None else None
 
     score = db.execute(
         select(Score).where(Score.record_id == record_id)
@@ -339,12 +399,17 @@ def get_record(record_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     ).scalars().first()
 
     emp = db.get(Employee, rec.employee_id)
-    ev_rows = evidence_service.list_scoring_evidence(db, rec.employee_id)
+    # 按考核周期过滤证据，避免跨月考勤异常混入
+    ev_rows = evidence_service.list_scoring_evidence(
+        db, rec.employee_id, period=period
+    )
     scoring_ev, reference_ev = evidence_service.split_by_usage(ev_rows)
 
     return {
         "record_id": record_id,
         "status": rec.status,
+        "period": period,
+        "period_display": _period_display(period),
         "employee": {"id": emp.id, "name": emp.name, "position": emp.position} if emp else None,
         "submit_source": rec.submit_source,
         "confirmed_rating": rec.confirmed_rating,

@@ -603,6 +603,27 @@ def test_statistics_excludes_leave_from_absent_days(db, employee):
     assert summary.absent_days == 0
 
 
+def test_statistics_splits_by_month_for_cross_month_range(db, employee):
+    """跨月区间必须按自然月拆分，且 period 标签体现跨月。"""
+    tasks = [
+        make_task(day=20261030, check_in="Late", result_id="r1"),
+        make_task(day=20261103, check_in="Lack", result_id="r2"),
+    ]
+    client = build_client(tasks)
+    service = AttendanceSyncService(db, client)
+    service.sync(date(2026, 10, 30), date(2026, 11, 3))
+
+    stats_service = attendance_stats.AttendanceStatisticsService(db)
+    summary = stats_service.summarize("e1", date(2026, 10, 30), date(2026, 11, 3))
+
+    assert summary.period == "2026-10~2026-11"
+    assert set(summary.by_period) == {"2026-10", "2026-11"}
+    assert summary.by_period["2026-10"]["anomaly_counts"]["late"] == 1
+    assert summary.by_period["2026-11"]["anomaly_counts"]["missing_punch"] == 1
+    assert summary.by_period["2026-10"]["absent_days"] == 1
+    assert summary.by_period["2026-11"]["absent_days"] == 1
+
+
 def test_adjustment_uses_progressive_weekly_rule(db, employee):
     """5 天异常 → 5 × -2 = -10 分。"""
     tasks = [

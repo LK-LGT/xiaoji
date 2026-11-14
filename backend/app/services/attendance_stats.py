@@ -51,6 +51,17 @@ ALL_ANOMALY_TYPES: tuple[str, ...] = (
 )
 
 
+def _period_label(start_date: date, end_date: date) -> str:
+    """区间对应的考核周期标签。
+
+    - 单月区间：`YYYY-MM`
+    - 跨月区间：`YYYY-MM~YYYY-MM`
+    """
+    start_label = f"{start_date.year:04d}-{start_date.month:02d}"
+    end_label = f"{end_date.year:04d}-{end_date.month:02d}"
+    return start_label if start_label == end_label else f"{start_label}~{end_label}"
+
+
 @dataclass
 class AttendanceSummary:
     """一个员工在一个周期的考勤统计。"""
@@ -63,6 +74,8 @@ class AttendanceSummary:
     anomaly_counts: dict[str, int] = field(default_factory=dict)
     anomaly_days: dict[str, int] = field(default_factory=dict)
     as_of: str | None = None
+    # 跨月区间时，按自然月拆分的明细
+    by_period: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +87,7 @@ class AttendanceSummary:
             "anomaly_counts": dict(self.anomaly_counts),
             "anomaly_days": dict(self.anomaly_days),
             "as_of": self.as_of,
+            "by_period": dict(self.by_period),
         }
 
 
@@ -100,7 +114,7 @@ class AttendanceStatisticsService:
             ).scalars().all()
         )
 
-        period = f"{start_date.year:04d}-{start_date.month:02d}"
+        period = _period_label(start_date, end_date)
         summary = AttendanceSummary(employee_id=employee_id, period=period)
         summary.total_records = len(rows)
 
@@ -110,14 +124,33 @@ class AttendanceStatisticsService:
         worked_dates: set[str] = set()
         latest_as_of = None
 
+        # 按自然月拆分：证据是按月生成的，统计口径必须与之对齐
+        period_records: dict[str, int] = {}
+        period_absent: dict[str, set[str]] = {}
+        period_counts: dict[str, dict[str, int]] = {}
+        period_days: dict[str, dict[str, set[str]]] = {}
+
         for row in rows:
             day_text = row.work_date.isoformat()
             worked_dates.add(day_text)
+            month_key = f"{row.work_date.year:04d}-{row.work_date.month:02d}"
+            period_records[month_key] = period_records.get(month_key, 0) + 1
+            period_absent.setdefault(month_key, set())
+            period_counts.setdefault(month_key, {t: 0 for t in ALL_ANOMALY_TYPES})
+            period_days.setdefault(
+                month_key, {t: set() for t in ALL_ANOMALY_TYPES}
+            )
+
             for atype in row.anomaly_types or []:
                 counts[atype] = counts.get(atype, 0) + 1
                 days_by_type.setdefault(atype, set()).add(day_text)
+                period_counts[month_key][atype] = (
+                    period_counts[month_key].get(atype, 0) + 1
+                )
+                period_days[month_key].setdefault(atype, set()).add(day_text)
                 if atype in ABSENCE_ANOMALY_TYPES:
                     absent_dates.add(day_text)
+                    period_absent[month_key].add(day_text)
             if row.as_of and (latest_as_of is None or row.as_of > latest_as_of):
                 latest_as_of = row.as_of
 
@@ -126,6 +159,21 @@ class AttendanceStatisticsService:
         summary.anomaly_counts = {k: v for k, v in counts.items() if v > 0}
         summary.anomaly_days = {k: len(v) for k, v in days_by_type.items() if v}
         summary.as_of = latest_as_of.isoformat() if latest_as_of else None
+        summary.by_period = {
+            key: {
+                "total_records": period_records[key],
+                "absent_days": len(period_absent.get(key, set())),
+                "anomaly_counts": {
+                    k: v for k, v in period_counts[key].items() if v > 0
+                },
+                "anomaly_days": {
+                    k: len(v)
+                    for k, v in period_days[key].items()
+                    if v
+                },
+            }
+            for key in sorted(period_records)
+        }
         return summary
 
     def summarize_all(

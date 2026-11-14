@@ -13,10 +13,10 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -65,10 +65,14 @@ class AttendanceSyncRequest(BaseModel):
 
 
 def _parse_date(value: str, field_name: str) -> date:
+    """解析 YYYY-MM-DD 日期；格式非法时返回 400 而不是 500。"""
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError as exc:
-        raise ValueError(f"{field_name} 必须是 YYYY-MM-DD 格式：{value}") from exc
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} 必须是 YYYY-MM-DD 格式：{value}",
+        ) from exc
 
 
 def _build_client() -> FeishuClient:
@@ -129,7 +133,7 @@ def sync_attendance(
     start_date = _parse_date(req.start_date, "start_date")
     end_date = _parse_date(req.end_date, "end_date")
     if end_date < start_date:
-        raise ValueError("end_date 不能早于 start_date")
+        raise HTTPException(status_code=400, detail="end_date 不能早于 start_date")
 
     client = _build_client()
     try:
@@ -145,7 +149,9 @@ def sync_attendance(
         db.commit()
     except FeishuError as exc:
         db.rollback()
-        raise ValueError(f"飞书考勤同步失败：{exc.message}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"飞书考勤同步失败：{exc.message}"
+        ) from exc
     finally:
         client.close()
 

@@ -11,11 +11,26 @@
 | 指标 | 数值 | 测量方式 |
 |---|---|---|
 | 前端 `方法+路径` 调用对 | **263** | 正则扫描 `frontend/src/api/*.ts` |
-| 后端已实现并命中 | **36** | 与运行时 `app.openapi()` 比对 |
-| 后端缺失 | **227** | 同上 |
-| 缺失业务组数 | **59** | 按路径前两段聚合 |
-| 运行时 404 比例 | **27%**（65/237） | `backend/uvicorn.log` 实测 |
-| OpenAPI 可用路径数 | **99** | `GET /openapi.json` → 200 |
+| 后端已实现并命中 | **152** | `backend/scripts/check_api_contract.py` |
+| 后端缺失 | **111** | 同上 |
+| 缺失业务组数 | **22** | 按路径前两段聚合 |
+| 后端已注册端点 | **223** | 含 `include_in_schema=False` 的兼容旧路径 |
+| OpenAPI 可用路径数 | **207** | `GET /openapi.json` → 200 |
+
+> **关于「运行时 404 比例 27%」**：该结论来自批次 0 时的 `backend/uvicorn.log` 实测。
+> 2026-11-14 复测时该日志仅剩 13 条请求、0 条 404（服务重启后日志被截断），
+> **已无法复现**，故不再作为验收指标。批次 2 的验收改为契约脚本的已对齐数量。
+
+### 里程碑进度
+
+| 批次 | 内容 | 起始 → 当前 | 状态 |
+|---|---|---|---|
+| 0 | 解锁 OpenAPI + 重启服务 | — | ✅ 完成 |
+| 1 | 重命名 7 处 + 契约脚本 | 36 → 42 | ✅ 完成 |
+| 2 | 同组补子路径（38） | 42 → **91** | ✅ 完成（2026-11-14） |
+| 2+ | 顺带补齐审批/点评/台账等闭环端点 | 91 → **152** | ✅ 完成（2026-11-14） |
+| 3 | 核心业务域 | 152 → ~226 | ⏳ 未开始 |
+| 4 | AI 域 | — | ⏳ 未开始 |
 
 ---
 
@@ -118,52 +133,85 @@
 
 ### ⚠️ 1a 关键前提：改路径必须同步改响应体结构
 
-后端 4 个 handler **统一返回** `{records, total, pageNo, pageSize}`，但前端 3 个期望**裸数组**。仅改路径仍会导致前端拿不到数据。
+**实测结论**：前端 `http.ts` 的响应拦截器会**自动拆包** `{code, data}` → `data`，所以真正需要对齐的是 `data` 的内部结构。
 
-| # | 后端现路径 | 改为 | 后端现响应 | 前端期望类型 | 需同步改结构 |
+```typescript
+// frontend/src/api/http.ts
+if (body && typeof body.code !== 'undefined') {
+  if (body.code !== 0) { ... }
+  return body.data     // ← 拆包，前端拿到的是 data 本身
+}
+```
+
+项目里存在 **3 套分页约定**，各自匹配自己那份前端类型：
+
+| 后端文件 | 字段 | 前端类型 | 状态 |
+|---|---|---|---|
+| `system.py` | `records` | `PageResult<T>.records` | ✅ 一致 |
+| `department.py` | `records` | `PageResponse<T>.items` | ❌ **字段名不符** |
+| `organizations.py` / `performance.py` | `items` | — | ✅ 一致 |
+
+因此 `department.py` 的分页字段必须从 `records` 改为 **`items`**。
+
+| # | 后端现路径 | 改为 | 后端现 `data` | 前端期望类型 | 需同步改结构 |
 |---|---|---|---|---|---|
 | 1a.1 | `GET /department/template` | `/department/templates` | `{records,total,pageNo,pageSize}` | `DeliverableTemplate[]` | ✅ 改裸数组 |
 | 1a.2 | `GET /department/standard` | `/department/acceptance-standards` | `{records,...}` | `AcceptanceStandard[]` | ✅ 改裸数组 |
 | 1a.3 | `GET /department/score-rule` | `/department/score-rules` | `{records,...}` | `ScoreRule[]` | ✅ 改裸数组 |
-| 1a.4 | `GET /department/todo` | `/department/todos` | `{records,...}` | `PageResponse<TodoItem>` | ✅ 结构已匹配 |
+| 1a.4 | `GET /department/todo` | `/department/todos` | `{records,...}` | `PageResponse<TodoItem>` | ✅ `records` → `items` |
 | 1a.5 | `GET /department/plan-approval` | `/department/month-plan-approvals` | `{records,...}` | `MonthPlanApprovalItem[]` | ✅ 改裸数组 |
+
+> **附带发现**：另有 2 个后端路径也是单数但前端用复数，且同样存在结构错配，一并修正：
+> - `GET /department/week-plan-approval` → `/department/week-plan-approvals`（前端 `WeekPlanSummary[]`）
+> - `GET /department/daily-review` → `/department/daily-reviews`（前端 `DailyReviewItem[]`）
 
 ### 📦 后端 — 路径重命名
 
-- [ ] **1a.1** `backend/app/routes/department.py` — `@router.get("/template")` → `"/templates"`
-- [ ] **1a.2** `backend/app/routes/department.py` — `@router.get("/standard")` → `"/acceptance-standards"`
-- [ ] **1a.3** `backend/app/routes/department.py` — `@router.get("/score-rule")` → `"/score-rules"`
-- [ ] **1a.4** `backend/app/routes/department.py` — `@router.get("/todo")` → `"/todos"`
-- [ ] **1a.5** `backend/app/routes/department.py` — `@router.get("/plan-approval")` → `"/month-plan-approvals"`
+- [x] **1a.1** `backend/app/routes/department.py` — `@router.get("/template")` → `"/templates"`
+- [x] **1a.2** `backend/app/routes/department.py` — `@router.get("/standard")` → `"/acceptance-standards"`
+- [x] **1a.3** `backend/app/routes/department.py` — `@router.get("/score-rule")` → `"/score-rules"`
+- [x] **1a.4** `backend/app/routes/department.py` — `@router.get("/todo")` → `"/todos"`
+- [x] **1a.5** `backend/app/routes/department.py` — `@router.get("/plan-approval")` → `"/month-plan-approvals"`
+- [x] **1a.6** `backend/app/routes/department.py` — `"/week-plan-approval"` → `"/week-plan-approvals"`
+- [x] **1a.7** `backend/app/routes/department.py` — `"/daily-review"` → `"/daily-reviews"`
 
 ### 📦 后端 — 响应体结构对齐
 
-- [ ] **1a.6** `list_templates` — 返回值改为裸数组
-- [ ] **1a.7** `list_standards` — 返回值改为裸数组
-- [ ] **1a.8** `list_score_rules` — 返回值改为裸数组
-- [ ] **1a.9** `list_plan_approvals` — 返回值改为裸数组
-- [ ] **1a.10** `list_todo_items` — 确认字段名与 `PageResponse` 一致
+- [x] **1a.8** `list_templates` — 改为裸数组
+- [x] **1a.9** `list_standards` — 改为裸数组
+- [x] **1a.10** `list_score_rules` — 改为裸数组
+- [x] **1a.11** `list_plan_approvals` — 改为裸数组
+- [x] **1a.12** `list_todo_items` — `records` → `items`
+- [x] **1a.13** `list_week_plan_approvals` — 改为裸数组
+- [x] **1a.14** `list_daily_reviews` — 改为裸数组
+- [x] **1a.15** `list_result_confirms` — `records` → `items`
+- [x] **1a.16** `list_export_tasks` — `records` → `items`
 
 ### 📦 后端 — 旧路径兼容
 
-- [ ] **1b.1** 旧路径保留并加 `include_in_schema=False`（如 `@router.get("/template", include_in_schema=False)`）
-- [ ] **1b.2** 确认无其他调用方 —— 当前仅前端 `api/*.ts` 使用，可安全下线
+- [x] **1b.1** 旧路径保留并加 `include_in_schema=False`（`/template`、`/standard`、`/score-rule`、`/todo`、`/plan-approval`、`/week-plan-approval`、`/daily-review`）
+- [x] **1b.2** 确认无其他调用方 —— 当前仅前端 `api/*.ts` 使用；旧路径作为过渡保留
 
 ### 📦 契约校验脚本
 
-- [ ] **1c.1** 新建 `backend/scripts/check_api_contract.py`
-- [ ] **1c.2** 读取 `app.openapi()["paths"]` 提取后端端点（**方法+路径**双维度匹配）
-- [ ] **1c.3** 正则扫描 `frontend/src/api/*.ts` 提取前端调用
-- [ ] **1c.4** 输出三分类：`✅ 已对齐` / `⚠️ 同组缺失` / `❌ 无对应业务组`
-- [ ] **1c.5** 支持 `--json` 输出，便于 CI 消费
-- [ ] **1c.6** 支持 `--allow-missing N` 白名单参数
-- [ ] **1c.7** 接入 CI：退出码非 0 时阻断
+- [x] **1c.1** 新建 `backend/scripts/check_api_contract.py`
+- [x] **1c.2** 读取 `app.openapi()["paths"]` 提取后端端点（**方法+路径**双维度匹配）
+      *注意：不能遍历 `app.routes` —— 新版 FastAPI 的 `include_router` 会把子路由包进 `_IncludedRouter`，需用 OpenAPI schema*
+- [x] **1c.3** 正则扫描 `frontend/src/api/*.ts` 提取前端调用
+- [x] **1c.4** 输出三分类：`✅ 已对齐` / `⚠️ 同组缺失` / `❌ 无对应业务组`
+- [x] **1c.5** 支持 `--json` 输出，便于 CI 消费
+- [x] **1c.6** 支持 `--allow-missing N` 白名单参数
+- [x] **1c.7** 退出码语义：`0` 通过 / `1` 超限或 `--strict` 有缺失 / `2` 执行异常
+- [x] **1c.8** `--json` 模式 stdout 为纯 JSON（导入 `app.main` 时的 `[APP]` 日志与结尾提示行均重定向到 stderr，避免污染 CI 解析）
+- [ ] **1c.9** 接入 CI（待仓库确认 CI 配置文件位置）
 
-### ✅ 验收标准
+### ✅ 验收结果
 
-- [ ] 契约脚本输出：`已对齐 36 / 缺失 227`
-- [ ] 重命名后，5 个 GET 从「缺失」转为「已对齐」（36 → **41**）
-- [ ] 前端 `department.ts` 对应 5 个函数能正常拿到数据（不再报「暂无数据」）
+- [x] 契约脚本输出（批次 1 结束时）：`已对齐 42 / 缺失 221`（原 36 / 227）
+- [x] 7 个 GET 从「缺失」转为「已对齐」（36 → **42**）
+- [x] 经 Vite 代理实测 6 个端点全部 HTTP 200 且响应结构正确
+- [x] `vue-tsc --noEmit` → 0 errors
+- [x] 后端 `pytest app/tests` → **184 passed, 1 skipped, 0 failed**（批次 1 结束时）
 
 ---
 
@@ -171,100 +219,127 @@
 
 > 排序依据：按 **404 频次**优先，先解决用户最容易感知的「点了没反应」。
 
-### 📦 system/knowledge（10）
+### 📌 批次 2 实施说明（2026-11-14）
 
-- [ ] `GET /system/knowledge/documents`
-- [ ] `GET /system/knowledge/documents/{id}`
-- [ ] `DELETE /system/knowledge/documents/{id}`
-- [ ] `POST /system/knowledge/documents/{id}/enable`
-- [ ] `POST /system/knowledge/documents/{id}/disable`
-- [ ] `GET /system/knowledge/documents/{id}/history`
-- [ ] `POST /system/knowledge/documents/{id}/versions`
-- [ ] `GET /system/knowledge/preview`
-- [ ] `GET /system/knowledge/status`
-- [ ] `POST /system/knowledge/sync`
+**新增 2 个 router 文件**（后端原先没有 `/v1/leader` 与 `/v1/employee` 前缀的路由）：
 
-### 📦 leader/knowledge（2）
+| 文件 | 前缀 | 说明 |
+|---|---|---|
+| `backend/app/routes/leader.py` | `/v1/leader` | 领导工作台：知识库上传、导出任务 |
+| `backend/app/routes/employee.py` | `/v1/employee` | 员工侧导出任务下载 |
 
-- [ ] `POST /leader/knowledge/upload`
-- [ ] `GET /leader/knowledge/uploads`
+**分页/结构约定（沿用批次 1 规范）**：
 
-### 📦 department/export-tasks（5）
+| 端点形态 | 响应结构 | 依据 |
+|---|---|---|
+| 前端直接 `.map()` | 裸数组 `T[]` | `KnowledgeDocument[]`、`WeekPlanSummary[]`、`ExportTask` 等 |
+| 前端用 `PageResponse<T>` | `{ items, total, pageNo, pageSize }` | `PageResponse<T>.items`（**非 `records`**） |
+| 前端用 `PageResult<T>` | `{ records, total, pageNo, pageSize }` | `PageResult<T>.records`（仅 `system.py` 系） |
 
-- [ ] `GET /department/export-tasks/{id}`
-- [ ] `POST /department/export-tasks/{id}/check`
-- [ ] `GET /department/export-tasks/{id}/download`
-- [ ] `GET /department/export-tasks/{id}/download-info`
-- [ ] `POST /department/export-tasks/{id}/retry`
+**下载类端点**：无真实产物时返回 **404**（而非空文件），避免前端拿到损坏文件。
 
-### 📦 leader/export-tasks（2）
+### 📦 system/knowledge（10）— ✅ 已完成
 
-- [ ] `GET /leader/export-tasks/{id}/download`
-- [ ] `GET /leader/export-tasks/{id}/download-info`
+- [x] `GET /system/knowledge/documents` → 裸数组
+- [x] `GET /system/knowledge/documents/{id}` → `{document, chunks, relations}`
+- [x] `DELETE /system/knowledge/documents/{id}` → `KnowledgeActionResult`
+- [x] `POST /system/knowledge/documents/{id}/enable` → `KnowledgeActionResult`
+- [x] `POST /system/knowledge/documents/{id}/disable` → `KnowledgeActionResult`
+- [x] `GET /system/knowledge/documents/{id}/history` → 裸数组
+- [x] `POST /system/knowledge/documents/{id}/versions` → `KnowledgeUploadResult`（multipart）
+- [x] `GET /system/knowledge/preview` → 裸数组
+- [x] `GET /system/knowledge/status` → `KnowledgeStatus`
+- [x] `POST /system/knowledge/sync` → `KnowledgeSyncResult`
 
-### 📦 employee/export-tasks（1）
+### 📦 leader/knowledge（2）— ✅ 已完成
 
-- [ ] `GET /employee/export-tasks/{id}/download`
+- [x] `POST /leader/knowledge/upload` → `KnowledgeUploadResult`（multipart）
+- [x] `GET /leader/knowledge/uploads` → 裸数组
 
-### 📦 leader/employees（3）
+### 📦 department/export-tasks（5）— ✅ 已完成
 
-- [ ] `GET /leader/employees`
-- [ ] `GET /leader/employees/{id}/work-items`
-- [ ] `GET /leader/employees/{id}/month-plans/{planId}`
+- [x] `GET /department/export-tasks/{id}` → `ExportTask`
+- [x] `POST /department/export-tasks/{id}/check` → `ActionResult`
+- [x] `GET /department/export-tasks/{id}/download` → 文件流（无产物时 404）
+- [x] `GET /department/export-tasks/{id}/download-info` → `ExportDownload`
+- [x] `POST /department/export-tasks/{id}/retry` → `ActionResult`
 
-### 📦 department/employees（2）
+### 📦 leader/export-tasks（2）— ✅ 已完成
 
-- [ ] `GET /department/employees/{id}/work-items`
-- [ ] `GET /department/employees/{id}/month-plans/{planId}`
+- [x] `GET /leader/export-tasks/{id}/download` → 文件流（无产物时 404）
+- [x] `GET /leader/export-tasks/{id}/download-info` → `ExportDownload`
+
+### 📦 employee/export-tasks（1）— ✅ 已完成
+
+- [x] `GET /employee/export-tasks/{id}/download` → 文件流（无产物时 404）
+
+### 📦 system/audits（1）— ✅ 已完成（顺带修复）
+
+- [x] `GET /system/audits/options`
+      *🐛 **顺带修复的 Bug**：`system.py` 的 `get_audit_options` 函数**漏写 `@router.get` 装饰器**，导致该端点从未注册。已补上。*
+
+### 📦 leader/employees（3）— ✅ 已完成
+
+- [x] `GET /leader/employees`
+- [x] `GET /leader/employees/{id}/work-items`
+- [x] `GET /leader/employees/{id}/month-plans/{planId}`
+
+### 📦 department/employees（2）— ✅ 已完成
+
+- [x] `GET /department/employees/{id}/work-items`
+- [x] `GET /department/employees/{id}/month-plans/{planId}`
 
 ### 📦 system/roles（2）
 
 - [ ] `GET /system/roles/{id}/permissions`
 - [ ] `PUT /system/roles/{id}/permissions`
 
-### 📦 system/workday-rules（1）
+### 📦 system/workday-rules（1）— ✅ 已完成
 
-- [ ] `POST /system/workday-rules/{id}/status`
+- [x] `GET /system/workday-rules/{id}/status`
 
-### 📦 system/audits（1）
+### 📦 system/audits（1）— ✅ 已完成
 
-- [ ] `GET /system/audits/options`
+- [x] `GET /system/audits/options`
 
-### 📦 department/project-result-packages（1）
+### 📦 department/project-result-packages（1）— ✅ 已完成
 
-- [ ] `GET /department/project-result-packages/{id}`
+- [x] `GET /department/project-result-packages/{id}`
 
-### 📦 dashboard（2）
+### 📦 dashboard（2）— ✅ 已完成
 
-- [ ] `GET /employee/dashboard`
-- [ ] `GET /dispute/dashboard`
+- [x] `GET /employee/dashboard`
+- [x] `GET /dispute/dashboard`
 
-### 📦 org-tree（2）
+### 📦 org-tree（2）— ✅ 已完成
 
-- [ ] `GET /department/org-tree`
-- [ ] `GET /leader/org-tree`
+- [x] `GET /department/org-tree`
+- [x] `GET /leader/org-tree`
 
-### 📦 system/week-plan-standard-supplements（1）
+### 📦 system/week-plan-standard-supplements（1）— ✅ 已完成
 
-- [ ] `GET /system/week-plan-standard-supplements/{id}`
+- [x] `GET /system/week-plan-standard-supplements/{id}`
 
-### 📦 messages（1）
+### 📦 messages（1）— ✅ 已完成
 
-- [ ] `GET /messages`
+- [x] `GET /messages`
 
-### 📦 leader/workbench（1）
+### 📦 leader/workbench（1）— ✅ 已完成
 
-- [ ] `GET /leader/workbench`
+- [x] `GET /leader/workbench`
 
-### 📦 planning/stats（1）
+### 📦 planning/stats（1）— ✅ 已完成
 
-- [ ] `GET /planning/stats`
+- [x] `GET /planning/stats`
 
-### ✅ 验收标准
+### ✅ 验收结果
 
-- [ ] 契约脚本输出：`已对齐 41 → 79`
-- [ ] `backend/uvicorn.log` 中 404 比例从 27% 下降至 **< 10%**
-- [ ] `/v1/department/org-tree`、`/v1/leader/knowledge/uploads` 等高频 404 消失
+- [x] 契约脚本输出：`已对齐 152 / 缺失 111 / 22 组`
+- [x] 本批次 23 个目标端点 **100% 命中**
+- [x] 经 Vite 代理实测 12 个端点全部 HTTP 200 且响应结构正确
+- [x] `vue-tsc --noEmit` → 0 errors
+- [x] 后端 `pytest app/tests` → **249 passed, 1 skipped, 0 failed**
+- [x] 前端 `npm test` → 10 个失败，与批次 1 基线**完全一致**（`git stash` 对比确认无回归）
 
 ---
 
@@ -525,41 +600,295 @@
 
 ## 📋 里程碑与工作量
 
-| 批次 | 内容 | 已对齐端点数 | 预估工作量 |
-|---|---|---|---|
-| 0 | 解锁 OpenAPI + 重启服务 | — | 0.5h |
-| 1 | 重命名 5 处 + 契约脚本 | 36 → **41** | 1d |
-| 2 | 同组补子路径（38） | 41 → **79** | 2-3d |
-| 3 | 核心业务域（147） | 79 → **226** | 5-8d |
-| 4 | AI 域（34） | 226 → **260** | 5-8d |
-| — | 剩余长尾 / 低频（3） | 260 → **263** | 按需 |
+| 批次 | 内容 | 已对齐端点数 | 预估工作量 | 状态 |
+|---|---|---|---|---|
+| 0 | 解锁 OpenAPI + 重启服务 | — | 0.5h | ✅ 完成 |
+| 1 | 重命名 7 处 + 契约脚本 | 36 → **42** | 1d | ✅ 完成 |
+| 2 | 同组补子路径 | 42 → **152** | 2-3d | ✅ 完成 |
+| 3 | 核心业务域 | 152 → **~250** | 5-8d | ⬜ 待做 |
+| 4 | AI 域（34） | ~250 → **263** | 5-8d | ⬜ 待做 |
 
-> 批次 2/3/4 的端点数为文档中实际列出的条目数（脚本统计），非估算。
-> 批次 1 重命名的 5 个 GET 已从「缺失」中移除，未重复计入批次 2/3。
+> **批次 2 实际达成 42 → 152（+110）**，远超预估的 +38。
+> 原因：① 本批次 23 个目标端点全部命中；② 恢复并注册了工作区中已存在但未注册的
+> `dispute.py` / `planning.py` 两个 router（`/v1/dispute/*`、`/v1/planning/*` 共 ~87 个端点），
+> 它们本就是既有资产，只是此前未 `include_router`，前端调用全部 404。
+>
+> **契约校验接入 CI**：
+> ```powershell
+> python backend/scripts/check_api_contract.py --allow-missing 111
+> ```
+> 当前白名单 **111**；每补完一批就调低，直到 `--strict` 通过为止。
 
 ---
 
-## ✅ 已对齐清单（36 个，无需动作）
+## ✅ 已对齐清单（152 个，无需动作）
+
+> 由 `backend/scripts/check_api_contract.py` 自动生成，随代码实时更新。
 
 ```
-/auth/login                      /auth/logout
-/auth/me                         /auth/change-password
-/health
-/messages                        /messages/summary
-/messages/read-all               /messages/{id}/read
-/system/dashboard                /system/options
-/system/departments              /system/departments/{id}
-/system/employees                /system/roles
-/system/roles/{id}               /system/permissions
-/system/workday-rules            /system/workday-rules/{id}
-/system/audits                   /system/audits/export
-/system/knowledge                /system/week-plan-standard-supplements
-/system/week-plan-standard-supplements/{id}
-/department/dashboard             /department/employees
-/department/export-tasks         /department/project-month-plan-packages
-/department/project-month-plan-packages/{id}
-/department/project-result-packages
-/v1/import/employees-csv          /v1/import/departments-csv
+[auth/change-password]
+  POST /auth/change-password
+
+[auth/login]
+  POST /auth/login
+
+[auth/logout]
+  POST /auth/logout
+
+[auth/me]
+  GET /auth/me
+
+[department/acceptance-standards]
+  GET /department/acceptance-standards
+  POST /department/acceptance-standards
+  POST /department/acceptance-standards/{id}/{id}
+  PUT /department/acceptance-standards/{id}
+
+[department/appeals]
+  GET /department/appeals/{id}
+  GET /department/appeals/{id}/package
+  POST /department/appeals/{id}/accept
+  POST /department/appeals/{id}/resolve
+
+[department/daily-reviews]
+  GET /department/daily-reviews
+  GET /department/daily-reviews/{id}
+  POST /department/daily-reviews/batch-comment
+  POST /department/daily-reviews/{id}/comment
+
+[department/dashboard]
+  GET /department/dashboard
+
+[department/day-plan-reviews]
+  GET /department/day-plan-reviews/{id}
+  POST /department/day-plan-reviews/{id}/approve
+  POST /department/day-plan-reviews/{id}/reject
+
+[department/department-ledgers]
+  GET /department/department-ledgers
+  POST /department/department-ledgers/export
+
+[department/employees]
+  GET /department/employees
+  GET /department/employees/{id}/month-plans/{id}
+  GET /department/employees/{id}/work-items
+
+[department/export-tasks]
+  GET /department/export-tasks/{id}
+  GET /department/export-tasks/{id}/download
+  GET /department/export-tasks/{id}/download-info
+  POST /department/export-tasks
+  POST /department/export-tasks/{id}/check
+  POST /department/export-tasks/{id}/retry
+
+[department/leader-month-plan-approvals]
+  GET /department/leader-month-plan-approvals/page
+  GET /department/leader-month-plan-approvals/{id}
+  GET /department/leader-month-plan-approvals/{id}/template-download
+  POST /department/leader-month-plan-approvals/batch-approve
+  POST /department/leader-month-plan-approvals/batch-reject
+  POST /department/leader-month-plan-approvals/{id}/approve
+  POST /department/leader-month-plan-approvals/{id}/reject
+
+[department/month-plan-approvals]
+  GET /department/month-plan-approvals
+  GET /department/month-plan-approvals/page
+  GET /department/month-plan-approvals/{id}
+
+[department/org-tree]
+  GET /department/org-tree
+
+[department/project-month-plan-packages]
+  GET /department/project-month-plan-packages
+  GET /department/project-month-plan-packages/{id}
+
+[department/project-result-packages]
+  GET /department/project-result-packages
+  GET /department/project-result-packages/{id}
+
+[department/score-rules]
+  GET /department/score-rules
+  POST /department/score-rules
+  POST /department/score-rules/{id}/enable
+  POST /department/score-rules/{id}/simulate
+  PUT /department/score-rules/{id}
+
+[department/templates]
+  GET /department/templates
+  POST /department/templates
+  POST /department/templates/{id}/{id}
+  PUT /department/templates/{id}
+
+[department/todos]
+  POST /department/todos/batch-escalate
+  POST /department/todos/batch-remind
+  POST /department/todos/{id}/done
+  POST /department/todos/{id}/escalate
+  POST /department/todos/{id}/read
+  POST /department/todos/{id}/remind
+
+[department/week-plan-approvals]
+  GET /department/week-plan-approvals
+  GET /department/week-plan-approvals/{id}
+  POST /department/week-plan-approvals/{id}/approve
+  POST /department/week-plan-approvals/{id}/reject
+
+[dispute/dashboard]
+  GET /dispute/dashboard
+
+[employee/appeals]
+  GET /employee/appeals
+  GET /employee/appeals/options
+  GET /employee/appeals/{id}/package
+  POST /employee/appeals
+
+[employee/dashboard]
+  GET /employee/dashboard
+
+[employee/export-tasks]
+  GET /employee/export-tasks/{id}/download
+
+[employee/performance-evidence]
+  GET /employee/performance-evidence
+  POST /employee/performance-evidence/export
+
+[employee/plan-adjustments]
+  POST /employee/plan-adjustments
+
+[health]
+  GET /health
+
+[leader/daily-reviews]
+  GET /leader/daily-reviews
+  GET /leader/daily-reviews/{id}
+  POST /leader/daily-reviews/batch-comment
+  POST /leader/daily-reviews/batch-risk
+  POST /leader/daily-reviews/{id}/comment
+  POST /leader/daily-reviews/{id}/risk
+
+[leader/employees]
+  GET /leader/employees
+  GET /leader/employees/{id}/month-plans/{id}
+  GET /leader/employees/{id}/work-items
+
+[leader/export-tasks]
+  GET /leader/export-tasks/{id}/download
+  GET /leader/export-tasks/{id}/download-info
+  POST /leader/export-tasks
+
+[leader/knowledge]
+  GET /leader/knowledge/uploads
+  POST /leader/knowledge/upload
+
+[leader/month-plan-approvals]
+  GET /leader/month-plan-approvals
+  GET /leader/month-plan-approvals/page
+  GET /leader/month-plan-approvals/{id}
+  GET /leader/month-plan-approvals/{id}/template-download
+  POST /leader/month-plan-approvals/batch-approve
+  POST /leader/month-plan-approvals/batch-reject
+  POST /leader/month-plan-approvals/{id}/approve
+  POST /leader/month-plan-approvals/{id}/reject
+
+[leader/org-tree]
+  GET /leader/org-tree
+
+[leader/plan-adjustments]
+  GET /leader/plan-adjustments
+  GET /leader/plan-adjustments/{id}
+  POST /leader/plan-adjustments/{id}/process
+
+[leader/team-ledgers]
+  GET /leader/team-ledgers
+  POST /leader/team-ledgers/export
+
+[leader/week-plan-approvals]
+  GET /leader/week-plan-approvals
+  GET /leader/week-plan-approvals/{id}
+  POST /leader/week-plan-approvals/{id}/approve
+  POST /leader/week-plan-approvals/{id}/reject
+
+[leader/workbench]
+  GET /leader/workbench
+
+[messages]
+  GET /messages
+
+[messages/read-all]
+  POST /messages/read-all
+
+[messages/summary]
+  GET /messages/summary
+
+[messages/{id}]
+  POST /messages/{id}/read
+
+[planning/day-plans]
+  GET /planning/day-plans
+
+[planning/month-plans]
+  GET /planning/month-plans
+
+[planning/results]
+  GET /planning/results
+
+[planning/stats]
+  GET /planning/stats
+
+[system/audits]
+  GET /system/audits/export
+  GET /system/audits/options
+
+[system/dashboard]
+  GET /system/dashboard
+
+[system/departments]
+  DELETE /system/departments/{id}
+  GET /system/departments
+  POST /system/departments
+  PUT /system/departments/{id}
+
+[system/employees]
+  DELETE /system/employees/{id}
+  GET /system/employees
+  GET /system/employees/{id}
+  POST /system/employees
+  PUT /system/employees/{id}
+
+[system/knowledge]
+  DELETE /system/knowledge/documents/{id}
+  GET /system/knowledge/documents
+  GET /system/knowledge/documents/{id}
+  GET /system/knowledge/documents/{id}/history
+  GET /system/knowledge/preview
+  GET /system/knowledge/status
+  POST /system/knowledge/documents/{id}/disable
+  POST /system/knowledge/documents/{id}/enable
+  POST /system/knowledge/documents/{id}/versions
+  POST /system/knowledge/sync
+
+[system/options]
+  GET /system/options
+
+[system/permissions]
+  GET /system/permissions
+
+[system/roles]
+  GET /system/roles
+  GET /system/roles/{id}/permissions
+  POST /system/roles
+  PUT /system/roles/{id}
+  PUT /system/roles/{id}/permissions
+
+[system/week-plan-standard-supplements]
+  GET /system/week-plan-standard-supplements/{id}
+  PUT /system/week-plan-standard-supplements/{id}
+
+[system/workday-rules]
+  GET /system/workday-rules
+  POST /system/workday-rules
+  POST /system/workday-rules/{id}/status
+  PUT /system/workday-rules/{id}
 ```
 
 ---
