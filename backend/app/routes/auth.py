@@ -25,7 +25,7 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=100)
 
 
-# 测试账号
+# 测试账号 - 每个账号只有其对应角色的权限
 TEST_USERS = {
     "admin": {
         "password": "admin123",
@@ -33,7 +33,7 @@ TEST_USERS = {
         "name": "管理员",
         "roles": ["admin"],
         "permissions": [
-            # System permissions
+            # System permissions only - 系统管理员
             "system:dashboard:view",
             "system:employee:register",
             "system:employee:view",
@@ -44,35 +44,6 @@ TEST_USERS = {
             "system:week-standard:view",
             "system:audit:view",
             "system:knowledge:view",
-            # Department permissions
-            "department:dashboard:view",
-            "department:month-approval:view",
-            "department:result-confirm:view",
-            "department:todo:view",
-            "department:template:view",
-            "department:standard:view",
-            "department:score-rule:view",
-            "department:export-task:view",
-            "department:department-ledger:view",
-            # Leader permissions
-            "leader:workbench:view",
-            "leader:month-approval:view",
-            "leader:daily-review:view",
-            "leader:result-suggest:view",
-            "leader:plan-adjust:view",
-            "leader:team-ledger:view",
-            # Employee permissions
-            "dashboard:view",
-            "planning:month:view",
-            "planning:day:view",
-            "planning:result:view",
-            # Dispute permissions
-            "dispute:dashboard:view",
-            "dispute:case:view",
-            # Performance permissions
-            "performance:dashboard:view",
-            "performance:self-review:view",
-            "performance:manager-review:view",
         ],
     },
     "manager": {
@@ -81,9 +52,7 @@ TEST_USERS = {
         "name": "部门主管",
         "roles": ["manager"],
         "permissions": [
-            # System permissions (read-only access)
-            "system:dashboard:view",
-            # Department permissions
+            # Department permissions only - 部门负责人
             "department:dashboard:view",
             "department:month-approval:view",
             "department:result-confirm:view",
@@ -91,19 +60,20 @@ TEST_USERS = {
             "department:template:view",
             "department:standard:view",
             "department:score-rule:view",
-            # Leader permissions
+            "department:export-task:view",
+        ],
+    },
+    "leader": {
+        "password": "leader123",
+        "id": "leader001",
+        "name": "直属领导",
+        "roles": ["leader"],
+        "permissions": [
+            # Leader permissions only - 直属领导
             "leader:workbench:view",
             "leader:month-approval:view",
             "leader:daily-review:view",
             "leader:result-suggest:view",
-            # Employee permissions
-            "dashboard:view",
-            "planning:month:view",
-            "planning:day:view",
-            "planning:result:view",
-            # Performance permissions
-            "performance:dashboard:view",
-            "performance:manager-review:view",
         ],
     },
     "employee": {
@@ -112,11 +82,11 @@ TEST_USERS = {
         "name": "普通员工",
         "roles": ["employee"],
         "permissions": [
+            # Employee permissions only - 员工
             "dashboard:view",
             "planning:month:view",
             "planning:day:view",
             "planning:result:view",
-            # Performance permissions
             "performance:dashboard:view",
             "performance:self-review:view",
         ],
