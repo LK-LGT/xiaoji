@@ -942,16 +942,17 @@ class AuditLog(Base):
 
 
 # ---------------------------------------------------------------------------
-# 计划 / 争议 / AI 域模型
+# 计划 / 争议 / AI / 成果域模型
 #
 # 放在文件末尾导入，保证 `Base.metadata` 收集到这些表：
 # - `Base.metadata.create_all()` 能建出它们；
 # - Alembic 的 `target_metadata` 能自动发现它们（autogenerate 不会漏表）。
 #
-# `plan_models` 反过来 import 本模块的 `Base` / `Employee` / `_uuid` / `_now`，
-# 因此必须在本模块**定义完成之后**再导入，否则会循环引用。
+# `plan_models` / `result_models` 反过来 import 本模块的 `Base` / `Employee` /
+# `_uuid` / `_now`，因此必须在本模块**定义完成之后**再导入，否则会循环引用。
 # ---------------------------------------------------------------------------
 
 from . import plan_models as _plan_models  # noqa: E402,F401
+from . import result_models as _result_models  # noqa: E402,F401
 
 __all__ = [name for name in dir() if not name.startswith("_")]

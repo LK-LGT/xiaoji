@@ -18,17 +18,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..dependencies import get_current_user
 from ..domain.models import Employee
-from ..services import planning
+from ..domain.result_models import RESULT_PLAN_TYPE_WEEK
+from ..services import planning, result_submission
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +50,11 @@ class WeekPlanSavePayload(BaseModel):
     model_config = {"extra": "allow"}
 
     weekStart: str = Field(default="")
-    versionNo: Optional[int] = None
+    versionNo: int | None = None
     items: list[dict] = Field(default_factory=list)
     recordVersion: bool = False
     versionRequestId: str = ""
-    restoredFromVersionId: Optional[int] = None
+    restoredFromVersionId: int | None = None
 
 
 def _ok(data: Any) -> dict:
@@ -81,8 +81,41 @@ def _run(fn, *args, **kwargs):
     """执行服务层调用，把领域异常转成 HTTPException。"""
     try:
         return fn(*args, **kwargs)
-    except (planning.PlanNotFound, planning.PlanStateError, planning.PlanVersionConflict, ValueError) as exc:
+    except (
+        planning.PlanNotFound,
+        planning.PlanStateError,
+        planning.PlanVersionConflict,
+        ValueError,
+    ) as exc:
         raise _translate(exc) from exc
+
+
+def _run_result(fn, *args, **kwargs):
+    """执行成果服务层调用，把成果领域异常转成 HTTPException。"""
+    from fastapi import HTTPException
+
+    try:
+        return fn(*args, **kwargs)
+    except result_submission.ResultNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    except result_submission.ResultForbidden as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except result_submission.ResultConflict as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    except result_submission.ResultError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+
+
+async def _read_evidence(file: UploadFile | None):
+    """把 `UploadFile` 读成成果服务层的附件输入对象。"""
+    if file is None:
+        return None
+    raw = await file.read()
+    return result_submission.ResultEvidenceInput(
+        file_name=file.filename or "evidence",
+        content_type=file.content_type or "",
+        data=raw,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +127,9 @@ def _run(fn, *args, **kwargs):
 
 @router.get("")
 async def list_employee_week_plans(
-    status: Optional[str] = Query(None),
-    weekStart: Optional[str] = Query(None),
-    deptId: Optional[str] = Query(None),
+    status: str | None = Query(None),
+    weekStart: str | None = Query(None),
+    deptId: str | None = Query(None),
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=100),
     current_user: Employee = Depends(get_current_user),
@@ -106,12 +139,12 @@ async def list_employee_week_plans(
 
     响应结构：WeekPlanSummary[]（裸数组）
     """
-    plans = _run(
-        planning.list_week_plans, db, current_user.id, status, weekStart, deptId
-    )
+    plans = _run(planning.list_week_plans, db, current_user.id, status, weekStart, deptId)
     return _ok(
         [
-            planning.serialize_week_plan_summary(plan, len(_run(planning.list_week_plan_items, db, plan.id)))
+            planning.serialize_week_plan_summary(
+                plan, len(_run(planning.list_week_plan_items, db, plan.id))
+            )
             for plan in plans
         ]
     )
@@ -184,7 +217,7 @@ async def update_employee_week_plan(
 @router.delete("/{plan_id}")
 async def delete_employee_week_plan(
     plan_id: str,
-    versionNo: Optional[int] = Query(None, description="乐观锁版本号"),
+    versionNo: int | None = Query(None, description="乐观锁版本号"),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -209,7 +242,7 @@ async def delete_employee_week_plan(
 @router.post("/{plan_id}/submit")
 async def submit_employee_week_plan(
     plan_id: str,
-    versionNo: Optional[int] = Query(None, description="乐观锁版本号"),
+    versionNo: int | None = Query(None, description="乐观锁版本号"),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -234,7 +267,7 @@ async def submit_employee_week_plan(
 @router.post("/{plan_id}/withdraw")
 async def withdraw_employee_week_plan(
     plan_id: str,
-    versionNo: Optional[int] = Query(None, description="乐观锁版本号"),
+    versionNo: int | None = Query(None, description="乐观锁版本号"),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -282,17 +315,22 @@ async def get_week_result_submit_context(
 
         raise HTTPException(status_code=404, detail="周计划条目不存在")
 
+    latest = result_submission.latest_result_for_item(
+        db, current_user.id, RESULT_PLAN_TYPE_WEEK, plan.id, target.id
+    )
     return _ok(
         {
-            "weekPlanId": plan.id,
+            "weekPlanId": result_submission._as_int(plan.id),
             "weekPlanTitle": plan.title,
             "weekStart": planning._date_str(plan.week_start),
             "weekEnd": planning._date_str(plan.week_end),
             "weekPlanStatus": planning.to_week_status(plan.status),
             "task": planning.serialize_week_plan_item(target),
-            "latestResult": None,
-            "acceptedFileTypes": [],
-            "maxFileSizeMb": 0,
+            "latestResult": (
+                result_submission.serialize_week_result(db, latest) if latest else None
+            ),
+            "acceptedFileTypes": list(result_submission.ACCEPTED_FILE_TYPES),
+            "maxFileSizeMb": result_submission.MAX_FILE_SIZE_MB,
         }
     )
 
@@ -301,7 +339,12 @@ async def get_week_result_submit_context(
 async def submit_week_result(
     plan_id: str,
     item_id: str,
-    file: Optional[UploadFile] = File(None),
+    completionRate: float | None = Form(None),
+    completionStatus: str | None = Form(None),
+    deliverable: str | None = Form(None),
+    remark: str | None = Form(None),
+    content: str | None = Form(None),
+    file: UploadFile | None = File(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -309,20 +352,25 @@ async def submit_week_result(
 
     响应结构：WeekResultSubmitAction
     """
-    plan = _run(planning.get_week_plan, db, current_user.id, plan_id)
-    items = _run(planning.list_week_plan_items, db, plan.id)
-    target = next((i for i in items if i.id == item_id), None)
-    if target is None:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=404, detail="周计划条目不存在")
-
-    # 证据落库与结果版本表待「周成果」子域补齐；本次先校验归属与条目有效性。
+    evidence = await _read_evidence(file)
+    result = _run_result(
+        result_submission.submit_week_result,
+        db,
+        current_user.id,
+        week_plan_id=plan_id,
+        week_plan_item_id=item_id,
+        completion_rate=completionRate or 0.0,
+        completion_status=completionStatus or "",
+        deliverable=deliverable or "",
+        remark=remark or "",
+        content=content or "",
+        evidence=evidence,
+    )
     return _ok(
         {
-            "id": target.id,
-            "status": "submitted",
-            "submittedAt": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+            "id": result_submission._as_int(result.id),
+            "status": result.status,
+            "submittedAt": result_submission._iso(result.submitted_at) or "",
             "message": "周成果已提交",
         }
     )
