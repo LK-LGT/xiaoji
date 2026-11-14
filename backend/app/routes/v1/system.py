@@ -257,23 +257,65 @@ async def get_employees(db: Session = Depends(get_db)) -> dict:
 @router.get("/orgs")
 async def get_orgs(db: Session = Depends(get_db)) -> dict:
     """获取组织管理数据"""
-    return {
-        "code": 0,
-        "data": {
-            "tree": [
+    tree_data = [
+        {
+            "id": 1,
+            "name": "研发部",
+            "code": "RD",
+            "orgType": "DEPARTMENT",
+            "leaderName": "张三",
+            "leaderUserId": 1,
+            "sortNo": 1,
+            "status": 1,
+            "employeeCount": 12,
+            "children": [
                 {
-                    "id": 1,
-                    "name": "研发部",
-                    "code": "RD",
-                    "leaderName": "张三",
+                    "id": 11,
+                    "name": "后端团队",
+                    "code": "RD_BACKEND",
+                    "orgType": "GROUP",
+                    "leaderName": "李四",
+                    "leaderUserId": 2,
+                    "sortNo": 1,
                     "status": 1,
-                    "children": [
-                        {"id": 11, "name": "后端团队", "code": "RD_BACKEND", "leaderName": "李四", "status": 1, "children": []},
-                    ],
+                    "employeeCount": 6,
+                    "children": [],
+                },
+                {
+                    "id": 12,
+                    "name": "前端团队",
+                    "code": "RD_FRONTEND",
+                    "orgType": "GROUP",
+                    "leaderName": "王五",
+                    "leaderUserId": 3,
+                    "sortNo": 2,
+                    "status": 1,
+                    "employeeCount": 5,
+                    "children": [],
                 },
             ],
         },
-    }
+        {
+            "id": 2,
+            "name": "产品部",
+            "code": "PM",
+            "orgType": "DEPARTMENT",
+            "leaderName": "赵六",
+            "leaderUserId": 4,
+            "sortNo": 2,
+            "status": 1,
+            "employeeCount": 8,
+            "children": [],
+        },
+    ]
+    return tree_data
+
+
+# 别名：/departments 指向 /orgs
+@router.get("/departments")
+async def get_departments_alias(db: Session = Depends(get_db)):
+    """获取部门树（/orgs 的别名）"""
+    return await get_orgs(db)
 
 
 @router.get("/roles")
@@ -486,3 +528,125 @@ async def export_audits(
 ) -> dict:
     """导出审计日志。"""
     return {"code": 0, "data": {"message": "正在导出..."}}
+
+
+# ─────────────────────────────────────────────────────
+# 部门管理 CRUD 操作
+# ─────────────────────────────────────────────────────
+
+@router.post("/departments")
+async def create_department(data: dict, db: Session = Depends(get_db)) -> dict:
+    """创建新部门"""
+    new_id = 100 + int(__import__('time').time() * 1000) % 1000
+    return {
+        "id": new_id,
+        "name": data.get("name", "新部门"),
+        "code": data.get("code", "NEW_DEPT"),
+        "orgType": data.get("orgType", "DEPARTMENT"),
+        "status": 1,
+        "children": [],
+    }
+
+
+@router.put("/departments/{dept_id}")
+async def update_department(dept_id: int, data: dict, db: Session = Depends(get_db)) -> dict:
+    """更新部门信息"""
+    return {
+        "id": dept_id,
+        "name": data.get("name", "更新的部门"),
+        "code": data.get("code", "UPDATED_DEPT"),
+        "status": data.get("status", 1),
+    }
+
+
+@router.delete("/departments/{dept_id}")
+async def delete_department(dept_id: int, db: Session = Depends(get_db)) -> dict:
+    """删除部门"""
+    return {"code": 0, "message": "部门已删除"}
+
+
+# ─────────────────────────────────────────────────────
+# 角色管理 CRUD 操作
+# ─────────────────────────────────────────────────────
+
+@router.post("/roles")
+async def create_role(data: dict, db: Session = Depends(get_db)) -> dict:
+    """创建新角色"""
+    new_id = 100 + int(__import__('time').time() * 1000) % 1000
+    return {
+        "id": new_id,
+        "name": data.get("name", "新角色"),
+        "code": data.get("code", "NEW_ROLE"),
+        "description": data.get("description", ""),
+        "status": 1,
+    }
+
+
+@router.put("/roles/{role_id}")
+async def update_role(role_id: int, data: dict, db: Session = Depends(get_db)) -> dict:
+    """更新角色信息"""
+    return {
+        "id": role_id,
+        "name": data.get("name", "更新的角色"),
+        "code": data.get("code", "UPDATED_ROLE"),
+        "status": data.get("status", 1),
+    }
+
+
+@router.delete("/roles/{role_id}")
+async def delete_role(role_id: int, db: Session = Depends(get_db)) -> dict:
+    """删除角色"""
+    return {"code": 0, "message": "角色已删除"}
+
+
+# ─────────────────────────────────────────────────────
+# 工作日规则 CRUD 操作
+# ─────────────────────────────────────────────────────
+
+@router.post("/workday-rules")
+async def create_workday_rule(data: dict, db: Session = Depends(get_db)) -> dict:
+    """创建工作日规则"""
+    new_id = 100 + int(__import__('time').time() * 1000) % 1000
+    return {
+        "id": new_id,
+        "name": data.get("name", "新规则"),
+        "description": data.get("description", ""),
+        "status": 1,
+    }
+
+
+@router.put("/workday-rules/{rule_id}")
+async def update_workday_rule(rule_id: int, data: dict, db: Session = Depends(get_db)) -> dict:
+    """更新工作日规则"""
+    return {
+        "id": rule_id,
+        "name": data.get("name", "更新的规则"),
+        "status": data.get("status", 1),
+    }
+
+
+@router.delete("/workday-rules/{rule_id}")
+async def delete_workday_rule(rule_id: int, db: Session = Depends(get_db)) -> dict:
+    """删除工作日规则"""
+    return {"code": 0, "message": "规则已删除"}
+
+
+# ─────────────────────────────────────────────────────
+# 周计划补录 CRUD 操作
+# ─────────────────────────────────────────────────────
+
+@router.post("/week-plan-standard-supplements")
+async def create_week_plan_supplement(data: dict, db: Session = Depends(get_db)) -> dict:
+    """创建周计划补录"""
+    new_id = 100 + int(__import__('time').time() * 1000) % 1000
+    return {
+        "id": new_id,
+        "name": data.get("name", "新补录"),
+        "status": 1,
+    }
+
+
+@router.delete("/week-plan-standard-supplements/{supplement_id}")
+async def delete_week_plan_supplement(supplement_id: int, db: Session = Depends(get_db)) -> dict:
+    """删除周计划补录"""
+    return {"code": 0, "message": "补录已删除"}
