@@ -260,12 +260,29 @@ async function refreshHealth() {
 }
 
 async function logout() {
-  await authStore.logout()
-  messageStore.reset()
-  notificationOpen.value = false
-  ElMessage.closeAll()
-  ElMessage.success('退出成功')
-  await router.replace('/login')
+  try {
+    await authStore.logout()
+    messageStore.reset()
+    notificationOpen.value = false
+    ElMessage.closeAll()
+    ElMessage.success('退出成功')
+  } catch (error) {
+    console.error('Logout error:', error)
+    ElMessage.error('退出出现问题，正在重试...')
+    // 即使出错也强制清空
+    authStore.token = ''
+    authStore.user = null
+    localStorage.clear()
+  } finally {
+    // 无论如何都跳转到登录页
+    try {
+      await router.replace('/login')
+    } catch (e) {
+      console.error('Navigation error:', e)
+      // 直接跳转作为备选方案
+      window.location.href = '/login'
+    }
+  }
 }
 
 async function switchWorkspace(command: string | number | object) {

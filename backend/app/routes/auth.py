@@ -310,9 +310,15 @@ async def get_me(request: Request) -> dict:
 
 
 @router.post("/logout")
-async def logout(request: BaseModel = None) -> dict:
+async def logout(request: Request) -> dict:
     """登出接口。"""
-    return {"code": 0, "data": {"message": "登出成功"}}
+    # 可以在这里添加日志记录或会话清理逻辑
+    return {
+        "code": 0,
+        "data": {
+            "message": "登出成功"
+        }
+    }
 
 
 class ChangePasswordRequest(BaseModel):

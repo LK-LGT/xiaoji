@@ -33,12 +33,18 @@ export const useAuthStore = defineStore('auth', {
     async logout() {
       try {
         await logoutApi()
+      } catch (error) {
+        // 即使logout请求失败，也继续清空本地状态
+        console.error('Logout API error:', error)
       } finally {
+        // 确保无论如何都清空所有认证信息
         this.token = ''
         this.refreshToken = ''
         this.user = null
         localStorage.removeItem('planning_access_token')
         localStorage.removeItem('planning_refresh_token')
+        // 清除其他可能的缓存
+        sessionStorage.clear()
       }
     },
   },
