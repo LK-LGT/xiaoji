@@ -92,6 +92,8 @@ class Employee(Base):
     last_seen_batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     feishu_deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    department: Mapped[Department | None] = relationship()
+
 
 class EmployeeDepartment(Base):
     """员工部门关联。一个员工可属于多个飞书部门，第一条作为主部门。"""
@@ -271,6 +273,202 @@ class ScheduledJobLock(Base):
     locked_by: Mapped[str] = mapped_column(String(128), nullable=False)
     locked_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
+# ---------------------------------------------------------------------------
+# 计划域
+#
+# 三层计划：月 → 周 → 日，逐层细化。
+#
+# 设计要点：
+# 1. **层级归属靠外键**：周计划条目可关联月计划条目，日计划条目可关联周计划条目，
+#    形成 月→周→日 的下钻链路。
+# 2. **乐观锁**：每张计划表带 `version_no`，提交/撤回时校验前端传来的版本号，
+#    不匹配直接 409，避免并发覆盖。
+# 3. **状态机统一**：三层共用 `PlanStatus` 枚举，流转规则集中在
+#    `services/planning.py`，不在路由里散落 if-else。
+# 4. **owner_id 冗余**：计划归属人冗余存一份，避免每次列表都 join employee 表，
+#    同时让「我的计划」查询走单表索引。
+# ---------------------------------------------------------------------------
+
+
+class MonthPlan(Base):
+    """月计划。一名员工一个月的计划容器。"""
+
+    __tablename__ = "month_plan"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "plan_month", name="uq_month_plan_owner_month"),
+        Index("ix_month_plan_owner_status", "owner_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(String(64), ForeignKey("employee.id"), nullable=False, index=True)
+    plan_month: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), default="draft", nullable=False, index=True)
+    # 乐观锁版本号：每次内容变更 +1，提交/撤回时由前端回传做校验
+    version_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")
+    # 项目 / 岗位：月计划通常挂在具体项目上
+    project_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    position_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 结果状态：not_submitted / draft / submitted / confirmed / rejected
+    result_status: Mapped[str] = mapped_column(String(32), default="not_submitted", nullable=False)
+    completion_rate: Mapped[float] = mapped_column(Float, default=0.0, nullable=False, server_default="0")
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approval_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+    owner: Mapped[Employee] = relationship()
+    items: Mapped[list["MonthPlanItem"]] = relationship(
+        back_populates="plan", cascade="all, delete-orphan", order_by="MonthPlanItem.sort_no"
+    )
+
+
+class MonthPlanItem(Base):
+    """月计划条目。一条待办任务，是周计划条目的父级。"""
+
+    __tablename__ = "month_plan_item"
+    __table_args__ = (
+        Index("ix_month_plan_item_plan_sort", "plan_id", "sort_no"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    plan_id: Mapped[str] = mapped_column(String(64), ForeignKey("month_plan.id"), nullable=False, index=True)
+    task_type: Mapped[str] = mapped_column(String(32), default="REGULAR", nullable=False)
+    task_name: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    task_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    deliverable: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    quality: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    performance_weight: Mapped[float] = mapped_column(Float, default=0.0, nullable=False, server_default="0")
+    estimated_value: Mapped[float] = mapped_column(Float, default=0.0, nullable=False, server_default="0")
+    estimated_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    estimated_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    progress: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), default="draft", nullable=False)
+    sort_no: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approval_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+    plan: Mapped[MonthPlan] = relationship(back_populates="items")
+
+
+class WeekPlan(Base):
+    """周计划。一名员工一周的计划容器。"""
+
+    __tablename__ = "week_plan"
+    __table_args__ = (
+        Index("ix_week_plan_owner_start", "owner_id", "week_start"),
+        Index("ix_week_plan_owner_status", "owner_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(String(64), ForeignKey("employee.id"), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    week_start: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    week_end: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False, index=True)
+    version_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approve_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approval_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+    owner: Mapped[Employee] = relationship()
+    items: Mapped[list["WeekPlanItem"]] = relationship(
+        back_populates="plan", cascade="all, delete-orphan", order_by="WeekPlanItem.sort_no"
+    )
+
+
+class WeekPlanItem(Base):
+    """周计划条目。"""
+
+    __tablename__ = "week_plan_item"
+    __table_args__ = (
+        Index("ix_week_plan_item_plan_sort", "plan_id", "sort_no"),
+        Index("ix_week_plan_item_month_item", "month_plan_item_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    plan_id: Mapped[str] = mapped_column(String(64), ForeignKey("week_plan.id"), nullable=False, index=True)
+    # 父级月计划条目：周计划由月计划下钻而来
+    month_plan_item_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("month_plan_item.id"), nullable=True
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    deliverable: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quality: Mapped[str | None] = mapped_column(Text, nullable=True)
+    planned_finish_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    completion_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sort_no: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+    plan: Mapped[WeekPlan] = relationship(back_populates="items")
+    month_item: Mapped[MonthPlanItem | None] = relationship()
+
+
+class DayPlan(Base):
+    """日计划。一名员工某一天的计划容器。"""
+
+    __tablename__ = "day_plan"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "plan_date", name="uq_day_plan_owner_date"),
+        Index("ix_day_plan_owner_date", "owner_id", "plan_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(String(64), ForeignKey("employee.id"), nullable=False, index=True)
+    plan_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    remark: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), default="draft", nullable=False, index=True)
+    version_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")
+    # 审批与风控字段
+    review_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    leader_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    department_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    department_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approval_due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+    owner: Mapped[Employee] = relationship()
+    items: Mapped[list["DayPlanItem"]] = relationship(
+        back_populates="plan", cascade="all, delete-orphan", order_by="DayPlanItem.sort_no"
+    )
+
+
+class DayPlanItem(Base):
+    """日计划条目。关联到周计划条目（日计划由周计划下钻而来）。"""
+
+    __tablename__ = "day_plan_item"
+    __table_args__ = (
+        Index("ix_day_plan_item_plan_sort", "plan_id", "sort_no"),
+        Index("ix_day_plan_item_week_item", "week_plan_item_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    plan_id: Mapped[str] = mapped_column(String(64), ForeignKey("day_plan.id"), nullable=False, index=True)
+    week_plan_item_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("week_plan_item.id"), nullable=True
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sort_no: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+    plan: Mapped[DayPlan] = relationship(back_populates="items")
 
 
 # ---------------------------------------------------------------------------
@@ -741,3 +939,19 @@ class AuditLog(Base):
     result: Mapped[str] = mapped_column(String(32), default="ok", nullable=False)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# 计划 / 争议 / AI 域模型
+#
+# 放在文件末尾导入，保证 `Base.metadata` 收集到这些表：
+# - `Base.metadata.create_all()` 能建出它们；
+# - Alembic 的 `target_metadata` 能自动发现它们（autogenerate 不会漏表）。
+#
+# `plan_models` 反过来 import 本模块的 `Base` / `Employee` / `_uuid` / `_now`，
+# 因此必须在本模块**定义完成之后**再导入，否则会循环引用。
+# ---------------------------------------------------------------------------
+
+from . import plan_models as _plan_models  # noqa: E402,F401
+
+__all__ = [name for name in dir() if not name.startswith("_")]

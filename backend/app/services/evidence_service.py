@@ -182,10 +182,12 @@ def list_scoring_evidence(
       但在返回里用 is_reference_only 标记，让调用方（主管评分页）加标注。
     - 排除 visibility = private_draft
     - 排除 status = rejected
-    - **传入 period 时按周期过滤**：考勤证据的周期写在 source_ref 里
-      （形如 `{employee_id}|2026-11|attendance|late`）。
-      不加这个过滤，评 10 月绩效会混进 11 月的考勤异常（口径错误）。
+    - **传入 period 时按周期过滤**：带周期段的证据（考勤，source_ref 形如
+      `{employee_id}|2026-11|attendance|late`）必须属于该周期，
+      否则评 10 月绩效会混进 11 月的考勤异常（口径错误）。
       支持 `202611` 与 `2026-11` 两种周期格式。
+      **没有周期段的证据一律保留** —— 例如手动上传的成果材料本就不按月归属，
+      不能因为加了周期过滤就把它们从主管视图里抹掉。
     """
     q = select(Evidence).where(
         Evidence.employee_id == employee_id,
@@ -202,7 +204,11 @@ def list_scoring_evidence(
             # 周期无法解析时不做过滤，避免把全部证据误清空。
             logger.warning("无法解析的考核周期：%s，已跳过周期过滤", period)
             return rows
-        rows = [r for r in rows if _evidence_period(r) == target]
+        rows = [
+            r
+            for r in rows
+            if (row_period := _evidence_period(r)) is None or row_period == target
+        ]
 
     return rows
 

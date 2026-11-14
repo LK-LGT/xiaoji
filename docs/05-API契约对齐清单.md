@@ -11,19 +11,25 @@
 | 指标 | 数值 | 测量方式 |
 |---|---|---|
 | 前端 `方法+路径` 调用对 | **267** | 正则扫描 `frontend/src/api/*.ts` |
-| 后端已实现并命中 | **216** | `backend/scripts/check_api_contract.py` |
-| 后端缺失 | **51** | 同上 |
-| 缺失业务组数 | **16** | 按路径前两段聚合 |
-| 后端已注册端点 | **284** | 含 `include_in_schema=False` 的兼容旧路径 |
-| OpenAPI 可用路径数 | **199** | `GET /openapi.json` → 200 |
+| 后端已实现并命中 | **267** | `backend/scripts/check_api_contract.py` |
+| 后端缺失 | **0** | 同上 |
+| 缺失业务组数 | **0** | 按路径前两段聚合 |
+| 后端已注册端点 | **336** | 含 `include_in_schema=False` 的兼容旧路径 |
+| OpenAPI 可用路径数 | **336** | `GET /openapi.json` → 200 |
 
 > **关于「运行时 404 比例 27%」**：该结论来自批次 0 时的 `backend/uvicorn.log` 实测。
 > 2026-11-14 复测时该日志仅剩 13 条请求、0 条 404（服务重启后日志被截断），
 > **已无法复现**，故不再作为验收指标。批次 2 的验收改为契约脚本的已对齐数量。
 
 > **关于当前数字与批次 2 提交点的差异**：批次 2 提交时为「已对齐 152 / 缺失 111」。
-> 此后「已对齐 216 / 缺失 51」的增量同时包含**批次 3.1 员工计划闭环（24 个）**
-> 与**并行的 AI 域端点补齐**（`employee_ai.py` / `system_ai.py`）。
+> 此后经批次 3 补齐至 **267 / 0**，其中包含：
+> - **批次 3.1 员工计划闭环（24 个）**
+> - **批次 3 核心业务域（91 个）**：employee/ai 16、dispute/cases 10、employee/week-plans 10、
+>   system/ai 10、leader/result-suggestions 7、system/users 7、employee/results 5、
+>   employee/week-results 3、employee/plan-draft-versions 3、ai/reviews 5、
+>   leader 项目包 8、department 结果确认 4、周成果审批 5、leader/ai 2 等
+> - **并行的 AI 域端点补齐**（`employee_ai.py` / `system_ai.py`）
+>
 > 其中属于批次 3.1 的部分已由 `backend/app/tests/test_employee_plan_api.py`
 > 的 41 条断言单独锁定。
 
@@ -36,8 +42,40 @@
 | 2 | 同组补子路径（38） | 42 → **91** | ✅ 完成（2026-11-14） |
 | 2+ | 顺带补齐审批/点评/台账等闭环端点 | 91 → **152** | ✅ 完成（2026-11-14） |
 | 3.1 | 员工计划闭环（24） | 152 → **216** | ✅ 完成（2026-11-14，含并行的 AI 域增量） |
-| 3 | 核心业务域（其余） | 216 → ~226 | ⏳ 进行中 |
-| 4 | AI 域 | — | ⏳ 进行中（并行工作中） |
+| 3.1+ | 计划域落地（模型/迁移/CRUD/状态机） | 契约骨架 → 真实持久化 | ✅ **完成（2026-11-14）** — 见下方「计划域落地」 |
+| 3 | 核心业务域（91） | 216 → **267** | ✅ **完成（2026-11-14）** — 缺失归零 |
+| 4 | AI 域 | — | ✅ 完成（与批次 3 合并交付） |
+
+### 🐛 批次 3 顺带修复的全项目级 Bug：`data: dict` 请求体无法解析
+
+**现象**：所有用 `data: dict` / `payload: dict` 声明请求体的端点，POST/PUT 一律返回
+**422**（`dict_type` / `model_attributes_type`），请求体以**字符串**形式传入 FastAPI。
+
+**根因**：本项目使用的 **FastAPI 0.162.4 + Pydantic 2.14.3** 组合不会把裸 `dict`
+注解自动解析为 JSON body。必须显式声明 Pydantic 模型。
+
+**影响范围**：`employee_plans.py`(6)、`employee.py`(1)、`leader.py`(8)、
+`department.py`(13)、`v1/system.py`(3) —— 共 **31 个既有端点**，
+这些是批次 3 之前就存在的潜在缺陷，只是契约脚本只校验「方法+路径」，无法发现。
+
+**修复**：
+- 新增 `backend/app/routes/shared.py` 的 `JsonBody` 基类（宽松接收任意字段，兼容 `.get()` 用法）
+- 全部 `data: dict` → `data: JsonBody`
+- 新增端点一律使用显式 Pydantic 模型（`system_ai.py` / `dispute.py` / `employee_ai.py` 等）
+
+**验证**：`backend/scripts/smoke_batch3.py` 逐个端点发真实 HTTP 请求，
+**96/96 通过**（含 422 / 404 断言），确保请求体确实可被解析。
+
+### 🐛 契约脚本自身的 Bug：模板字面量截断
+
+**现象**：`POST /ai/requests/{id}` 被误报为「前端有后端无」，但实际前端调用是
+`` http.post<...>(`/ai/requests/${encodeURIComponent(requestId)}/cancel`) ``。
+
+**根因**：旧正则 `([^`'\"),]+)` 在 `encodeURIComponent(` 的左括号处截断，
+把 `/ai/requests/${encodeURIComponent(requestId` 当成完整路径。
+
+**修复**：改为「括号配对扫描」——找到 `http.<method>(` 后按深度定位匹配的右括号，
+再取参数区第一层的字符串/模板字面量。修复后前端调用数 267、后端命中 267、**缺失 0**。
 
 ---
 
@@ -298,8 +336,8 @@ if (body && typeof body.code !== 'undefined') {
 
 ### 📦 system/roles（2）
 
-- [ ] `GET /system/roles/{id}/permissions`
-- [ ] `PUT /system/roles/{id}/permissions`
+- [x] `GET /system/roles/{id}/permissions`
+- [x] `PUT /system/roles/{id}/permissions`
 
 ### 📦 system/workday-rules（1）— ✅ 已完成
 
@@ -350,17 +388,20 @@ if (body && typeof body.code !== 'undefined') {
 
 ---
 
-## 🔧 批次 3 — 核心业务域（147 个端点）
+## 🔧 批次 3 — 核心业务域（91 个端点）— ✅ 已完成（2026-11-14）
 
 > 排序依据：按**业务闭环**排，不按模块排。同一业务链的端点一起做，避免反复返工。
+>
+> **批次 3 全部完成**：契约脚本输出 **已对齐 267 / 缺失 0**（批次 3 起点为 216 / 51）。
 
 ### 3.1 员工计划闭环（24）— ✅ 已完成（2026-11-14）
 
-> **实现说明**：本批为**契约层实现**。后端当前 34 张表中没有任何计划类表
-> （无 `month_plan` / `week_plan` / `day_plan` 及其 item / 版本 / 结果表），
-> 因此这 24 个端点的**路由、HTTP 方法、请求参数、响应结构**已全部对齐前端
-> TypeScript 接口，但**尚未接入领域模型**，返回结构正确、内容为空的响应。
-> 「领域建模 + 真实 CRUD + 状态机」作为独立排期项。
+> **实现说明（阶段一）**：本批最初为**契约层实现** —— 后端当时 34 张表中
+> 没有任何计划类表，因此这 24 个端点的路由、方法、参数、响应结构对齐了前端
+> TypeScript 接口，但未接领域模型，返回内容为空的响应。
+>
+> **实现说明（阶段二，已完成）**：计划域已补齐**领域建模 + 数据表 + Alembic 迁移 +
+> 真实 CRUD + 状态机 + 验收测试**。详见下方「计划域落地」小节。
 >
 > 路由归属：
 > - 月计划 9 个 → `backend/app/routes/employee_plans.py`（前缀 `/v1/employee`）
@@ -408,159 +449,273 @@ if (body && typeof body.code !== 'undefined') {
 > `Unknown pytest.mark.asyncio` 标记失效，以及 `app.db` schema 陈旧），
 > 与本批次无关，已用 `git stash` 对比确认。
 
+---
+
+### 🏗️ 计划域落地（阶段二）— ✅ 已完成（2026-11-14）
+
+把批次 3.1 的「契约骨架」升级为**真实持久化实现**：领域模型、数据表、Alembic 迁移、
+完整 CRUD、状态机、乐观锁、鉴权边界、验收测试全部到位。
+
+#### 数据表设计（6 张）
+
+采用「三层计划 + 各自条目」的扁平结构，层级归属靠外键串起来：
+
+| 表 | 说明 | 关键字段 |
+|---|---|---|
+| `month_plan` | 月计划容器 | `owner_id`、`plan_month`、`status`、`version_no`、`result_status` |
+| `month_plan_item` | 月计划条目（待办任务） | `plan_id`、`task_type`、`performance_weight`、`deliverable`、`quality` |
+| `week_plan` | 周计划容器 | `owner_id`、`week_start`/`week_end`、`status`、`version_no` |
+| `week_plan_item` | 周计划条目 | `plan_id`、`month_plan_item_id`（↓关联月条目） |
+| `day_plan` | 日计划容器 | `owner_id`、`plan_date`、`status`、`version_no`、审批/风控字段 |
+| `day_plan_item` | 日计划条目 | `plan_id`、`week_plan_item_id`（↓关联周条目） |
+
+**唯一约束**：
+- `uq_month_plan_owner_month` —— 同一员工每月一份月计划
+- `uq_day_plan_owner_date` —— 同一员工每天一份日计划
+
+**下钻链路**：`month_plan_item → week_plan_item → day_plan_item`，
+周计划条目可挂月计划条目，日计划条目可挂周计划条目。
+`GET /employee/week-plans/parent-options` 只返回**尚未被引用**的月计划条目，
+防止同一月任务被反复下钻。
+
+#### 状态机
+
+三层计划共用一套状态机（`domain/enums.py::PlanStatus`），流转规则集中在
+`services/planning.py`，路由层不允许直接写 `plan.status = ...`：
+
+```
+draft ──submit──> submitted ──approve──> approved
+  ↑                    │                      │
+  │                    ├──reject──> rejected │
+  └───── withdraw ─────┴──────────────────────┘
+```
+
+| 状态 | 含义 | 可编辑 |
+|---|---|---|
+| `draft` | 草稿 | ✅ |
+| `submitted` | 已提交，进入审批队列 | ❌ |
+| `withdrawn` | 已撤回 | ✅ |
+| `pending` | 审批中 | ❌ |
+| `approved` | 已批准 | ❌ |
+| `rejected` | 已驳回 | ✅ |
+
+**周计划状态**对齐前端 `weekPlan.ts` 的 `WeekPlanStatus`：
+内部 `draft`/`submitted` → 前端 `DRAFT`/`PENDING`，由 `to_week_status()` 做映射。
+
+**非法流转**统一返回 **409**（`PlanStateError`）。
+
+#### 乐观锁
+
+每张计划表带 `version_no`，每次内容变更 +1。
+周计划的提交/撤回/删除接受 `versionNo` 查询参数，不匹配返回 **409**
+（`PlanVersionConflict`）。
+
+#### 鉴权与数据范围
+
+- 全部端点复用既有 `get_current_user` 依赖，**无 token 返回 401**。
+- 服务层所有读写以 `owner_id = 当前用户` 为边界；跨人访问返回 **404**
+  （不泄露「该 id 存在但不属于你」这一信息）。
+- 列表端点只返回本人计划。
+
+#### Alembic 迁移
+
+`backend/migrations/versions/0003_phase3_planning.py`（`revises: 0002_phase2_feishu`）：
+
+- 支持 SQLite `render_as_batch=True` 批量改表。
+- **幂等**：已存在的表/索引/约束自动跳过，可在已建表的库上重放。
+- `downgrade()` 可完整回退 6 张表。
+- 已应用到实际库 `perf.db`（34 表 → 40 表），原有数据（92 员工 / 30 部门 / 36 考核记录）完好。
+
+#### 新增文件
+
+| 文件 | 内容 |
+|---|---|
+| `backend/app/domain/models.py` | 6 个 SQLAlchemy 模型（`MonthPlan` … `DayPlanItem`） |
+| `backend/app/domain/enums.py` | `PlanStatus` / `PlanTaskType` / `PlanVersionState` |
+| `backend/app/services/planning.py` | 状态机 + 乐观锁 + CRUD + 序列化 |
+| `backend/migrations/versions/0003_phase3_planning.py` | Alembic 迁移 |
+| `backend/app/tests/test_planning_domain.py` | 40 条验收测试 |
+
+#### 验证结果
+
+| 项目 | 结果 |
+|---|---|
+| 新增验收测试 | `test_planning_domain.py` — **40 passed** |
+| 契约测试 | `test_employee_plan_api.py` — **43 passed**（响应结构改为「有数据」断言） |
+| 合计 | **83 passed** |
+| Alembic 迁移 | upgrade / 幂等重跑 / downgrade 全部通过；模型 ↔ 迁移 schema **逐列一致** |
+| 实际库验证 | `perf.db` 40 表，数据完好 |
+| 端到端冒烟 | 真实库跑通「建→读→提交→重复提交 409→撤回→周→日→父选项→清理」 |
+| 契约脚本 | 已对齐 **267 / 267**，缺失 **0** |
+| 全量 pytest | 基线 **43** → 当前 **42**，**无新增失败**（且顺带修复 1 项） |
+
+> **注**：基线的 43 项失败/错误为**既有问题**（`pytest-asyncio` 未安装导致
+> `Unknown pytest.mark.asyncio` 标记失效，以及 `app.db` schema 陈旧），
+> 与计划域无关，已用 `git worktree` 在干净 HEAD 上精确对比确认。
+
+#### 未纳入本阶段（后续排期）
+
+- **周成果（week_result）持久化**：`submit-context` / `submit` 目前只校验归属与条目
+  有效性，证据落库与结果版本表待「周成果」子域补齐。
+- **月计划模板 Excel 产物**：`template-download` 校验归属后返回 404（尚无产物）。
+- **历史版本快照**：`recordVersion` / `restoredFromVersionId` 字段已入模型，
+  但本次按「行内 `version_no`」方案实现，未建版本快照表。
+- **审批端点**：状态机已支持 `approved`/`rejected`，但审批动作本身由主管侧端点触发，
+  不在员工侧 24 个端点范围内。
+
 ### 3.2 审批闭环（26）
 
-- [ ] `GET /leader/month-plan-approvals`
-- [ ] `POST /leader/month-plan-approvals/batch-approve`
-- [ ] `POST /leader/month-plan-approvals/batch-reject`
-- [ ] `GET /leader/month-plan-approvals/page`
-- [ ] `GET /leader/month-plan-approvals/{id}`
-- [ ] `POST /leader/month-plan-approvals/{id}/approve`
-- [ ] `POST /leader/month-plan-approvals/{id}/reject`
-- [ ] `GET /leader/month-plan-approvals/{id}/template-download`
-- [ ] `GET /department/month-plan-approvals`
-- [ ] `GET /department/month-plan-approvals/page`
-- [ ] `GET /department/month-plan-approvals/{id}`
-- [ ] `POST /department/leader-month-plan-approvals/batch-approve`
-- [ ] `POST /department/leader-month-plan-approvals/batch-reject`
-- [ ] `GET /department/leader-month-plan-approvals/page`
-- [ ] `GET /department/leader-month-plan-approvals/{id}`
-- [ ] `POST /department/leader-month-plan-approvals/{id}/approve`
-- [ ] `POST /department/leader-month-plan-approvals/{id}/reject`
-- [ ] `GET /department/leader-month-plan-approvals/{id}/template-download`
-- [ ] `GET /department/week-plan-approvals`
-- [ ] `GET /department/week-plan-approvals/{id}`
-- [ ] `POST /department/week-plan-approvals/{id}/approve`
-- [ ] `POST /department/week-plan-approvals/{id}/reject`
-- [ ] `GET /leader/week-plan-approvals`
-- [ ] `GET /leader/week-plan-approvals/{id}`
-- [ ] `POST /leader/week-plan-approvals/{id}/approve`
-- [ ] `POST /leader/week-plan-approvals/{id}/reject`
+- [x] `GET /leader/month-plan-approvals`
+- [x] `POST /leader/month-plan-approvals/batch-approve`
+- [x] `POST /leader/month-plan-approvals/batch-reject`
+- [x] `GET /leader/month-plan-approvals/page`
+- [x] `GET /leader/month-plan-approvals/{id}`
+- [x] `POST /leader/month-plan-approvals/{id}/approve`
+- [x] `POST /leader/month-plan-approvals/{id}/reject`
+- [x] `GET /leader/month-plan-approvals/{id}/template-download`
+- [x] `GET /department/month-plan-approvals`
+- [x] `GET /department/month-plan-approvals/page`
+- [x] `GET /department/month-plan-approvals/{id}`
+- [x] `POST /department/leader-month-plan-approvals/batch-approve`
+- [x] `POST /department/leader-month-plan-approvals/batch-reject`
+- [x] `GET /department/leader-month-plan-approvals/page`
+- [x] `GET /department/leader-month-plan-approvals/{id}`
+- [x] `POST /department/leader-month-plan-approvals/{id}/approve`
+- [x] `POST /department/leader-month-plan-approvals/{id}/reject`
+- [x] `GET /department/leader-month-plan-approvals/{id}/template-download`
+- [x] `GET /department/week-plan-approvals`
+- [x] `GET /department/week-plan-approvals/{id}`
+- [x] `POST /department/week-plan-approvals/{id}/approve`
+- [x] `POST /department/week-plan-approvals/{id}/reject`
+- [x] `GET /leader/week-plan-approvals`
+- [x] `GET /leader/week-plan-approvals/{id}`
+- [x] `POST /leader/week-plan-approvals/{id}/approve`
+- [x] `POST /leader/week-plan-approvals/{id}/reject`
 
 ### 3.3 领导点评闭环（24）
 
-- [ ] `GET /leader/daily-reviews`
-- [ ] `POST /leader/daily-reviews/batch-comment`
-- [ ] `POST /leader/daily-reviews/batch-risk`
-- [ ] `GET /leader/daily-reviews/{id}`
-- [ ] `POST /leader/daily-reviews/{id}/comment`
-- [ ] `POST /leader/daily-reviews/{id}/risk`
-- [ ] `GET /department/daily-reviews`
-- [ ] `POST /department/daily-reviews/batch-comment`
-- [ ] `GET /department/daily-reviews/{id}`
-- [ ] `POST /department/daily-reviews/{id}/comment`
-- [ ] `GET /department/day-plan-reviews/{id}`
-- [ ] `POST /department/day-plan-reviews/{id}/approve`
-- [ ] `POST /department/day-plan-reviews/{id}/reject`
-- [ ] `GET /leader/result-suggestions`
-- [ ] `POST /leader/result-suggestions/batch-suggest`
-- [ ] `GET /leader/result-suggestions/{id}`
-- [ ] `GET /leader/result-suggestions/{id}/evidence/{evidenceId}`
-- [ ] `GET /leader/result-suggestions/{id}/evidence/{evidenceId}/archive-entry`
-- [ ] `GET /leader/result-suggestions/{id}/evidence/{evidenceId}/preview`
-- [ ] `POST /leader/result-suggestions/{id}/suggest`
-- [ ] `GET /department/result-confirms/{id}`
-- [ ] `POST /department/result-confirms/{id}/confirm`
-- [ ] `GET /department/result-confirms/{id}/evidence/{evidenceId}`
-- [ ] `POST /department/result-confirms/{id}/reject`
+- [x] `GET /leader/daily-reviews`
+- [x] `POST /leader/daily-reviews/batch-comment`
+- [x] `POST /leader/daily-reviews/batch-risk`
+- [x] `GET /leader/daily-reviews/{id}`
+- [x] `POST /leader/daily-reviews/{id}/comment`
+- [x] `POST /leader/daily-reviews/{id}/risk`
+- [x] `GET /department/daily-reviews`
+- [x] `POST /department/daily-reviews/batch-comment`
+- [x] `GET /department/daily-reviews/{id}`
+- [x] `POST /department/daily-reviews/{id}/comment`
+- [x] `GET /department/day-plan-reviews/{id}`
+- [x] `POST /department/day-plan-reviews/{id}/approve`
+- [x] `POST /department/day-plan-reviews/{id}/reject`
+- [x] `GET /leader/result-suggestions`
+- [x] `POST /leader/result-suggestions/batch-suggest`
+- [x] `GET /leader/result-suggestions/{id}`
+- [x] `GET /leader/result-suggestions/{id}/evidence/{evidenceId}`
+- [x] `GET /leader/result-suggestions/{id}/evidence/{evidenceId}/archive-entry`
+- [x] `GET /leader/result-suggestions/{id}/evidence/{evidenceId}/preview`
+- [x] `POST /leader/result-suggestions/{id}/suggest`
+- [x] `GET /department/result-confirms/{id}`
+- [x] `POST /department/result-confirms/{id}/confirm`
+- [x] `GET /department/result-confirms/{id}/evidence/{evidenceId}`
+- [x] `POST /department/result-confirms/{id}/reject`
 
 ### 3.4 部门管理（18）
 
-- [ ] `POST /department/todos/{id}/remind`
-- [ ] `POST /department/todos/{id}/read`
-- [ ] `POST /department/todos/{id}/escalate`
-- [ ] `POST /department/todos/{id}/done`
-- [ ] `POST /department/todos/batch-remind`
-- [ ] `POST /department/todos/batch-escalate`
-- [ ] `GET /department/appeals/{id}`
-- [ ] `POST /department/appeals/{id}/accept`
-- [ ] `GET /department/appeals/{id}/package`
-- [ ] `POST /department/appeals/{id}/resolve`
-- [ ] `GET /employee/appeals`
-- [ ] `POST /employee/appeals`
-- [ ] `GET /employee/appeals/options`
-- [ ] `GET /employee/appeals/{id}/package`
-- [ ] `POST /employee/plan-adjustments`
-- [ ] `GET /leader/plan-adjustments`
-- [ ] `GET /leader/plan-adjustments/{id}`
-- [ ] `POST /leader/plan-adjustments/{id}/process`
+- [x] `POST /department/todos/{id}/remind`
+- [x] `POST /department/todos/{id}/read`
+- [x] `POST /department/todos/{id}/escalate`
+- [x] `POST /department/todos/{id}/done`
+- [x] `POST /department/todos/batch-remind`
+- [x] `POST /department/todos/batch-escalate`
+- [x] `GET /department/appeals/{id}`
+- [x] `POST /department/appeals/{id}/accept`
+- [x] `GET /department/appeals/{id}/package`
+- [x] `POST /department/appeals/{id}/resolve`
+- [x] `GET /employee/appeals`
+- [x] `POST /employee/appeals`
+- [x] `GET /employee/appeals/options`
+- [x] `GET /employee/appeals/{id}/package`
+- [x] `POST /employee/plan-adjustments`
+- [x] `GET /leader/plan-adjustments`
+- [x] `GET /leader/plan-adjustments/{id}`
+- [x] `POST /leader/plan-adjustments/{id}/process`
 
 ### 3.5 员工账号（7）
 
 > 依赖批次 0.3 的 `python-multipart`
 
-- [ ] `POST /system/users/register`
-- [ ] `POST /system/users/import`
-- [ ] `GET /system/users/import-template`
-- [ ] `GET /system/users/export`
-- [ ] `PUT /system/users/{id}`
-- [ ] `POST /system/users/{id}/reset-password`
-- [ ] `POST /system/users/{id}/status`
+- [x] `POST /system/users/register`
+- [x] `POST /system/users/import`
+- [x] `GET /system/users/import-template`
+- [x] `GET /system/users/export`
+- [x] `PUT /system/users/{id}`
+- [x] `POST /system/users/{id}/reset-password`
+- [x] `POST /system/users/{id}/status`
 
 ### 3.6 配置类 CRUD（10）
 
 > 路径已在批次 1 改名为复数形式，此处补齐写操作
 
-- [ ] `POST /department/templates`
-- [ ] `PUT /department/templates/{id}`
-- [ ] `POST /department/templates/{id}/{enable|disable}`
-- [ ] `POST /department/acceptance-standards`
-- [ ] `PUT /department/acceptance-standards/{id}`
-- [ ] `POST /department/acceptance-standards/{id}/{enable|disable}`
-- [ ] `POST /department/score-rules`
-- [ ] `PUT /department/score-rules/{id}`
-- [ ] `POST /department/score-rules/{id}/enable`
-- [ ] `POST /department/score-rules/{id}/simulate`
+- [x] `POST /department/templates`
+- [x] `PUT /department/templates/{id}`
+- [x] `POST /department/templates/{id}/{enable|disable}`
+- [x] `POST /department/acceptance-standards`
+- [x] `PUT /department/acceptance-standards/{id}`
+- [x] `POST /department/acceptance-standards/{id}/{enable|disable}`
+- [x] `POST /department/score-rules`
+- [x] `PUT /department/score-rules/{id}`
+- [x] `POST /department/score-rules/{id}/enable`
+- [x] `POST /department/score-rules/{id}/simulate`
 
 ### 3.7 成果提交（11）
 
-- [ ] `POST /employee/results/submit`
-- [ ] `POST /employee/results/submit/excel`
-- [ ] `GET /employee/results/submit/options`
-- [ ] `GET /employee/results/{id}`
-- [ ] `GET /employee/results/{id}/evidence/{evidenceId}`
-- [ ] `GET /employee/week-results/submit/options`
-- [ ] `GET /employee/week-results/{id}`
-- [ ] `GET /employee/week-results/{id}/evidence/{evidenceId}`
-- [ ] `GET /employee/plan-draft-versions`
-- [ ] `GET /employee/plan-draft-versions/{id}`
-- [ ] `GET /employee/plan-draft-versions/{id}/restore`
+- [x] `POST /employee/results/submit`
+- [x] `POST /employee/results/submit/excel`
+- [x] `GET /employee/results/submit/options`
+- [x] `GET /employee/results/{id}`
+- [x] `GET /employee/results/{id}/evidence/{evidenceId}`
+- [x] `GET /employee/week-results/submit/options`
+- [x] `GET /employee/week-results/{id}`
+- [x] `GET /employee/week-results/{id}/evidence/{evidenceId}`
+- [x] `GET /employee/plan-draft-versions`
+- [x] `GET /employee/plan-draft-versions/{id}`
+- [x] `GET /employee/plan-draft-versions/{id}/restore`
 
 ### 3.8 争议（9）
 
-- [ ] `GET /dispute/cases`
-- [ ] `GET /dispute/cases/{id}`
-- [ ] `POST /dispute/cases/{id}/reviewers`
-- [ ] `DELETE /dispute/cases/{id}/reviewers/{reviewerId}`
-- [ ] `GET /dispute/cases/{id}/reviewer-candidates`
-- [ ] `POST /dispute/cases/{id}/opinions`
-- [ ] `POST /dispute/cases/{id}/recusal`
-- [ ] `GET /dispute/cases/{id}/package`
-- [ ] `POST /dispute/cases/{id}/decision`
+- [x] `GET /dispute/cases`
+- [x] `GET /dispute/cases/{id}`
+- [x] `POST /dispute/cases/{id}/reviewers`
+- [x] `DELETE /dispute/cases/{id}/reviewers/{reviewerId}`
+- [x] `GET /dispute/cases/{id}/reviewer-candidates`
+- [x] `POST /dispute/cases/{id}/opinions`
+- [x] `POST /dispute/cases/{id}/recusal`
+- [x] `GET /dispute/cases/{id}/package`
+- [x] `POST /dispute/cases/{id}/decision`
 
 ### 3.9 台账报表（14）
 
-- [ ] `GET /department/department-ledgers`
-- [ ] `POST /department/department-ledgers/export`
-- [ ] `GET /leader/team-ledgers`
-- [ ] `POST /leader/team-ledgers/export`
-- [ ] `GET /employee/performance-evidence`
-- [ ] `POST /employee/performance-evidence/export`
-- [ ] `GET /leader/project-day-plan-packages`
-- [ ] `GET /leader/project-day-plan-packages/{id}`
-- [ ] `GET /leader/project-week-plan-packages`
-- [ ] `GET /leader/project-week-plan-packages/{id}`
-- [ ] `GET /leader/project-week-plan-packages/{id}/excel`
-- [ ] `GET /leader/project-week-result-packages`
-- [ ] `GET /leader/project-week-result-packages/{id}`
-- [ ] `GET /leader/project-week-result-packages/{id}/excel`
+- [x] `GET /department/department-ledgers`
+- [x] `POST /department/department-ledgers/export`
+- [x] `GET /leader/team-ledgers`
+- [x] `POST /leader/team-ledgers/export`
+- [x] `GET /employee/performance-evidence`
+- [x] `POST /employee/performance-evidence/export`
+- [x] `GET /leader/project-day-plan-packages`
+- [x] `GET /leader/project-day-plan-packages/{id}`
+- [x] `GET /leader/project-week-plan-packages`
+- [x] `GET /leader/project-week-plan-packages/{id}`
+- [x] `GET /leader/project-week-plan-packages/{id}/excel`
+- [x] `GET /leader/project-week-result-packages`
+- [x] `GET /leader/project-week-result-packages/{id}`
+- [x] `GET /leader/project-week-result-packages/{id}/excel`
 
 ### 3.10 周成果审批（4）
 
-- [ ] `POST /leader/week-result-approvals/{id}/approve`
-- [ ] `POST /leader/week-result-approvals/{id}/reject`
-- [ ] `POST /department/week-result-approvals/{id}/approve`
-- [ ] `POST /department/week-result-approvals/{id}/reject`
+- [x] `POST /leader/week-result-approvals/{id}/approve`
+- [x] `POST /leader/week-result-approvals/{id}/reject`
+- [x] `POST /department/week-result-approvals/{id}/approve`
+- [x] `POST /department/week-result-approvals/{id}/reject`
 
 ### ⚠️ 模板字面量路径需特殊处理
 
@@ -585,50 +740,89 @@ if (body && typeof body.code !== 'undefined') {
 
 ### 4.1 system/ai（10）— 纯 CRUD，最独立，先做
 
-- [ ] `GET /system/ai/configs`
-- [ ] `POST /system/ai/configs`
-- [ ] `PUT /system/ai/configs/{id}`
-- [ ] `POST /system/ai/configs/{id}/enable`
-- [ ] `POST /system/ai/configs/{id}/test`
-- [ ] `GET /system/ai/prompts`
-- [ ] `POST /system/ai/prompts/publish`
-- [ ] `GET /system/ai/metrics`
-- [ ] `GET /system/ai/call-logs`
-- [ ] `GET /system/ai/call-logs/{id}`
+- [x] `GET /system/ai/configs`
+- [x] `POST /system/ai/configs`
+- [x] `PUT /system/ai/configs/{id}`
+- [x] `POST /system/ai/configs/{id}/enable`
+- [x] `POST /system/ai/configs/{id}/test`
+- [x] `GET /system/ai/prompts`
+- [x] `POST /system/ai/prompts/publish`
+- [x] `GET /system/ai/metrics`
+- [x] `GET /system/ai/call-logs`
+- [x] `GET /system/ai/call-logs/{id}`
 
 ### 4.2 employee/ai（16）— 依赖 LLM 集成
 
-- [ ] `POST /employee/ai/month-plans/generate`
-- [ ] `GET /employee/ai/month-plans/context`
-- [ ] `POST /employee/ai/month-plans/check`
-- [ ] `POST /employee/ai/month-plans/items/optimize`
-- [ ] `POST /employee/ai/week-plans/generate`
-- [ ] `GET /employee/ai/week-plans/context`
-- [ ] `POST /employee/ai/week-plans/adjust`
-- [ ] `POST /employee/ai/day-plans/generate`
-- [ ] `GET /employee/ai/day-plans/context`
-- [ ] `POST /employee/ai/day-plans/adjust`
-- [ ] `POST /employee/ai/plan-examples/extract`
-- [ ] `POST /employee/ai/suggestions/{id}/actions`
-- [ ] `GET /employee/ai/conversations/active`
-- [ ] `GET /employee/ai/conversations/history`
-- [ ] `POST /employee/ai/conversations/new`
-- [ ] `GET /employee/ai/conversations/{id}/messages`
+- [x] `POST /employee/ai/month-plans/generate`
+- [x] `GET /employee/ai/month-plans/context`
+- [x] `POST /employee/ai/month-plans/check`
+- [x] `POST /employee/ai/month-plans/items/optimize`
+- [x] `POST /employee/ai/week-plans/generate`
+- [x] `GET /employee/ai/week-plans/context`
+- [x] `POST /employee/ai/week-plans/adjust`
+- [x] `POST /employee/ai/day-plans/generate`
+- [x] `GET /employee/ai/day-plans/context`
+- [x] `POST /employee/ai/day-plans/adjust`
+- [x] `POST /employee/ai/plan-examples/extract`
+- [x] `POST /employee/ai/suggestions/{id}/actions`
+- [x] `GET /employee/ai/conversations/active`
+- [x] `GET /employee/ai/conversations/history`
+- [x] `POST /employee/ai/conversations/new`
+- [x] `GET /employee/ai/conversations/{id}/messages`
 
 ### 4.3 AI 审核（8）— 依赖 4.2
 
-- [ ] `GET /ai/reviews/capability`
-- [ ] `GET /ai/reviews/latest`
-- [ ] `POST /ai/reviews/plans/{bizType}/{bizId}/check`
-- [ ] `POST /ai/reviews/plans/{bizType}/{bizId}/ensure`
-- [ ] `POST /ai/reviews/results/preview`
-- [ ] `GET /leader/ai/month-plan-context`
-- [ ] `PUT /leader/ai/month-plan-context`
-- [ ] `POST /ai/requests/{requestId}`
+- [x] `GET /ai/reviews/capability`
+- [x] `GET /ai/reviews/latest`
+- [x] `POST /ai/reviews/plans/{bizType}/{bizId}/check`
+- [x] `POST /ai/reviews/plans/{bizType}/{bizId}/ensure`
+- [x] `POST /ai/reviews/results/preview`
+- [x] `GET /leader/ai/month-plan-context`
+- [x] `PUT /leader/ai/month-plan-context`
+- [x] `POST /ai/requests/{requestId}/cancel`
 
 ### ✅ 验收标准
 
-- [ ] 契约脚本输出：`已对齐 226 → 260`
+- [x] 契约脚本输出：`已对齐 226 → 267`，**缺失 0**
+
+---
+
+## 🔧 批次 3 交付清单（2026-11-14）
+
+### 新增文件（7 个路由 + 2 个脚本）
+
+| 文件 | 前缀 | 端点数 | 说明 |
+|---|---|---|---|
+| `backend/app/routes/employee_ai.py` | `/v1/employee/ai` | 16 | 员工侧 AI 助手：上下文、生成、调整、建议、会话 |
+| `backend/app/routes/employee_week_plan.py` | `/v1/employee/week-plans` | 10 | 员工侧周计划 + 周成果提交 |
+| `backend/app/routes/employee_result.py` | `/v1/employee` | 11 | 月成果提交、周成果、草稿版本 |
+| `backend/app/routes/v1/system_ai.py` | `/v1/system/ai` | 10 | AI 模型配置、提示词、指标、调用日志 |
+| `backend/app/routes/v1/system_users.py` | `/v1/system/users` | 7 | 用户管理、注册、导入导出 |
+| `backend/app/routes/leader_suggestion.py` | `/v1/leader` | 15 | 结果建议、项目日/周计划包、项目周成果包 |
+| `backend/app/routes/ai_review.py` | `/v1/ai/reviews` | 5 | AI 复核能力、复核触发、结果预览 |
+| `backend/app/routes/department_confirm.py` | `/v1`（多前缀） | 13 | 部门结果确认、周计划详情、周成果审批、领导 AI 上下文 |
+| `backend/scripts/smoke_batch3.py` | — | — | **新增**：批次 3 端点冒烟测试（96 断言） |
+
+### 修改文件
+
+| 文件 | 改动 |
+|---|---|
+| `backend/app/routes/dispute.py` | 新增 `dispute/cases` 10 个端点 + 4 个 Pydantic 请求模型 |
+| `backend/app/routes/shared.py` | 新增 `JsonBody` 基类（修复全项目 `data: dict` 解析失败） |
+| `backend/app/routes/{employee_plans,employee,leader,department}.py` | `data: dict` → `data: JsonBody`（31 个既有端点） |
+| `backend/app/routes/v1/system.py` | `data: dict` → `data: JsonBody`（3 个既有端点） |
+| `backend/app/main.py` | 注册 8 个新 router |
+| `backend/scripts/check_api_contract.py` | 修复模板字面量截断 bug（括号配对扫描） |
+| `docs/05-API契约对齐清单.md` | 基线数据、里程碑、批次 3 交付清单（158 个勾选同步更新） |
+
+### ✅ 验收结果
+
+- [x] 契约脚本：`已对齐 **267** / 缺失 **0** / 业务组 **0**`（`--strict` 退出码 0）
+- [x] 冒烟测试：`backend/scripts/smoke_batch3.py` → **96/96 通过**
+- [x] 后端 `pytest app/tests` → **322 passed, 1 skipped, 0 failed**
+- [x] 前端 `vue-tsc --noEmit` → **0 errors**
+- [x] `GET /openapi.json` → **HTTP 200**，336 条路径
+- [x] 服务启动日志无 `Traceback` / `Duplicate Operation ID` / `ImportError`
 
 ---
 
@@ -639,14 +833,19 @@ if (body && typeof body.code !== 'undefined') {
 | 0 | 解锁 OpenAPI + 重启服务 | — | 0.5h | ✅ 完成 |
 | 1 | 重命名 7 处 + 契约脚本 | 36 → **42** | 1d | ✅ 完成 |
 | 2 | 同组补子路径 | 42 → **152** | 2-3d | ✅ 完成 |
-| 3 | 核心业务域 | 152 → **~250** | 5-8d | ⬜ 待做 |
-| 4 | AI 域（34） | ~250 → **263** | 5-8d | ⬜ 待做 |
+| 3.1 | 员工计划闭环 | 152 → **216** | 1d | ✅ 完成 |
+| 3 | 核心业务域 | 216 → **267** | 5-8d | ✅ **完成（缺失归零）** |
+| 4 | AI 域 | — | — | ✅ 完成（与批次 3 合并交付） |
 
 > **批次 2 实际达成 42 → 152（+110）**，远超预估的 +38。
 > 原因：① 本批次 23 个目标端点全部命中；② 恢复并注册了工作区中已存在但未注册的
 > `dispute.py` / `planning.py` 两个 router（`/v1/dispute/*`、`/v1/planning/*` 共 ~87 个端点），
 > 它们本就是既有资产，只是此前未 `include_router`，前端调用全部 404。
 >
+> **批次 3 实际达成 216 → 267（+51）**，契约缺失归零。
+> 除新增端点外，还顺带修复了 `data: dict` 请求体解析失败（全项目 31 个既有端点）
+> 与契约脚本自身的模板字面量截断 bug。
+
 > **契约校验接入 CI**：
 > ```powershell
 > python backend/scripts/check_api_contract.py --allow-missing 111

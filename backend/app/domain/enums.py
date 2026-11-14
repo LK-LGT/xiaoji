@@ -148,3 +148,218 @@ class SyncStatus(StrEnum):
     VALIDATION_FAILED = "validation_failed"
     READ_FAILED = "read_failed"
     FROZEN = "frozen"
+
+
+# ---------------------------------------------------------------------------
+# 计划域
+# ---------------------------------------------------------------------------
+
+class PlanStatus(StrEnum):
+    """计划状态机（月 / 周 / 日计划共用一套状态机）。
+
+    状态流转（合法迁移见 ``services/planning.plan_state_machine``）::
+
+        draft ──submit──> submitted
+        submitted ──withdraw──> draft
+        submitted ──approve──> approved
+        submitted ──reject──> rejected
+        approved ──withdraw──> draft
+
+    - **draft**：草稿，员工可自由编辑。
+    - **submitted**：已提交，进入审批队列，不可编辑。
+    - **withdrawn**：已撤回（前端枚举值为 ``paused`` / ``canceled`` 的子集语义），
+      员工可再次编辑并重新提交。
+    - **pending / approved / rejected**：审批态，由主管 / 部门负责人流转。
+    """
+
+    DRAFT = "draft"
+    SUBMITTED = "submitted"
+    WITHDRAWN = "withdrawn"
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class PlanPeriodType(StrEnum):
+    """计划周期类型。"""
+
+    MONTH = "month"
+    WEEK = "week"
+    DAY = "day"
+
+
+class PlanTaskType(StrEnum):
+    """计划任务类型（当前仅常规任务，预留扩展）。"""
+
+    REGULAR = "REGULAR"
+
+
+class PlanVersionState(StrEnum):
+    """计划版本记录状态。
+
+    对应前端 ``recordVersion`` / ``restoredFromVersionId`` 语义：
+    开启 ``recordVersion`` 时每次保存都留一份快照，``restoredFromVersionId``
+    可指向任意历史快照做恢复。
+    """
+
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class PlanVersionSource(StrEnum):
+    """计划草稿版本的产生来源。
+
+    对应前端 ``PlanDraftVersionSource``：
+    ``AI_GENERATE`` / ``AI_OPTIMIZE`` / ``MANUAL_SAVE`` / ``RESTORED_SAVE``。
+    """
+
+    AI_GENERATE = "AI_GENERATE"
+    AI_OPTIMIZE = "AI_OPTIMIZE"
+    MANUAL_SAVE = "MANUAL_SAVE"
+    RESTORED_SAVE = "RESTORED_SAVE"
+
+
+class PlanApprovalAction(StrEnum):
+    """计划审批动作（写入审批流水，区分谁做了什么）。"""
+
+    SUBMIT = "submit"
+    WITHDRAW = "withdraw"
+    APPROVE = "approve"
+    REJECT = "reject"
+    RESUBMIT = "resubmit"
+    ARCHIVE = "archive"
+
+
+# ---------------------------------------------------------------------------
+# 争议域
+# ---------------------------------------------------------------------------
+
+class DisputeStatus(StrEnum):
+    """绩效争议案件状态机。
+
+    状态流转::
+
+        submitted ──assign reviewer──> reviewing
+        reviewing ──need supplement──> needs_supplement
+        needs_supplement ──supplement──> reviewing
+        reviewing ──decide──> decided
+        decided ──archive──> archived
+
+    - **submitted**：员工已提交争议，等待指派评审人。
+    - **reviewing**：评审进行中，可收集意见。
+    - **needs_supplement**：材料不足，退回员工补充。
+    - **decided**：已裁决（采纳 / 不采纳）。
+    - **archived**：已归档，不可再变更。
+    """
+
+    SUBMITTED = "SUBMITTED"
+    REVIEWING = "REVIEWING"
+    NEEDS_SUPPLEMENT = "NEEDS_SUPPLEMENT"
+    DECIDED = "DECIDED"
+    ARCHIVED = "ARCHIVED"
+
+
+class DisputeOpinion(StrEnum):
+    """评审意见类型。"""
+
+    SUPPORT = "SUPPORT"
+    REJECT = "REJECT"
+    SUPPLEMENT = "SUPPLEMENT"
+
+
+class DisputeDecision(StrEnum):
+    """争议裁决结果。"""
+
+    SUPPORT = "SUPPORT"
+    REJECT = "REJECT"
+    PARTIAL = "PARTIAL"
+
+
+class DisputeRecusalStatus(StrEnum):
+    """评审人回避状态。"""
+
+    NONE = "NONE"
+    RECUSED = "RECUSED"
+
+
+class DisputeReviewerSource(StrEnum):
+    """评审人指派来源。"""
+
+    MANUAL = "MANUAL"
+    AUTO = "AUTO"
+    DEPT_LEADER = "DEPT_LEADER"
+
+
+class DisputePackageStatus(StrEnum):
+    """证据包状态。"""
+
+    PENDING = "PENDING"
+    READY = "READY"
+    MISSING = "MISSING"
+
+
+# ---------------------------------------------------------------------------
+# AI 域
+# ---------------------------------------------------------------------------
+
+class AiReviewStatus(StrEnum):
+    """AI 复核执行状态。
+
+    - **SUCCESS**：模型 + 规则均成功。
+    - **RULE_ONLY**：仅规则引擎产出（模型未配置或调用失败）。
+    - **MODEL_FAILED**：模型调用失败。
+    """
+
+    SUCCESS = "SUCCESS"
+    RULE_ONLY = "RULE_ONLY"
+    MODEL_FAILED = "MODEL_FAILED"
+
+
+class AiRiskLevel(StrEnum):
+    """AI 复核风险等级。"""
+
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+class AiBizType(StrEnum):
+    """AI 复核的业务对象类型。"""
+
+    MONTH_PLAN = "MONTH_PLAN"
+    WEEK_PLAN = "WEEK_PLAN"
+    DAY_PLAN = "DAY_PLAN"
+    RESULT = "RESULT"
+
+
+class AiConversationStatus(StrEnum):
+    """AI 会话状态。
+
+    - **active**：活跃会话，可继续追问。
+    - **archived**：已归档，只读。
+    """
+
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class AiMessageRole(StrEnum):
+    """AI 会话消息角色。"""
+
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
+class AiSuggestionAction(StrEnum):
+    """AI 建议采纳动作。
+
+    对应前端 ``AiSuggestionAction.actionCode``。
+    """
+
+    PREVIEW = "PREVIEW"
+    APPLY_ALL = "APPLY_ALL"
+    APPLY_ITEM = "APPLY_ITEM"
+    APPLY_FIELDS = "APPLY_FIELDS"
+    ADOPT_WITH_EDIT = "ADOPT_WITH_EDIT"
+    IGNORE = "IGNORE"

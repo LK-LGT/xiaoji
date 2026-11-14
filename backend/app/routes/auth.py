@@ -66,6 +66,8 @@ TEST_USERS = {
             "department:standard:view",
             "department:score-rule:view",
             "department:export-task:view",
+            # 主管评分页
+            "performance:manager-review:view",
         ],
     },
     "leader": {
@@ -120,6 +122,8 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "department:standard:view",
         "department:score-rule:view",
         "leader:workbench:view",
+        # 主管评分页：待评下属列表 + 评分提交
+        "performance:manager-review:view",
     ],
     "department_leader": [
         "department:dashboard:view",
@@ -137,6 +141,8 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "leader:result-suggest:view",
         "leader:plan-adjust:view",
         "leader:team-ledger:view",
+        # 部门负责人同样承担下属评分职责
+        "performance:manager-review:view",
     ],
     "hr": [
         "system:dashboard:view",
@@ -151,6 +157,8 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "system:knowledge:view",
         "dispute:dashboard:view",
         "dispute:case:view",
+        # HR 可查看全部考核记录
+        "performance:manager-review:view",
     ],
     "admin": [
         "system:dashboard:view",

@@ -12,6 +12,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from ..core.db import get_db
+from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ async def get_employee_performance_evidence(
 
 @router.post("/performance-evidence/export")
 async def export_employee_performance_evidence(
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """导出员工绩效证据。

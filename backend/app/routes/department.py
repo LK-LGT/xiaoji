@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..domain.models import Employee, Department
+from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
 
@@ -582,7 +583,7 @@ async def list_export_tasks(db: Session = Depends(get_db)):
 
 @router.post("/export-tasks")
 async def create_export_task(
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ):
     """创建导出任务
@@ -882,7 +883,7 @@ async def create_deliverable_template(data: dict, db: Session = Depends(get_db))
 @router.put("/templates/{template_id}")
 async def update_deliverable_template(
     template_id: int,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """更新交付物模板。
@@ -923,7 +924,7 @@ async def create_acceptance_standard(data: dict, db: Session = Depends(get_db)) 
 @router.put("/acceptance-standards/{standard_id}")
 async def update_acceptance_standard(
     standard_id: int,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """更新验收标准。
@@ -964,7 +965,7 @@ async def create_score_rule(data: dict, db: Session = Depends(get_db)) -> dict:
 @router.put("/score-rules/{rule_id}")
 async def update_score_rule(
     rule_id: int,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """更新参考分规则。
@@ -989,7 +990,7 @@ async def enable_score_rule(rule_id: int, db: Session = Depends(get_db)) -> dict
 @router.post("/score-rules/{rule_id}/simulate")
 async def simulate_score_rule(
     rule_id: int,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """模拟参考分规则。
@@ -1175,7 +1176,7 @@ async def batch_reject_leader_month_plans(data: dict, db: Session = Depends(get_
 @router.post("/leader-month-plan-approvals/{approval_id}/approve")
 async def approve_leader_month_plan(
     approval_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """通过部门负责人月计划。
@@ -1188,7 +1189,7 @@ async def approve_leader_month_plan(
 @router.post("/leader-month-plan-approvals/{approval_id}/reject")
 async def reject_leader_month_plan(
     approval_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """驳回部门负责人月计划。
@@ -1210,7 +1211,7 @@ async def get_week_plan_approval(approval_id: str, db: Session = Depends(get_db)
 @router.post("/week-plan-approvals/{approval_id}/approve")
 async def approve_week_plan(
     approval_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """通过周计划。
@@ -1223,7 +1224,7 @@ async def approve_week_plan(
 @router.post("/week-plan-approvals/{approval_id}/reject")
 async def reject_week_plan(
     approval_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """驳回周计划。
@@ -1248,7 +1249,7 @@ async def get_daily_review(review_id: str, db: Session = Depends(get_db)) -> dic
 @router.post("/daily-reviews/{review_id}/comment")
 async def comment_daily_review(
     review_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """填写日计划点评。
@@ -1280,7 +1281,7 @@ async def get_day_plan_review(review_id: str, db: Session = Depends(get_db)) -> 
 @router.post("/day-plan-reviews/{review_id}/approve")
 async def approve_day_plan_review(
     review_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """通过日计划。
@@ -1293,7 +1294,7 @@ async def approve_day_plan_review(
 @router.post("/day-plan-reviews/{review_id}/reject")
 async def reject_day_plan_review(
     review_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """驳回日计划。
@@ -1330,7 +1331,7 @@ async def get_department_appeal_package(
 @router.post("/appeals/{appeal_id}/accept")
 async def accept_department_appeal(
     appeal_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """受理申诉。
@@ -1343,7 +1344,7 @@ async def accept_department_appeal(
 @router.post("/appeals/{appeal_id}/resolve")
 async def resolve_department_appeal(
     appeal_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """裁决申诉。

@@ -31,12 +31,73 @@ REPO_ROOT = BACKEND_ROOT.parent
 FRONTEND_API_DIR = REPO_ROOT / "frontend" / "src" / "api"
 
 # 前端调用提取：匹配 http.get/post/put/delete<...>('路径'
-# 注意：路径中的模板字面量（含三元表达式）会被截断，这里做宽松归一化。
-FRONTEND_CALL_RE = re.compile(
-    r"http\.(get|post|put|delete)(?:<[^>]*>)?\(\s*[`'\"]?([^`'\"),]+)"
-)
-
+#
+# ⚠️ 路径中可能含模板表达式，表达式内部常有括号，例如：
+#     `/ai/requests/${encodeURIComponent(requestId)}/cancel`
+# 朴素的 `[^)]+` 会在 `encodeURIComponent(` 的左括号处截断，
+# 导致 `/ai/requests/${encodeURIComponent(requestId` 被误当成完整路径。
+#
+# 因此改为「括号配对扫描」：找到 http.<method>( 后，按深度找到匹配的右括号，
+# 再从参数区里提取第一个字符串/模板字面量。
+HTTP_METHOD_RE = re.compile(r"http\.(get|post|put|delete)\s*(?:<[^>]*>)?\s*\(", re.S)
 HTTP_METHODS = ("GET", "POST", "PUT", "DELETE")
+
+
+def _extract_path_after_call(text: str, open_paren_idx: int) -> str | None:
+    """从 http.<method>( 的左括号开始，取出第一个路径字面量。
+
+    返回归一化前的原始路径片段；找不到则返回 None。
+    """
+    depth = 0
+    i = open_paren_idx
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                return None
+        elif depth == 1:
+            # 只在参数区的第一层找路径字面量
+            if ch in "`'\"":
+                quote = ch
+                j = i + 1
+                buf: list[str] = []
+                while j < n:
+                    c = text[j]
+                    if c == "\\":
+                        j += 2
+                        continue
+                    if c == quote:
+                        break
+                    buf.append(c)
+                    j += 1
+                if j >= n:
+                    return None
+                return "".join(buf)
+        i += 1
+    return None
+
+
+def collect_frontend_endpoints() -> set[tuple[str, str]]:
+    """从 frontend/src/api/*.ts 提取调用的方法+路径。"""
+    endpoints: set[tuple[str, str]] = set()
+    if not FRONTEND_API_DIR.exists():
+        return endpoints
+    for path in sorted(FRONTEND_API_DIR.rglob("*.ts")):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for match in HTTP_METHOD_RE.finditer(text):
+            method = match.group(1).upper()
+            raw = _extract_path_after_call(text, match.end() - 1)
+            if raw is None:
+                continue
+            raw = raw.split("?")[0]
+            if not raw.startswith("/"):
+                continue
+            endpoints.add((method, normalize_path(raw)))
+    return endpoints
 
 
 def normalize_path(path: str) -> str:
@@ -108,20 +169,6 @@ def collect_backend_endpoints() -> set[tuple[str, str]]:
     return endpoints
 
 
-def collect_frontend_endpoints() -> set[tuple[str, str]]:
-    """从 frontend/src/api/*.ts 提取调用的方法+路径。"""
-    endpoints: set[tuple[str, str]] = set()
-    if not FRONTEND_API_DIR.exists():
-        return endpoints
-    for path in sorted(FRONTEND_API_DIR.rglob("*.ts")):
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        for match in FRONTEND_CALL_RE.finditer(text):
-            method = match.group(1).upper()
-            raw = match.group(2).split("?")[0]
-            if not raw.startswith("/"):
-                continue
-            endpoints.add((method, normalize_path(raw)))
-    return endpoints
 
 
 def group_of(path: str) -> str:

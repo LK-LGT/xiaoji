@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
+from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ async def list_leader_knowledge_uploads(
 
 @router.post("/export-tasks")
 async def create_leader_export_task(
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """创建领导侧导出任务。
@@ -370,7 +371,7 @@ async def batch_reject_month_plans(data: dict, db: Session = Depends(get_db)) ->
 @router.post("/month-plan-approvals/{approval_id}/approve")
 async def approve_month_plan(
     approval_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """通过月计划。
@@ -383,7 +384,7 @@ async def approve_month_plan(
 @router.post("/month-plan-approvals/{approval_id}/reject")
 async def reject_month_plan(
     approval_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """驳回月计划。
@@ -425,7 +426,7 @@ async def get_leader_week_plan_approval(
 @router.post("/week-plan-approvals/{approval_id}/approve")
 async def approve_week_plan(
     approval_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """通过周计划。
@@ -438,7 +439,7 @@ async def approve_week_plan(
 @router.post("/week-plan-approvals/{approval_id}/reject")
 async def reject_week_plan(
     approval_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """驳回周计划。
@@ -479,7 +480,7 @@ async def get_leader_daily_review(review_id: str, db: Session = Depends(get_db))
 @router.post("/daily-reviews/{review_id}/comment")
 async def comment_daily_review(
     review_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """填写日计划点评。
@@ -492,7 +493,7 @@ async def comment_daily_review(
 @router.post("/daily-reviews/{review_id}/risk")
 async def mark_daily_review_risk(
     review_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """标记日计划风险。
@@ -556,7 +557,7 @@ async def get_leader_plan_adjustment(
 @router.post("/plan-adjustments/{adjustment_id}/process")
 async def process_leader_plan_adjustment(
     adjustment_id: str,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """处理计划调整申请。

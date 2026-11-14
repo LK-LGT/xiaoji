@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
+from ..shared import JsonBody
 
 router = APIRouter(prefix="/v1/system", tags=["system"])
 
@@ -343,7 +344,7 @@ async def get_role_permissions(role_id: int, db: Session = Depends(get_db)) -> d
 @router.put("/roles/{role_id}/permissions")
 async def save_role_permissions(
     role_id: int,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """保存指定角色的权限。
@@ -400,7 +401,7 @@ async def get_workday_rules(db: Session = Depends(get_db)) -> dict:
 @router.post("/workday-rules/{rule_id}/status")
 async def change_workday_rule_status(
     rule_id: int,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """变更工作日规则状态。
@@ -470,7 +471,7 @@ async def get_week_plan_standard_supplement(
 @router.put("/week-plan-standard-supplements/{supplement_id}")
 async def update_week_plan_standard_supplement(
     supplement_id: int,
-    data: dict,
+    data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
     """提交周计划标准补录。

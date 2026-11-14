@@ -227,6 +227,51 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    from .routes import leader_suggestion as leader_suggestion_routes
+    app.include_router(leader_suggestion_routes.router)
+    print("[APP] Leader suggestion/package router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register leader suggestion router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import employee_result as employee_result_routes
+    app.include_router(employee_result_routes.router)
+    print("[APP] Employee result router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register employee result router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import ai_review as ai_review_routes
+    app.include_router(ai_review_routes.router)
+    print("[APP] AI review router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register AI review router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes.v1 import system_users as system_users_routes
+    app.include_router(system_users_routes.router)
+    print("[APP] System users router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register system users router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import department_confirm as department_confirm_routes
+    app.include_router(department_confirm_routes.router)
+    print("[APP] Department confirm/approval router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register department confirm router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     from .routes.v1 import system as system_routes
     app.include_router(system_routes.router)
     print("[APP] System router registered successfully")

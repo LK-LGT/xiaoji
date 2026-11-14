@@ -6,21 +6,19 @@
 
 分页约定：前端 WeekPlanSummary[] 直接 .map()，故列表端点返回裸数组。
 
-⚠️ **当前实现状态**：本模块为**契约层实现** —— 路由、HTTP 方法、请求参数、
-响应结构全部对齐前端 TypeScript 类型定义，但**尚未接入领域模型**。
-
-后端当前 34 张表中没有任何计划类表（无 `month_plan` / `week_plan` / `day_plan`
-及其 item / 版本 / 结果表），因此这里统一返回结构正确但内容为空的响应，
-目的是让前端页面不再报 404 / 类型错误，同时把「领域建模 + 真实 CRUD + 状态机」
-作为独立排期项。
-
-鉴权：全部端点均要求有效 token（`get_current_user`），匿名请求返回 401。
+实现说明：
+- 领域逻辑全部在 `services/planning.py`（含状态机、乐观锁、序列化）。
+  本模块只做「HTTP ↔ 服务层」的转接。
+- 状态机不在路由里散落 `plan.status = ...`，一律走
+  `planning.submit_week_plan / withdraw_week_plan` 等服务函数。
+- 数据范围：以当前登录用户的 `owner_id` 为边界，跨人访问直接 404。
+- `versionNo` 查询参数是乐观锁版本号：不匹配时返回 409。
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
@@ -30,6 +28,7 @@ from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..dependencies import get_current_user
 from ..domain.models import Employee
+from ..services import planning
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +62,29 @@ def _ok(data: Any) -> dict:
     return {"code": 0, "data": data}
 
 
+def _translate(exc: Exception) -> Exception:
+    """把领域异常映射成 HTTP 状态码。"""
+    from fastapi import HTTPException
+
+    if isinstance(exc, planning.PlanNotFound):
+        return HTTPException(status_code=404, detail=exc.message)
+    if isinstance(exc, planning.PlanVersionConflict):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, planning.PlanStateError):
+        return HTTPException(status_code=409, detail=exc.message)
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail="周计划操作失败")
+
+
+def _run(fn, *args, **kwargs):
+    """执行服务层调用，把领域异常转成 HTTPException。"""
+    try:
+        return fn(*args, **kwargs)
+    except (planning.PlanNotFound, planning.PlanStateError, planning.PlanVersionConflict, ValueError) as exc:
+        raise _translate(exc) from exc
+
+
 # ---------------------------------------------------------------------------
 # 周计划本体
 #
@@ -74,7 +96,7 @@ def _ok(data: Any) -> dict:
 async def list_employee_week_plans(
     status: Optional[str] = Query(None),
     weekStart: Optional[str] = Query(None),
-    deptId: Optional[int] = Query(None),
+    deptId: Optional[str] = Query(None),
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=100),
     current_user: Employee = Depends(get_current_user),
@@ -84,7 +106,15 @@ async def list_employee_week_plans(
 
     响应结构：WeekPlanSummary[]（裸数组）
     """
-    return _ok([])
+    plans = _run(
+        planning.list_week_plans, db, current_user.id, status, weekStart, deptId
+    )
+    return _ok(
+        [
+            planning.serialize_week_plan_summary(plan, len(_run(planning.list_week_plan_items, db, plan.id)))
+            for plan in plans
+        ]
+    )
 
 
 @router.get("/parent-options")
@@ -96,12 +126,12 @@ async def list_week_plan_parent_options(
 
     响应结构：WeekPlanParentOption[]（裸数组）
     """
-    return _ok([])
+    return _ok(_run(planning.list_week_plan_parent_options, db, current_user.id))
 
 
 @router.get("/{plan_id}")
 async def get_employee_week_plan(
-    plan_id: int,
+    plan_id: str,
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -109,14 +139,11 @@ async def get_employee_week_plan(
 
     响应结构：WeekPlanDetail
     """
-    return _ok(
-        {
-            "summary": _empty_week_plan_summary(plan_id),
-            "items": [],
-            "siblingPlans": [],
-            "dayPlanCount": 0,
-        }
-    )
+    plan = _run(planning.get_week_plan, db, current_user.id, plan_id)
+    items = _run(planning.list_week_plan_items, db, plan.id)
+    siblings = _run(planning.sibling_week_plans, db, current_user.id, plan)
+    day_count = _run(planning.count_day_plans_for_week, db, current_user.id, plan)
+    return _ok(planning.serialize_week_plan_detail(plan, items, siblings, day_count))
 
 
 @router.post("")
@@ -129,19 +156,16 @@ async def create_employee_week_plan(
 
     响应结构：WeekPlanDetail
     """
-    return _ok(
-        {
-            "summary": _empty_week_plan_summary(),
-            "items": [],
-            "siblingPlans": [],
-            "dayPlanCount": 0,
-        }
-    )
+    plan = _run(planning.upsert_week_plan, db, current_user.id, None, payload.model_dump())
+    items = _run(planning.list_week_plan_items, db, plan.id)
+    siblings = _run(planning.sibling_week_plans, db, current_user.id, plan)
+    day_count = _run(planning.count_day_plans_for_week, db, current_user.id, plan)
+    return _ok(planning.serialize_week_plan_detail(plan, items, siblings, day_count))
 
 
 @router.put("/{plan_id}")
 async def update_employee_week_plan(
-    plan_id: int,
+    plan_id: str,
     payload: WeekPlanSavePayload,
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -150,20 +174,17 @@ async def update_employee_week_plan(
 
     响应结构：WeekPlanDetail
     """
-    return _ok(
-        {
-            "summary": _empty_week_plan_summary(plan_id),
-            "items": [],
-            "siblingPlans": [],
-            "dayPlanCount": 0,
-        }
-    )
+    plan = _run(planning.upsert_week_plan, db, current_user.id, plan_id, payload.model_dump())
+    items = _run(planning.list_week_plan_items, db, plan.id)
+    siblings = _run(planning.sibling_week_plans, db, current_user.id, plan)
+    day_count = _run(planning.count_day_plans_for_week, db, current_user.id, plan)
+    return _ok(planning.serialize_week_plan_detail(plan, items, siblings, day_count))
 
 
 @router.delete("/{plan_id}")
 async def delete_employee_week_plan(
-    plan_id: int,
-    versionNo: int = Query(..., description="乐观锁版本号"),
+    plan_id: str,
+    versionNo: Optional[int] = Query(None, description="乐观锁版本号"),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -171,13 +192,24 @@ async def delete_employee_week_plan(
 
     响应结构：WeekPlanAction
     """
-    return _ok(_empty_week_plan_action(plan_id, "DRAFT", versionNo))
+    plan = _run(planning.get_week_plan, db, current_user.id, plan_id)
+    if versionNo is not None:
+        _run(planning.assert_version, plan, versionNo)
+    _run(planning.delete_week_plan, db, current_user.id, plan_id)
+    return _ok(
+        {
+            "id": plan.id,
+            "status": "DRAFT",
+            "versionNo": versionNo if versionNo is not None else 1,
+            "message": "周计划已删除",
+        }
+    )
 
 
 @router.post("/{plan_id}/submit")
 async def submit_employee_week_plan(
-    plan_id: int,
-    versionNo: int = Query(..., description="乐观锁版本号"),
+    plan_id: str,
+    versionNo: Optional[int] = Query(None, description="乐观锁版本号"),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -185,13 +217,24 @@ async def submit_employee_week_plan(
 
     响应结构：WeekPlanAction
     """
-    return _ok(_empty_week_plan_action(plan_id, "PENDING", versionNo))
+    plan = _run(planning.get_week_plan, db, current_user.id, plan_id)
+    if versionNo is not None:
+        _run(planning.assert_version, plan, versionNo)
+    plan = _run(planning.submit_week_plan, db, current_user.id, plan_id)
+    return _ok(
+        {
+            "id": plan.id,
+            "status": planning.to_week_status(plan.status),
+            "versionNo": plan.version_no,
+            "message": "周计划已提交",
+        }
+    )
 
 
 @router.post("/{plan_id}/withdraw")
 async def withdraw_employee_week_plan(
-    plan_id: int,
-    versionNo: int = Query(..., description="乐观锁版本号"),
+    plan_id: str,
+    versionNo: Optional[int] = Query(None, description="乐观锁版本号"),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -199,7 +242,18 @@ async def withdraw_employee_week_plan(
 
     响应结构：WeekPlanAction
     """
-    return _ok(_empty_week_plan_action(plan_id, "DRAFT", versionNo))
+    plan = _run(planning.get_week_plan, db, current_user.id, plan_id)
+    if versionNo is not None:
+        _run(planning.assert_version, plan, versionNo)
+    plan = _run(planning.withdraw_week_plan, db, current_user.id, plan_id)
+    return _ok(
+        {
+            "id": plan.id,
+            "status": planning.to_week_status(plan.status),
+            "versionNo": plan.version_no,
+            "message": "周计划已撤回",
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -211,8 +265,8 @@ async def withdraw_employee_week_plan(
 
 @router.get("/{plan_id}/items/{item_id}/results/submit-context")
 async def get_week_result_submit_context(
-    plan_id: int,
-    item_id: int,
+    plan_id: str,
+    item_id: str,
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -220,14 +274,22 @@ async def get_week_result_submit_context(
 
     响应结构：WeekResultSubmitContext
     """
+    plan = _run(planning.get_week_plan, db, current_user.id, plan_id)
+    items = _run(planning.list_week_plan_items, db, plan.id)
+    target = next((i for i in items if i.id == item_id), None)
+    if target is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="周计划条目不存在")
+
     return _ok(
         {
-            "weekPlanId": plan_id,
-            "weekPlanTitle": "",
-            "weekStart": "",
-            "weekEnd": "",
-            "weekPlanStatus": "DRAFT",
-            "task": _empty_week_result_task(plan_id, item_id),
+            "weekPlanId": plan.id,
+            "weekPlanTitle": plan.title,
+            "weekStart": planning._date_str(plan.week_start),
+            "weekEnd": planning._date_str(plan.week_end),
+            "weekPlanStatus": planning.to_week_status(plan.status),
+            "task": planning.serialize_week_plan_item(target),
             "latestResult": None,
             "acceptedFileTypes": [],
             "maxFileSizeMb": 0,
@@ -237,8 +299,8 @@ async def get_week_result_submit_context(
 
 @router.post("/{plan_id}/items/{item_id}/results/submit")
 async def submit_week_result(
-    plan_id: int,
-    item_id: int,
+    plan_id: str,
+    item_id: str,
     file: Optional[UploadFile] = File(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -247,55 +309,20 @@ async def submit_week_result(
 
     响应结构：WeekResultSubmitAction
     """
+    plan = _run(planning.get_week_plan, db, current_user.id, plan_id)
+    items = _run(planning.list_week_plan_items, db, plan.id)
+    target = next((i for i in items if i.id == item_id), None)
+    if target is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="周计划条目不存在")
+
+    # 证据落库与结果版本表待「周成果」子域补齐；本次先校验归属与条目有效性。
     return _ok(
         {
-            "id": 0,
+            "id": target.id,
             "status": "submitted",
-            "submittedAt": datetime.utcnow().isoformat(),
-            "message": "周结果已提交",
+            "submittedAt": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+            "message": "周成果已提交",
         }
     )
-
-
-def _empty_week_plan_summary(plan_id: int = 0) -> dict:
-    """构造 WeekPlanSummary，字段与 frontend/src/api/weekPlan.ts 保持一致。"""
-    return {
-        "id": plan_id,
-        "title": "",
-        "weekStart": "",
-        "weekEnd": "",
-        "status": "DRAFT",
-        "versionNo": 1,
-        "ownerUserId": 0,
-        "employeeName": "",
-        "deptId": None,
-        "departmentName": "",
-        "itemCount": 0,
-        "submitAt": None,
-        "approveAt": None,
-        "approvalComment": None,
-    }
-
-
-def _empty_week_plan_action(plan_id: int, status: str, version_no: int = 1) -> dict:
-    """构造 WeekPlanAction，字段与 frontend/src/api/weekPlan.ts 保持一致。"""
-    return {
-        "id": plan_id,
-        "status": status,
-        "versionNo": version_no,
-        "message": "",
-    }
-
-
-def _empty_week_result_task(plan_id: int, item_id: int) -> dict:
-    """构造 WeekResultTask，字段与 frontend/src/api/weekResult.ts 保持一致。"""
-    return {
-        "id": item_id,
-        "weekPlanId": plan_id,
-        "monthPlanItemId": None,
-        "content": "",
-        "deliverable": None,
-        "quality": None,
-        "plannedFinishDate": None,
-        "sortNo": 0,
-    }

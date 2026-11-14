@@ -15,9 +15,12 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.core.db import get_db
 from backend.app.main import app
 
 
@@ -114,20 +117,133 @@ def test_employee_plan_requires_auth(client, path):
 
 # ---------------------------------------------------------------------------
 # 3. 响应字段与前端 TypeScript 接口对齐
+#
+# 这一节用内存 SQLite + 真实种子数据，验证「有数据时」的响应结构，
+# 而不只是空响应的结构。CRUD 行为断言见 test_planning_domain.py。
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def seeded_client(db, seeded_employee):
+    """带内存 DB 与种子数据的 TestClient。"""
+    from backend.app.dependencies import get_current_user
+
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_user] = lambda: seeded_employee
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture()
+def db():
+    """独立的内存 SQLite 会话。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from backend.app.domain.models import Base
+
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    yield session
+    session.close()
+    engine.dispose()
+
+
+@pytest.fixture()
+def seeded_employee(db):
+    """种子数据：部门 + 员工 + 一份月计划（含条目）+ 一份周计划（含条目）。"""
+    from backend.app.domain.enums import PlanStatus
+    from backend.app.domain.models import (
+        Department,
+        Employee,
+        MonthPlan,
+        MonthPlanItem,
+        WeekPlan,
+        WeekPlanItem,
+    )
+
+    dept = Department(id="D_TEST", name="测试部", active=True)
+    db.add(dept)
+    employee = Employee(
+        id="E_TEST",
+        name="测试员工",
+        department_id="D_TEST",
+        employment_status="active",
+        account_status="enabled",
+    )
+    db.add(employee)
+    db.flush()
+
+    month = MonthPlan(
+        id="MONTH_TEST",
+        owner_id=employee.id,
+        plan_month="2026-11",
+        title="十一月计划",
+        status=PlanStatus.DRAFT.value,
+    )
+    db.add(month)
+    db.flush()
+    db.add(
+        MonthPlanItem(
+            id="MONTH_ITEM_TEST",
+            plan_id=month.id,
+            task_type="REGULAR",
+            task_name="测试任务",
+            task_content="任务内容",
+            deliverable="交付物",
+            quality="标准",
+            performance_weight=50,
+            estimated_value=100,
+            sort_no=0,
+        )
+    )
+
+    week = WeekPlan(
+        id="WEEK_TEST",
+        owner_id=employee.id,
+        title="测试周计划",
+        week_start=date(2026, 11, 9),
+        week_end=date(2026, 11, 15),
+        status=PlanStatus.DRAFT.value,
+    )
+    db.add(week)
+    db.flush()
+    db.add(
+        WeekPlanItem(
+            id="WEEK_ITEM_TEST",
+            plan_id=week.id,
+            month_plan_item_id="MONTH_ITEM_TEST",
+            content="周任务内容",
+            deliverable="周交付物",
+            quality="周标准",
+            sort_no=0,
+        )
+    )
+    db.flush()
+    return employee
+
 
 # (路径, data 顶层字段集合, 是否为裸数组)
 EMPLOYEE_PLAN_SHAPES: tuple[tuple[str, set[str], bool], ...] = (
     (
-        "/v1/employee/month-plans/1",
+        "/v1/employee/month-plans/MONTH_TEST",
         {
             "id",
             "planMonth",
             "employeeName",
             "departmentName",
+            "projectName",
+            "positionName",
             "status",
             "resultStatus",
             "updatedAt",
+            "approvalComment",
+            "approvedAt",
             "items",
             "deliverables",
             "resultSummary",
@@ -136,19 +252,27 @@ EMPLOYEE_PLAN_SHAPES: tuple[tuple[str, set[str], bool], ...] = (
         False,
     ),
     (
-        "/v1/employee/month-plans/1/template-preview",
-        {"planId", "planMonth", "items", "estimatedValueTotal"},
+        "/v1/employee/month-plans/MONTH_TEST/template-preview",
+        {
+            "planId",
+            "planMonth",
+            "employeeName",
+            "projectName",
+            "positionName",
+            "items",
+            "estimatedValueTotal",
+        },
         False,
     ),
     ("/v1/employee/week-plans", set(), True),
     ("/v1/employee/week-plans/parent-options", set(), True),
     (
-        "/v1/employee/week-plans/1",
+        "/v1/employee/week-plans/WEEK_TEST",
         {"summary", "items", "siblingPlans", "dayPlanCount"},
         False,
     ),
     (
-        "/v1/employee/week-plans/1/items/1/results/submit-context",
+        "/v1/employee/week-plans/WEEK_TEST/items/WEEK_ITEM_TEST/results/submit-context",
         {
             "weekPlanId",
             "weekPlanTitle",
@@ -172,6 +296,13 @@ EMPLOYEE_PLAN_SHAPES: tuple[tuple[str, set[str], bool], ...] = (
             "content",
             "remark",
             "status",
+            "reviewStatus",
+            "riskLevel",
+            "leaderComment",
+            "reviewedAt",
+            "departmentComment",
+            "departmentReviewedAt",
+            "approvalDueAt",
             "calendarRule",
             "weekPlanItemOptions",
             "legacyMonthPlanItem",
@@ -181,28 +312,10 @@ EMPLOYEE_PLAN_SHAPES: tuple[tuple[str, set[str], bool], ...] = (
 )
 
 
-def _fake_employee():
-    from backend.app.domain.models import Employee
-
-    return Employee(
-        id="E_TEST",
-        name="测试员工",
-        department_id="D_TEST",
-        employment_status="active",
-        account_status="enabled",
-    )
-
-
 @pytest.mark.parametrize(("path", "fields", "is_list"), EMPLOYEE_PLAN_SHAPES)
-def test_employee_plan_response_shape(client, path, fields, is_list):
+def test_employee_plan_response_shape(seeded_client, path, fields, is_list):
     """响应 data 的字段集合必须与前端 TS 接口一致。"""
-    from backend.app.dependencies import get_current_user
-
-    app.dependency_overrides[get_current_user] = _fake_employee
-    try:
-        resp = client.get(path)
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    resp = seeded_client.get(path)
 
     assert resp.status_code == 200, f"{path} -> {resp.status_code}"
     body = resp.json()
@@ -222,19 +335,14 @@ def test_employee_plan_response_shape(client, path, fields, is_list):
     )
 
 
-def test_week_plan_summary_shape(client):
+def test_week_plan_summary_shape(seeded_client):
     """WeekPlanSummary 的字段必须与 frontend/src/api/weekPlan.ts 一致。
 
     注意：`deptId` / `submitAt` / `approveAt` / `approvalComment` 在前端接口里
     是可选字段（`?`），后端仍应返回这些键以保持响应结构稳定。
     """
-    from backend.app.dependencies import get_current_user
-
-    app.dependency_overrides[get_current_user] = _fake_employee
-    try:
-        resp = client.get("/v1/employee/week-plans/1")
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    resp = seeded_client.get("/v1/employee/week-plans/WEEK_TEST")
+    assert resp.status_code == 200, resp.text
 
     body = resp.json()
     summary = body["data"]["summary"]
@@ -259,15 +367,10 @@ def test_week_plan_summary_shape(client):
     )
 
 
-def test_month_plan_result_summary_shape(client):
+def test_month_plan_result_summary_shape(seeded_client):
     """EmployeeResultSummary 字段必须与 frontend/src/api/employee.ts 一致。"""
-    from backend.app.dependencies import get_current_user
-
-    app.dependency_overrides[get_current_user] = _fake_employee
-    try:
-        resp = client.get("/v1/employee/month-plans/1")
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    resp = seeded_client.get("/v1/employee/month-plans/MONTH_TEST")
+    assert resp.status_code == 200, resp.text
 
     result_summary = resp.json()["data"]["resultSummary"]
     expected = {
@@ -280,4 +383,60 @@ def test_month_plan_result_summary_shape(client):
     assert set(result_summary.keys()) == expected, (
         f"EmployeeResultSummary 字段不匹配\n"
         f"  期望: {sorted(expected)}\n  实际: {sorted(result_summary.keys())}"
+    )
+
+
+def test_month_plan_item_shape(seeded_client):
+    """EmployeeMonthPlanItem 字段必须与 frontend/src/api/employee.ts 一致。"""
+    resp = seeded_client.get("/v1/employee/month-plans/MONTH_TEST")
+    assert resp.status_code == 200, resp.text
+
+    items = resp.json()["data"]["items"]
+    assert len(items) == 1
+    expected = {
+        "id",
+        "taskType",
+        "performanceWeight",
+        "estimatedValue",
+        "taskName",
+        "taskContent",
+        "progress",
+        "deliverable",
+        "quality",
+        "estimatedStartDate",
+        "estimatedEndDate",
+        "status",
+        "sortNo",
+        "submittedAt",
+        "approvedAt",
+        "approvalComment",
+    }
+    assert set(items[0].keys()) == expected, (
+        f"EmployeeMonthPlanItem 字段不匹配\n"
+        f"  期望: {sorted(expected)}\n  实际: {sorted(items[0].keys())}"
+    )
+
+
+def test_week_plan_item_shape(seeded_client):
+    """WeekPlanItem 字段必须与 frontend/src/api/weekPlan.ts 一致。"""
+    resp = seeded_client.get("/v1/employee/week-plans/WEEK_TEST")
+    assert resp.status_code == 200, resp.text
+
+    items = resp.json()["data"]["items"]
+    assert len(items) == 1
+    expected = {
+        "id",
+        "monthPlanItemId",
+        "content",
+        "completionStatus",
+        "deliverable",
+        "quality",
+        "remark",
+        "plannedFinishDate",
+        "sortNo",
+        "parent",
+    }
+    assert set(items[0].keys()) == expected, (
+        f"WeekPlanItem 字段不匹配\n"
+        f"  期望: {sorted(expected)}\n  实际: {sorted(items[0].keys())}"
     )

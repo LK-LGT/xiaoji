@@ -28,6 +28,21 @@
             对你的下属进行绩效评分，包括等级评定和评价意见
           </p>
         </div>
+        <!-- 周期筛选：只有可见周期才出现在下拉里 -->
+        <el-select
+          v-model="selectedPeriod"
+          placeholder="全部周期"
+          clearable
+          style="width: 180px"
+          @change="handlePeriodChange"
+        >
+          <el-option
+            v-for="p in visiblePeriods"
+            :key="p.period"
+            :label="`${p.period_display}（待评 ${p.pending_count}）`"
+            :value="p.period"
+          />
+        </el-select>
       </div>
 
       <!-- 待评下属 -->
@@ -54,18 +69,33 @@
           stripe
           style="width: 100%"
           empty-text="暂无待评员工"
+          v-loading="recordsLoading"
         >
-          <el-table-column prop="employeeName" label="员工姓名" width="150" />
-          <el-table-column prop="departmentName" label="部门" width="150" />
-          <el-table-column prop="taskName" label="考核任务" min-width="150" />
+          <el-table-column label="员工姓名" width="150">
+            <template #default="{ row }">
+              {{ row.employee?.name || '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="考核任务" min-width="180">
+            <template #default="{ row }">
+              {{ row.task_name || '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="周期" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" type="info" effect="plain">
+                {{ row.period_display || '—' }}
+              </el-tag>
+            </template>
+          </el-table-column>
           <el-table-column label="自评提交" width="130">
             <template #default="{ row }">
               <span style="color: #67c23a; font-weight: 500">
-                ✓ {{ formatDate(row.selfReviewSubmittedAt) }}
+                ✓ {{ formatDate(row.updated_at) }}
               </span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="200" fixed="right">
+          <el-table-column label="操作" width="220" fixed="right">
             <template #default="{ row }">
               <el-button
                 link
@@ -102,20 +132,35 @@
           stripe
           style="width: 100%"
           empty-text="暂无已评记录"
+          v-loading="recordsLoading"
         >
-          <el-table-column prop="employeeName" label="员工姓名" width="150" />
-          <el-table-column prop="departmentName" label="部门" width="150" />
-          <el-table-column prop="taskName" label="考核任务" min-width="150" />
+          <el-table-column label="员工姓名" width="150">
+            <template #default="{ row }">
+              {{ row.employee?.name || '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="考核任务" min-width="180">
+            <template #default="{ row }">
+              {{ row.task_name || '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="周期" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" type="info" effect="plain">
+                {{ row.period_display || '—' }}
+              </el-tag>
+            </template>
+          </el-table-column>
           <el-table-column label="评分等级" width="120">
             <template #default="{ row }">
-              <el-tag :type="getGradeType(row.grade)">
-                {{ row.grade }}
+              <el-tag :type="getGradeType(row.confirmed_rating)">
+                {{ row.confirmed_rating || '—' }}
               </el-tag>
             </template>
           </el-table-column>
           <el-table-column label="提交时间" width="180">
             <template #default="{ row }">
-              {{ formatDateTime(row.submittedAt) }}
+              {{ formatDateTime(row.updated_at) }}
             </template>
           </el-table-column>
           <el-table-column label="操作" width="150" fixed="right">
@@ -146,23 +191,40 @@
     <el-dialog
       v-model="showSelfReviewDialog"
       title="员工自评"
-      width="700px"
+      width="760px"
     >
       <div v-if="selectedRecord" class="review-preview">
         <div class="review-section">
           <h3>员工信息</h3>
           <div class="info-row">
             <span class="label">姓名：</span>
-            <span class="value">{{ selectedRecord.employeeName }}</span>
+            <span class="value">{{ selectedRecord.employee?.name || '—' }}</span>
           </div>
           <div class="info-row">
-            <span class="label">部门：</span>
-            <span class="value">{{ selectedRecord.departmentName }}</span>
+            <span class="label">岗位：</span>
+            <span class="value">{{ selectedRecord.employee?.position || '—' }}</span>
           </div>
           <div class="info-row">
             <span class="label">任务：</span>
-            <span class="value">{{ selectedRecord.taskName }}</span>
+            <span class="value">{{ selectedRecord.task_name || '—' }}</span>
           </div>
+          <div class="info-row">
+            <span class="label">周期：</span>
+            <span class="value">{{ selectedRecord.period_display || '—' }}</span>
+          </div>
+        </div>
+
+        <!-- 考勤参考面板 -->
+        <div class="review-section">
+          <h3>考勤参考</h3>
+          <AttendancePanel
+            :period="detail?.period || selectedRecord.period"
+            :summary="attendanceSummary"
+            :reference-evidence="detail?.evidence?.reference_only || []"
+            :loading="attendanceLoading"
+            :error="attendanceError"
+            @retry="loadAttendance"
+          />
         </div>
 
         <div class="review-section">
@@ -170,25 +232,25 @@
           <div class="content-block">
             <div class="content-title">业绩总结</div>
             <div class="content-text">
-              {{ selectedRecord.selfReview?.performanceSummary }}
+              {{ detail?.self_review?.performance_summary || '未填写' }}
             </div>
           </div>
           <div class="content-block">
             <div class="content-title">主要成就</div>
             <div class="content-text">
-              {{ selectedRecord.selfReview?.achievements }}
+              {{ formatList(detail?.self_review?.achievements) }}
             </div>
           </div>
           <div class="content-block">
             <div class="content-title">遇到的挑战</div>
             <div class="content-text">
-              {{ selectedRecord.selfReview?.challenges }}
+              {{ formatList(detail?.self_review?.challenges) }}
             </div>
           </div>
           <div class="content-block">
             <div class="content-title">改进方向</div>
             <div class="content-text">
-              {{ selectedRecord.selfReview?.improvements || '未填写' }}
+              {{ detail?.self_review?.improvements || '未填写' }}
             </div>
           </div>
         </div>
@@ -199,14 +261,27 @@
     <el-dialog
       v-model="showReviewFormDialog"
       title="进行评分"
-      width="700px"
+      width="760px"
       @close="handleFormDialogClose"
     >
       <div v-if="selectedRecord" class="review-form">
         <div class="employee-info">
-          <strong>{{ selectedRecord.employeeName }}</strong> -
-          {{ selectedRecord.departmentName }}
-          <span class="task-name">{{ selectedRecord.taskName }}</span>
+          <strong>{{ selectedRecord.employee?.name || '—' }}</strong>
+          <span class="task-name">
+            {{ selectedRecord.task_name || '—' }} · {{ selectedRecord.period_display || '—' }}
+          </span>
+        </div>
+
+        <!-- 考勤参考面板 -->
+        <div class="attendance-section">
+          <AttendancePanel
+            :period="detail?.period || selectedRecord.period"
+            :summary="attendanceSummary"
+            :reference-evidence="detail?.evidence?.reference_only || []"
+            :loading="attendanceLoading"
+            :error="attendanceError"
+            @retry="loadAttendance"
+          />
         </div>
 
         <el-form :model="reviewFormData" label-width="100px">
@@ -233,7 +308,7 @@
               type="textarea"
               placeholder="给出你对该员工的评价..."
               rows="6"
-              maxlength="1000"
+              maxlength="2000"
               show-word-limit
             />
           </el-form-item>
@@ -267,11 +342,11 @@
           <div class="reference-content">
             <div class="ref-item">
               <strong>业绩总结：</strong>
-              {{ selectedRecord.selfReview?.performanceSummary }}
+              {{ detail?.self_review?.performance_summary || '未填写' }}
             </div>
             <div class="ref-item">
               <strong>主要成就：</strong>
-              {{ selectedRecord.selfReview?.achievements }}
+              {{ formatList(detail?.self_review?.achievements) }}
             </div>
           </div>
         </div>
@@ -291,58 +366,41 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import dayjs from 'dayjs'
+import AttendancePanel from './AttendancePanel.vue'
+import {
+  fetchAssessmentRecord,
+  fetchAttendanceSummary,
+  fetchPendingRecords,
+  fetchVisiblePeriods,
+  periodDateRange,
+  type AssessmentRecordDetail,
+  type AttendanceSummary,
+  type PendingAssessmentRecord,
+  type VisiblePeriod,
+} from '@/api/attendance'
 
 const loading = ref(false)
+const recordsLoading = ref(false)
 const submitting = ref(false)
 const error = ref('')
 const searchText = ref('')
 const showSelfReviewDialog = ref(false)
 const showReviewFormDialog = ref(false)
-const selectedRecord = ref<any>(null)
+const selectedRecord = ref<PendingAssessmentRecord | null>(null)
 
-// 模拟数据
-const allRecords = ref<any[]>([
-  {
-    id: 'R001',
-    taskId: 'T001',
-    employeeName: '张三',
-    departmentName: '运营中心',
-    taskName: '2026年Q4绩效考核',
-    status: 'pending_manager_review',
-    selfReviewSubmittedAt: '2026-12-20 10:30:00',
-    selfReview: {
-      performanceSummary: '本期主要负责直播部的日常运营管理，成功组织了10场大型直播活动...',
-      achievements: '完成目标销售额120%，获得公司优秀员工表彰...',
-      challenges: '面对市场竞争压力和团队人手不足的问题...',
-      improvements: '下一步计划加强团队建设和技能培训...',
-    },
-    grade: null,
-    comment: null,
-    strengths: null,
-    improvements: null,
-    submittedAt: null,
-  },
-  {
-    id: 'R002',
-    taskId: 'T001',
-    employeeName: '李四',
-    departmentName: '仓储部',
-    taskName: '2026年Q4绩效考核',
-    status: 'pending_manager_review',
-    selfReviewSubmittedAt: '2026-12-21 14:15:00',
-    selfReview: {
-      performanceSummary: '负责广州仓库的日常管理和物流协调工作...',
-      achievements: '库存准确率达到99.5%，处理了50起客户投诉且满意度达95%...',
-      challenges: '新系统部署过程中遇到了一些兼容性问题...',
-      improvements: '继续优化仓库流程，提升工作效率...',
-    },
-    grade: 'B',
-    comment: '工作认真负责，完成良好，有待进一步提升',
-    strengths: '执行力强，细心谨慎',
-    improvements: '可以多主动学习新知识',
-    submittedAt: '2026-12-25 16:00:00',
-  },
-])
+/** 全部可见记录（含待评与已评）。 */
+const allRecords = ref<PendingAssessmentRecord[]>([])
+/** 可见周期列表。 */
+const visiblePeriods = ref<VisiblePeriod[]>([])
+/** 当前周期筛选（null = 全部）。 */
+const selectedPeriod = ref<string | null>(null)
+
+/** 当前选中记录的详情（含自评 + 按周期过滤后的证据）。 */
+const detail = ref<AssessmentRecordDetail | null>(null)
+/** 考勤统计汇总。 */
+const attendanceSummary = ref<AttendanceSummary | null>(null)
+const attendanceLoading = ref(false)
+const attendanceError = ref('')
 
 const reviewFormData = reactive({
   grade: 'B',
@@ -351,78 +409,154 @@ const reviewFormData = reactive({
   improvements: '',
 })
 
-// 待评的记录
-const pendingRecords = computed(() => {
-  return allRecords.value.filter((r) => r.status === 'pending_manager_review')
-})
+/** 待评状态：员工已交自评，等待主管评分。 */
+const PENDING_STATUS = 'self_review_submitted'
 
-// 过滤待评的记录
+const pendingRecords = computed(() =>
+  allRecords.value.filter((r) => r.status === PENDING_STATUS),
+)
+
 const filteredPendingRecords = computed(() => {
-  if (!searchText.value) return pendingRecords.value
-  return pendingRecords.value.filter(
-    (r) =>
-      r.employeeName.includes(searchText.value) ||
-      r.departmentName.includes(searchText.value)
-  )
+  const keyword = searchText.value.trim()
+  if (!keyword) return pendingRecords.value
+  return pendingRecords.value.filter((r) => {
+    const name = r.employee?.name || ''
+    const task = r.task_name || ''
+    return name.includes(keyword) || task.includes(keyword)
+  })
 })
 
-// 已评的记录
-const completedRecords = computed(() => {
-  return allRecords.value.filter((r) => r.status !== 'pending_manager_review')
-})
+const completedRecords = computed(() =>
+  allRecords.value.filter((r) => r.status !== PENDING_STATUS),
+)
 
-function getGradeType(grade: string): string {
+function getGradeType(grade?: string | null): string {
   const typeMap: Record<string, string> = {
     A: 'success',
     B: 'primary',
     C: 'warning',
     D: 'danger',
   }
-  return typeMap[grade] || 'info'
+  return typeMap[grade || ''] || 'info'
 }
 
-function formatDate(date: string): string {
-  return dayjs(date).format('YYYY-MM-DD')
+function formatDate(date?: string | null): string {
+  if (!date) return '—'
+  const parsed = dayjs(date)
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD') : '—'
 }
 
-function formatDateTime(dateTime: string): string {
-  return dayjs(dateTime).format('YYYY-MM-DD HH:mm')
+function formatDateTime(dateTime?: string | null): string {
+  if (!dateTime) return '—'
+  const parsed = dayjs(dateTime)
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : '—'
+}
+
+/** 自评里的数组或字符串统一渲染。 */
+function formatList(value?: string[] | string | null): string {
+  if (!value) return '未填写'
+  if (Array.isArray(value)) {
+    return value.length ? value.join('；') : '未填写'
+  }
+  return value
 }
 
 function searchRecords() {
-  // 触发计算属性重新计算
+  // 触发计算属性重新计算（保持与既有交互一致）
 }
 
-function loadRecords() {
+async function loadRecords() {
   loading.value = true
   error.value = ''
+  recordsLoading.value = true
   try {
-    // 这里应该调用后端 API 加载待评记录
-    loading.value = false
+    // 并行拉取记录列表与可见周期
+    const [records, periods] = await Promise.all([
+      fetchPendingRecords({ includeAllStatuses: true }),
+      fetchVisiblePeriods(),
+    ])
+    allRecords.value = records.items || []
+    visiblePeriods.value = periods.items || []
   } catch (err) {
     error.value = err instanceof Error ? err.message : '未知错误'
     ElMessage.error(error.value)
+  } finally {
     loading.value = false
+    recordsLoading.value = false
   }
 }
 
-function viewSelfReview(record: any) {
-  selectedRecord.value = record
-  showSelfReviewDialog.value = true
+async function handlePeriodChange() {
+  await loadRecords()
 }
 
-function submitReview(record: any) {
+/** 载入选中记录的详情 + 考勤统计。 */
+async function loadDetail(record: PendingAssessmentRecord) {
+  detail.value = null
+  attendanceSummary.value = null
+  attendanceError.value = ''
+  try {
+    detail.value = await fetchAssessmentRecord(record.record_id)
+  } catch (err) {
+    attendanceError.value = err instanceof Error ? err.message : '记录详情加载失败'
+  }
+  await loadAttendance()
+}
+
+/** 载入考勤统计（按考核周期计算起止日期）。 */
+async function loadAttendance() {
+  const record = selectedRecord.value
+  const period = detail.value?.period || record?.period
+  const employeeId = detail.value?.employee?.id || record?.employee?.id
+  if (!record || !period || !employeeId) {
+    attendanceSummary.value = null
+    return
+  }
+
+  const range = periodDateRange(period)
+  if (!range) {
+    attendanceError.value = `考核周期格式非法：${period}`
+    attendanceSummary.value = null
+    return
+  }
+
+  attendanceLoading.value = true
+  attendanceError.value = ''
+  try {
+    attendanceSummary.value = await fetchAttendanceSummary({
+      employeeId,
+      startDate: range.startDate,
+      endDate: range.endDate,
+    })
+  } catch (err) {
+    attendanceSummary.value = null
+    attendanceError.value = err instanceof Error ? err.message : '考勤统计加载失败'
+  } finally {
+    attendanceLoading.value = false
+  }
+}
+
+async function viewSelfReview(record: PendingAssessmentRecord) {
   selectedRecord.value = record
-  reviewFormData.grade = record.grade || 'B'
-  reviewFormData.comment = record.comment || ''
-  reviewFormData.strengths = record.strengths || ''
-  reviewFormData.improvements = record.improvements || ''
+  showSelfReviewDialog.value = true
+  await loadDetail(record)
+}
+
+async function submitReview(record: PendingAssessmentRecord) {
+  selectedRecord.value = record
+  reviewFormData.grade = record.confirmed_rating || 'B'
+  reviewFormData.comment = record.manager_comment || ''
+  reviewFormData.strengths = ''
+  reviewFormData.improvements = ''
   showReviewFormDialog.value = true
+  await loadDetail(record)
 }
 
 function handleFormDialogClose() {
   showReviewFormDialog.value = false
   selectedRecord.value = null
+  detail.value = null
+  attendanceSummary.value = null
 }
 
 async function saveReview() {
@@ -434,20 +568,24 @@ async function saveReview() {
     ElMessage.warning('请填写评价意见')
     return
   }
+  if (!selectedRecord.value) return
 
   submitting.value = true
   try {
-    // 这里应该调用后端 API 保存评分
-    if (selectedRecord.value) {
-      selectedRecord.value.grade = reviewFormData.grade
-      selectedRecord.value.comment = reviewFormData.comment
-      selectedRecord.value.strengths = reviewFormData.strengths
-      selectedRecord.value.improvements = reviewFormData.improvements
-      selectedRecord.value.status = 'manager_review_submitted'
-      selectedRecord.value.submittedAt = dayjs().format('YYYY-MM-DD HH:mm:ss')
-    }
+    // 后端契约：confirmed_rating + manager_comment
+    // （后端 AssessmentRecord 暂未提供 strengths / improvements 落库字段，
+    //   这两项目前仅作草稿展示，不随请求提交。）
+    const { http } = await import('@/api/http')
+    await http.post(
+      `/assessment/records/${selectedRecord.value.record_id}/manager-review`,
+      {
+        confirmed_rating: reviewFormData.grade,
+        manager_comment: reviewFormData.comment,
+      },
+    )
     ElMessage.success('评分已提交')
     showReviewFormDialog.value = false
+    await loadRecords()
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '提交失败')
   } finally {
@@ -455,16 +593,17 @@ async function saveReview() {
   }
 }
 
-function viewReview(record: any) {
+async function viewReview(record: PendingAssessmentRecord) {
   selectedRecord.value = record
-  reviewFormData.grade = record.grade || 'B'
-  reviewFormData.comment = record.comment || ''
-  reviewFormData.strengths = record.strengths || ''
-  reviewFormData.improvements = record.improvements || ''
+  reviewFormData.grade = record.confirmed_rating || 'B'
+  reviewFormData.comment = record.manager_comment || ''
+  reviewFormData.strengths = ''
+  reviewFormData.improvements = ''
   showReviewFormDialog.value = true
+  await loadDetail(record)
 }
 
-function editReview(record: any) {
+function editReview(record: PendingAssessmentRecord) {
   submitReview(record)
 }
 
@@ -478,6 +617,10 @@ onMounted(loadRecords)
 
 .page-header {
   margin-bottom: 30px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
 }
 
 .eyebrow {
@@ -620,6 +763,10 @@ onMounted(loadRecords)
 .task-name {
   margin-left: auto;
   color: #909399;
+}
+
+.attendance-section {
+  margin-bottom: 18px;
 }
 
 .self-review-reference {
