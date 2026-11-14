@@ -381,6 +381,21 @@ def _assert_version(plan: Any, expected: int | None) -> None:
         ) from exc
 
 
+def _assert_not_self_approval(plan: Any, actor_id: str) -> None:
+    """禁止审批自己的计划。
+
+    ⚠️ 为什么服务层也要拦：`access_control.can_access_employee` 对
+    「目标员工 == 当前用户」返回 True（本人可看自己的数据）。若只依赖
+    路由层的权限校验，**部门负责人 / 主管就能审批自己提交的计划** ——
+    审批与被审批是同一个人，审批流水的 `actor_id` 与 `owner_id` 相同。
+
+    这里在服务层兜底，保证**任何**调用方（路由 / 脚本 / 未来其他端点）
+    都绕不过这条规则。
+    """
+    if str(plan.owner_id) == str(actor_id):
+        raise PlanApprovalForbidden("不能审批自己提交的计划")
+
+
 def approve_month_plan(
     db: Session,
     actor_id: str,
@@ -391,6 +406,7 @@ def approve_month_plan(
 ) -> MonthPlan:
     """主管批准月计划：`submitted → approved`。"""
     plan = fetch_plan(db, PLAN_TYPE_MONTH, plan_id)
+    _assert_not_self_approval(plan, actor_id)
     _assert_approvable(plan.status)
     _assert_version(plan, version_no)
 
@@ -424,6 +440,7 @@ def reject_month_plan(
 ) -> MonthPlan:
     """主管驳回月计划：`submitted → rejected`。"""
     plan = fetch_plan(db, PLAN_TYPE_MONTH, plan_id)
+    _assert_not_self_approval(plan, actor_id)
     _assert_approvable(plan.status)
     _assert_version(plan, version_no)
 
@@ -457,6 +474,7 @@ def approve_week_plan(
 ) -> WeekPlan:
     """主管批准周计划：`submitted → approved`。"""
     plan = fetch_plan(db, PLAN_TYPE_WEEK, plan_id)
+    _assert_not_self_approval(plan, actor_id)
     _assert_approvable(plan.status)
     _assert_version(plan, version_no)
 
@@ -490,6 +508,7 @@ def reject_week_plan(
 ) -> WeekPlan:
     """主管驳回周计划：`submitted → rejected`。"""
     plan = fetch_plan(db, PLAN_TYPE_WEEK, plan_id)
+    _assert_not_self_approval(plan, actor_id)
     _assert_approvable(plan.status)
     _assert_version(plan, version_no)
 
@@ -528,6 +547,7 @@ def review_day_plan(
     不改 `plan.status`（员工仍可撤回 / 继续编辑）。
     """
     plan = fetch_plan(db, PLAN_TYPE_DAY, plan_id)
+    _assert_not_self_approval(plan, actor_id)
     if plan.status != PlanStatus.SUBMITTED.value:
         raise PlanApprovalConflict(f"当前状态（{plan.status}）不允许抽检")
     _assert_version(plan, version_no)
