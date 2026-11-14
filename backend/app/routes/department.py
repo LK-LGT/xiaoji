@@ -12,17 +12,202 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
-from ..domain.models import Employee, Department
+from ..dependencies import build_access_context_for_user, get_current_user
+from ..domain.models import Department, Employee
+from ..services import plan_approval
 from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/department", tags=["department"])
+
+
+# ============================================
+# 计划审批 —— 公共辅助（A3）
+#
+# 与 `leader.py` 同构：部门负责人侧看到的是**同一批审批端点**（决策 D2/D4：
+# 一级审批，`leader-month-plan-approvals/*` 不是第二级审批链）。
+# 部门负责人额外能看到**管理范围内部门成员**的计划（直属主管只能看直属下属）。
+# ============================================
+
+
+def _approval_scope(current_user: Employee, db: Session) -> plan_approval.ApprovalScope:
+    """构造审批人的可见范围。"""
+    context = build_access_context_for_user(current_user, db)
+    return plan_approval.ApprovalScope.from_access_context(context)
+
+
+def _assert_can_approve_plan(
+    current_user: Employee,
+    plan_id: str,
+    plan_type: str,
+    db: Session,
+) -> None:
+    """校验审批人是否有权审批该计划。
+
+    规则与 `leader.py` 对齐：
+    - 直属主管可审批直属下属的计划；
+    - 部门负责人可审批管理范围内成员的计划。
+    """
+    from ..services.access_control import can_access_employee
+
+    context = build_access_context_for_user(current_user, db)
+    plan = db.get(plan_approval.plan_model(plan_type), plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="计划不存在")
+    owner = db.get(Employee, plan.owner_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="计划归属人不存在")
+    if not can_access_employee(context, owner, db):
+        raise HTTPException(status_code=403, detail="无权审批该计划")
+
+
+def _run_approval(action, *args, **kwargs) -> Any:
+    """执行审批动作，把领域异常翻译成 HTTP 状态码。"""
+    try:
+        return action(*args, **kwargs)
+    except plan_approval.PlanApprovalConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    except plan_approval.PlanApprovalForbidden as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except plan_approval.PlanApprovalError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+
+
+def _request_version(data: dict) -> int | None:
+    """从请求体取 `versionNo`（乐观锁版本号）。
+
+    缺省视为不校验（兼容旧调用方）。
+    """
+    raw = data.get("versionNo")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _batch_approve(
+    current_user: Employee,
+    db: Session,
+    data: dict,
+    plan_type: str,
+    *,
+    approved: bool,
+) -> list[dict]:
+    """批量审批，逐条校验权限，单条失败不影响其它条目。
+
+    返回 `ActionResult[]`，与前端 `ActionResult` 的形状一致。
+    """
+    ids = data.get("ids") or []
+    if not isinstance(ids, list):
+        ids = []
+    comment = data.get("comment")
+    version_no = _request_version(data)
+
+    results: list[dict] = []
+    for raw_id in ids:
+        plan_id = str(raw_id)
+        try:
+            _assert_can_approve_plan(current_user, plan_id, plan_type, db)
+            if plan_type == plan_approval.PLAN_TYPE_MONTH:
+                action = (
+                    plan_approval.approve_month_plan
+                    if approved
+                    else plan_approval.reject_month_plan
+                )
+                _run_approval(
+                    action, db, current_user.id, plan_id,
+                    comment=comment, version_no=version_no,
+                )
+            elif plan_type == plan_approval.PLAN_TYPE_WEEK:
+                action = (
+                    plan_approval.approve_week_plan
+                    if approved
+                    else plan_approval.reject_week_plan
+                )
+                _run_approval(
+                    action, db, current_user.id, plan_id,
+                    comment=comment, version_no=version_no,
+                )
+            else:
+                _run_approval(
+                    plan_approval.review_day_plan,
+                    db,
+                    current_user.id,
+                    plan_id,
+                    approved=approved,
+                    comment=comment,
+                    version_no=version_no,
+                )
+            results.append(
+                _action_result(plan_id, "APPROVED" if approved else "REJECTED")
+            )
+        except HTTPException as exc:
+            results.append(
+                {
+                    "objectId": plan_id,
+                    "status": "FAILED",
+                    "message": str(exc.detail),
+                    "auditActionCode": "",
+                    "auditDeferred": False,
+                }
+            )
+    return results
+
+
+def _month_plan_page(
+    db: Session,
+    scope: plan_approval.ApprovalScope,
+    *,
+    page_no: int,
+    page_size: int,
+    plan_year: Optional[int] = None,
+    plan_month: Optional[int] = None,
+    status: Optional[str] = None,
+) -> dict:
+    """构造月计划审批分页响应（`LeaderMonthPlanApprovalPage`）。
+
+    前端 `MonthPlanApproval.vue` 发送 `pageNo` / `pageSize` / `planYear` /
+    `planMonth` / `status`，这里全部按 camelCase 接收（与 `leader.py` 一致）。
+    """
+    # 前端传 planYear + planMonth（两个 number），内部统一成 "2026-11"
+    normalized_month = None
+    if plan_year and plan_month:
+        normalized_month = f"{plan_year:04d}-{plan_month:02d}"
+    elif plan_month:
+        normalized_month = f"-{plan_month:02d}"
+
+    plans = plan_approval.list_pending_month_plans(
+        db,
+        scope,
+        plan_month=normalized_month,
+        status=status,
+        limit=10000,
+    )
+
+    total = len(plans)
+    start = (page_no - 1) * page_size
+    page_items = plans[start : start + page_size]
+
+    return {
+        "items": [
+            plan_approval.serialize_month_plan_approval_item(db, plan)
+            for plan in page_items
+        ],
+        "total": total,
+        "pageNo": page_no,
+        "pageSize": page_size,
+        "submittedCount": total,
+        "approvedCount": 0,
+        "totalEmployeeCount": len({p.owner_id for p in plans}),
+    }
 
 
 # ============================================
@@ -410,60 +595,111 @@ async def get_department_dashboard(
 
 
 @router.get("/month-plan-approvals", include_in_schema=True)
-async def list_plan_approvals(db: Session = Depends(get_db)):
+async def list_plan_approvals(
+    planYear: Optional[int] = Query(None),
+    planMonth: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """获取月计划审批列表
+
+    查询参数用 camelCase，与前端 `department.ts` / `MonthPlanApproval.vue` 对齐。
 
     响应结构：MonthPlanApprovalItem[]（前端直接 .map()，故返回裸数组）
     """
+    scope = _approval_scope(current_user, db)
+
+    normalized_month = None
+    if planYear and planMonth:
+        normalized_month = f"{planYear:04d}-{planMonth:02d}"
+
+    plans = plan_approval.list_pending_month_plans(
+        db,
+        scope,
+        plan_month=normalized_month,
+        status=status,
+    )
     return {
         "code": 0,
-        "data": []
+        "data": [
+            plan_approval.serialize_month_plan_approval_item(db, plan)
+            for plan in plans
+        ],
     }
 
 
 # 兼容旧路径（前端已切换到 /month-plan-approvals）
 @router.get("/plan-approval", include_in_schema=False)
-async def list_plan_approvals_legacy(db: Session = Depends(get_db)):
+async def list_plan_approvals_legacy(
+    planYear: Optional[int] = Query(None),
+    planMonth: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """获取月计划审批列表（旧路径，已废弃）"""
-    return await list_plan_approvals(db)
+    return await list_plan_approvals(planYear, planMonth, status, current_user, db)
 
 
 @router.get("/week-plan-approvals", include_in_schema=True)
-async def list_week_plan_approvals(db: Session = Depends(get_db)):
+async def list_week_plan_approvals(
+    status: Optional[str] = Query(None),
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """获取周计划审批列表
 
     响应结构：WeekPlanSummary[]（前端直接 .map()，故返回裸数组）
     """
+    scope = _approval_scope(current_user, db)
+    plans = plan_approval.list_pending_week_plans(db, scope, status=status)
     return {
         "code": 0,
-        "data": []
+        "data": [
+            plan_approval.serialize_week_plan_summary(db, plan) for plan in plans
+        ],
     }
 
 
 # 兼容旧路径（前端已切换到 /week-plan-approvals）
 @router.get("/week-plan-approval", include_in_schema=False)
-async def list_week_plan_approvals_legacy(db: Session = Depends(get_db)):
+async def list_week_plan_approvals_legacy(
+    status: Optional[str] = Query(None),
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """获取周计划审批列表（旧路径，已废弃）"""
-    return await list_week_plan_approvals(db)
+    return await list_week_plan_approvals(status, current_user, db)
 
 
 @router.get("/daily-reviews", include_in_schema=True)
-async def list_daily_reviews(db: Session = Depends(get_db)):
+async def list_daily_reviews(
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """获取日计划点评列表
 
     响应结构：DailyReviewItem[]（前端直接 .map()，故返回裸数组）
     """
+    scope = _approval_scope(current_user, db)
+    plans = plan_approval.list_pending_day_plans(db, scope)
     return {
         "code": 0,
-        "data": []
+        "data": [
+            plan_approval.serialize_daily_review_item(db, plan) for plan in plans
+        ],
     }
 
 
 # 兼容旧路径（前端已切换到 /daily-reviews）
 @router.get("/daily-review", include_in_schema=False)
-async def list_daily_reviews_legacy(db: Session = Depends(get_db)):
+async def list_daily_reviews_legacy(
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """获取日计划点评列表（旧路径，已废弃）"""
-    return await list_daily_reviews(db)
+    return await list_daily_reviews(current_user, db)
 
 
 @router.get("/result-confirm")
@@ -1075,56 +1311,92 @@ def _empty_leader_employee_summary(owner_id: int) -> dict:
 
 @router.get("/month-plan-approvals/page")
 async def page_month_plan_approvals(
-    page_no: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=200),
+    planYear: Optional[int] = Query(None),
+    planMonth: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """月计划审批分页。
 
+    查询参数用 camelCase（`pageNo` / `pageSize` / `planYear` / `planMonth` /
+    `status`），与前端 `department.ts` 实际发送的一致。
+
+    ⚠️ 回归点：此前用 snake_case（`page_no` / `page_size`），
+    前端传的 camelCase 会被静默忽略、分页永远失效（A2 已在 `leader.py` 修复）。
+
     响应结构：MonthPlanApprovalPage = { items, total, pageNo, pageSize }
     """
+    scope = _approval_scope(current_user, db)
     return {
         "code": 0,
-        "data": {"items": [], "total": 0, "pageNo": page_no, "pageSize": page_size},
+        "data": _month_plan_page(
+            db,
+            scope,
+            page_no=pageNo,
+            page_size=pageSize,
+            plan_year=planYear,
+            plan_month=planMonth,
+            status=status,
+        ),
     }
 
 
 @router.get("/month-plan-approvals/{approval_id}")
-async def get_month_plan_approval(approval_id: str, db: Session = Depends(get_db)) -> dict:
+async def get_month_plan_approval(
+    approval_id: str,
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
     """月计划审批详情。
 
     响应结构：MonthPlanApprovalItem
     """
-    return {"code": 0, "data": _empty_month_plan_approval_item(approval_id)}
+    _assert_can_approve_plan(
+        current_user, approval_id, plan_approval.PLAN_TYPE_MONTH, db
+    )
+    plan = db.get(plan_approval.plan_model(plan_approval.PLAN_TYPE_MONTH), approval_id)
+    return {
+        "code": 0,
+        "data": plan_approval.serialize_month_plan_approval_item(db, plan),
+    }
 
 
 @router.get("/leader-month-plan-approvals/page")
 async def page_leader_month_plan_approvals(
-    page_no: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=200),
+    planYear: Optional[int] = Query(None),
+    planMonth: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """部门负责人月计划审批分页。
 
     响应结构：LeaderMonthPlanApprovalPage
     """
+    scope = _approval_scope(current_user, db)
     return {
         "code": 0,
-        "data": {
-            "items": [],
-            "total": 0,
-            "pageNo": page_no,
-            "pageSize": page_size,
-            "submittedCount": 0,
-            "approvedCount": 0,
-            "totalEmployeeCount": 0,
-        },
+        "data": _month_plan_page(
+            db,
+            scope,
+            page_no=pageNo,
+            page_size=pageSize,
+            plan_year=planYear,
+            plan_month=planMonth,
+            status=status,
+        ),
     }
 
 
 @router.get("/leader-month-plan-approvals/{approval_id}")
 async def get_leader_month_plan_approval(
     approval_id: str,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """部门负责人月计划审批详情。
@@ -1132,10 +1404,14 @@ async def get_leader_month_plan_approval(
     响应结构：LeaderMonthPlanApprovalDetail
     = { plan, comparisonStatus, rejectionBaseline? }
     """
+    _assert_can_approve_plan(
+        current_user, approval_id, plan_approval.PLAN_TYPE_MONTH, db
+    )
+    plan = db.get(plan_approval.plan_model(plan_approval.PLAN_TYPE_MONTH), approval_id)
     return {
         "code": 0,
         "data": {
-            "plan": _empty_month_plan_approval_item(approval_id),
+            "plan": plan_approval.serialize_month_plan_approval_item(db, plan),
             "comparisonStatus": "NONE",
         },
     }
@@ -1154,35 +1430,73 @@ async def download_leader_month_plan_template(
 
 
 @router.post("/leader-month-plan-approvals/batch-approve")
-async def batch_approve_leader_month_plans(data: dict, db: Session = Depends(get_db)) -> dict:
+async def batch_approve_leader_month_plans(
+    data: JsonBody,
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
     """批量通过部门负责人月计划。
 
     请求体：{ ids: string[] }
     响应结构：ActionResult[]（裸数组）
     """
-    return {"code": 0, "data": _batch_action_results(data, "APPROVED")}
+    return {
+        "code": 0,
+        "data": _batch_approve(
+            current_user,
+            db,
+            data,
+            plan_approval.PLAN_TYPE_MONTH,
+            approved=True,
+        ),
+    }
 
 
 @router.post("/leader-month-plan-approvals/batch-reject")
-async def batch_reject_leader_month_plans(data: dict, db: Session = Depends(get_db)) -> dict:
+async def batch_reject_leader_month_plans(
+    data: JsonBody,
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
     """批量驳回部门负责人月计划。
 
     请求体：{ ids: string[] }
     响应结构：ActionResult[]（裸数组）
     """
-    return {"code": 0, "data": _batch_action_results(data, "REJECTED")}
+    return {
+        "code": 0,
+        "data": _batch_approve(
+            current_user,
+            db,
+            data,
+            plan_approval.PLAN_TYPE_MONTH,
+            approved=False,
+        ),
+    }
 
 
 @router.post("/leader-month-plan-approvals/{approval_id}/approve")
 async def approve_leader_month_plan(
     approval_id: str,
     data: JsonBody,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """通过部门负责人月计划。
 
     响应结构：ActionResult
     """
+    _assert_can_approve_plan(
+        current_user, approval_id, plan_approval.PLAN_TYPE_MONTH, db
+    )
+    _run_approval(
+        plan_approval.approve_month_plan,
+        db,
+        current_user.id,
+        approval_id,
+        comment=data.get("comment"),
+        version_no=_request_version(data),
+    )
     return {"code": 0, "data": _action_result(approval_id, "APPROVED")}
 
 
@@ -1190,34 +1504,66 @@ async def approve_leader_month_plan(
 async def reject_leader_month_plan(
     approval_id: str,
     data: JsonBody,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """驳回部门负责人月计划。
 
     响应结构：ActionResult
     """
+    _assert_can_approve_plan(
+        current_user, approval_id, plan_approval.PLAN_TYPE_MONTH, db
+    )
+    _run_approval(
+        plan_approval.reject_month_plan,
+        db,
+        current_user.id,
+        approval_id,
+        comment=data.get("comment"),
+        version_no=_request_version(data),
+    )
     return {"code": 0, "data": _action_result(approval_id, "REJECTED")}
 
 
 @router.get("/week-plan-approvals/{approval_id}")
-async def get_week_plan_approval(approval_id: str, db: Session = Depends(get_db)) -> dict:
+async def get_week_plan_approval(
+    approval_id: str,
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
     """周计划审批详情。
 
     响应结构：WeekPlanSummary
     """
-    return {"code": 0, "data": _empty_week_plan_summary(approval_id)}
+    _assert_can_approve_plan(
+        current_user, approval_id, plan_approval.PLAN_TYPE_WEEK, db
+    )
+    plan = db.get(plan_approval.plan_model(plan_approval.PLAN_TYPE_WEEK), approval_id)
+    return {"code": 0, "data": plan_approval.serialize_week_plan_summary(db, plan)}
 
 
 @router.post("/week-plan-approvals/{approval_id}/approve")
 async def approve_week_plan(
     approval_id: str,
     data: JsonBody,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """通过周计划。
 
     响应结构：ActionResult
     """
+    _assert_can_approve_plan(
+        current_user, approval_id, plan_approval.PLAN_TYPE_WEEK, db
+    )
+    _run_approval(
+        plan_approval.approve_week_plan,
+        db,
+        current_user.id,
+        approval_id,
+        comment=data.get("comment"),
+        version_no=_request_version(data),
+    )
     return {"code": 0, "data": _action_result(approval_id, "APPROVED")}
 
 
@@ -1225,12 +1571,24 @@ async def approve_week_plan(
 async def reject_week_plan(
     approval_id: str,
     data: JsonBody,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """驳回周计划。
 
     响应结构：ActionResult
     """
+    _assert_can_approve_plan(
+        current_user, approval_id, plan_approval.PLAN_TYPE_WEEK, db
+    )
+    _run_approval(
+        plan_approval.reject_week_plan,
+        db,
+        current_user.id,
+        approval_id,
+        comment=data.get("comment"),
+        version_no=_request_version(data),
+    )
     return {"code": 0, "data": _action_result(approval_id, "REJECTED")}
 
 
@@ -1238,56 +1596,124 @@ async def reject_week_plan(
 
 
 @router.get("/daily-reviews/{review_id}")
-async def get_daily_review(review_id: str, db: Session = Depends(get_db)) -> dict:
+async def get_daily_review(
+    review_id: str,
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
     """日计划点评详情。
 
     响应结构：DailyReviewItem
     """
-    return {"code": 0, "data": _empty_daily_review_item(review_id)}
+    _assert_can_approve_plan(
+        current_user, review_id, plan_approval.PLAN_TYPE_DAY, db
+    )
+    plan = db.get(plan_approval.plan_model(plan_approval.PLAN_TYPE_DAY), review_id)
+    return {"code": 0, "data": plan_approval.serialize_daily_review_item(db, plan)}
 
 
 @router.post("/daily-reviews/{review_id}/comment")
 async def comment_daily_review(
     review_id: str,
     data: JsonBody,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """填写日计划点评。
 
+    日计划走**抽检**语义：只写 `review_status` / `reviewed_at` / `leader_comment`，
+    **不改** `plan.status`（决策 D7）。
+
     响应结构：ActionResult
     """
+    _assert_can_approve_plan(
+        current_user, review_id, plan_approval.PLAN_TYPE_DAY, db
+    )
+    _run_approval(
+        plan_approval.review_day_plan,
+        db,
+        current_user.id,
+        review_id,
+        approved=True,
+        comment=data.get("comment"),
+        version_no=_request_version(data),
+    )
     return {"code": 0, "data": _action_result(review_id, "COMMENTED")}
 
 
 @router.post("/daily-reviews/batch-comment")
-async def batch_comment_daily_reviews(data: dict, db: Session = Depends(get_db)) -> dict:
+async def batch_comment_daily_reviews(
+    data: JsonBody,
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
     """批量填写日计划点评。
 
     请求体：{ ids: string[] }
     响应结构：ActionResult[]（裸数组）
     """
-    return {"code": 0, "data": _batch_action_results(data, "COMMENTED")}
+    return {
+        "code": 0,
+        "data": _batch_approve(
+            current_user,
+            db,
+            data,
+            plan_approval.PLAN_TYPE_DAY,
+            approved=True,
+        ),
+    }
 
 
 @router.get("/day-plan-reviews/{review_id}")
-async def get_day_plan_review(review_id: str, db: Session = Depends(get_db)) -> dict:
+async def get_day_plan_review(
+    review_id: str,
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
     """日计划审批详情。
 
     响应结构：DepartmentDayPlanReview
     """
-    return {"code": 0, "data": _empty_day_plan_review(review_id)}
+    _assert_can_approve_plan(
+        current_user, review_id, plan_approval.PLAN_TYPE_DAY, db
+    )
+    plan = db.get(plan_approval.plan_model(plan_approval.PLAN_TYPE_DAY), review_id)
+    item = plan_approval.serialize_daily_review_item(db, plan)
+    # 部门侧额外字段（`DepartmentDayPlanReview` 比 `DailyReviewItem` 多这几项）
+    item.update(
+        {
+            "leaderName": "",
+            "status": plan.status,
+            "departmentComment": plan.department_comment or "",
+            "departmentReviewerName": "",
+        }
+    )
+    return {"code": 0, "data": item}
 
 
 @router.post("/day-plan-reviews/{review_id}/approve")
 async def approve_day_plan_review(
     review_id: str,
     data: JsonBody,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """通过日计划。
 
     响应结构：ActionResult
     """
+    _assert_can_approve_plan(
+        current_user, review_id, plan_approval.PLAN_TYPE_DAY, db
+    )
+    _run_approval(
+        plan_approval.review_day_plan,
+        db,
+        current_user.id,
+        review_id,
+        approved=True,
+        comment=data.get("comment"),
+        version_no=_request_version(data),
+    )
     return {"code": 0, "data": _action_result(review_id, "APPROVED")}
 
 
@@ -1295,12 +1721,25 @@ async def approve_day_plan_review(
 async def reject_day_plan_review(
     review_id: str,
     data: JsonBody,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """驳回日计划。
 
     响应结构：ActionResult
     """
+    _assert_can_approve_plan(
+        current_user, review_id, plan_approval.PLAN_TYPE_DAY, db
+    )
+    _run_approval(
+        plan_approval.review_day_plan,
+        db,
+        current_user.id,
+        review_id,
+        approved=False,
+        comment=data.get("comment"),
+        version_no=_request_version(data),
+    )
     return {"code": 0, "data": _action_result(review_id, "REJECTED")}
 
 
@@ -1391,90 +1830,6 @@ async def export_department_ledgers(data: dict, db: Session = Depends(get_db)) -
     响应结构：ExportTask
     """
     return {"code": 0, "data": _empty_export_task()}
-
-
-def _batch_action_results(data: dict, status: str) -> list[dict]:
-    """按 ids 批量构造 ActionResult，字段与 frontend/src/api/performance.ts 一致。"""
-    ids = data.get("ids") or []
-    if not isinstance(ids, list):
-        ids = []
-    return [_action_result(str(i), status) for i in ids]
-
-
-def _empty_month_plan_approval_item(approval_id: str) -> dict:
-    """构造 MonthPlanApprovalItem，字段与 frontend/src/api/department.ts 保持一致。"""
-    return {
-        "id": approval_id,
-        "planNo": "",
-        "ownerId": 0,
-        "employeeNo": "",
-        "employeeName": "",
-        "orgId": 0,
-        "orgName": "",
-        "planYear": 0,
-        "planMonth": 0,
-        "deliverable": "",
-        "estimatedStartDate": "",
-        "estimatedEndDate": "",
-        "status": "PENDING",
-        "leaderComment": "",
-        "aiCheckResult": "",
-        "missingFields": [],
-        "submittedAt": "",
-        "version": 1,
-        "items": [],
-    }
-
-
-def _empty_week_plan_summary(plan_id: str) -> dict:
-    """构造 WeekPlanSummary，字段与 frontend/src/api/weekPlan.ts 保持一致。"""
-    return {
-        "id": plan_id,
-        "title": "",
-        "weekStart": "",
-        "weekEnd": "",
-        "status": "PENDING",
-        "versionNo": 1,
-        "ownerUserId": 0,
-        "employeeName": "",
-        "departmentName": "",
-        "itemCount": 0,
-    }
-
-
-def _empty_daily_review_item(review_id: str) -> dict:
-    """构造 DailyReviewItem，字段与 frontend/src/api/leader.ts 保持一致。"""
-    return {
-        "id": review_id,
-        "ownerId": 0,
-        "employeeNo": "",
-        "employeeName": "",
-        "orgId": 0,
-        "orgName": "",
-        "planDate": "",
-        "workContent": "",
-        "deliverable": "",
-        "overdueApproval": False,
-        "missingFields": [],
-        "aiCheckResult": "",
-        "reviewStatus": "PENDING",
-        "riskLevel": "NONE",
-    }
-
-
-def _empty_day_plan_review(review_id: str) -> dict:
-    """构造 DepartmentDayPlanReview，字段与 frontend/src/api/department.ts 保持一致。"""
-    item = _empty_daily_review_item(review_id)
-    item.update(
-        {
-            "leaderComment": "",
-            "leaderName": "",
-            "status": "PENDING",
-            "departmentComment": "",
-            "departmentReviewerName": "",
-        }
-    )
-    return item
 
 
 def _empty_department_appeal(appeal_id: str) -> dict:
