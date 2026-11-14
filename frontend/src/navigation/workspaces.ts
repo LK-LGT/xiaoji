@@ -118,7 +118,13 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
 ]
 
 export function hasPermission(permissions: readonly string[], required?: string) {
-  return !required || permissions.includes(required)
+  if (!required) return true
+  if (required === '*') return true
+  // 检查精确权限
+  if (permissions.includes(required)) return true
+  // 检查通配符权限（例如 "*" 表示所有权限）
+  if (permissions.includes('*')) return true
+  return false
 }
 
 export function availableWorkspaces(permissions: readonly string[]) {

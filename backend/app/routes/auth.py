@@ -81,6 +81,9 @@ TEST_USERS = {
         "name": "部门主管",
         "roles": ["manager"],
         "permissions": [
+            # System permissions (read-only access)
+            "system:dashboard:view",
+            # Department permissions
             "department:dashboard:view",
             "department:month-approval:view",
             "department:result-confirm:view",
@@ -88,8 +91,16 @@ TEST_USERS = {
             "department:template:view",
             "department:standard:view",
             "department:score-rule:view",
+            # Leader permissions
             "leader:workbench:view",
+            "leader:month-approval:view",
+            "leader:daily-review:view",
+            "leader:result-suggest:view",
+            # Employee permissions
             "dashboard:view",
+            "planning:month:view",
+            "planning:day:view",
+            "planning:result:view",
             # Performance permissions
             "performance:dashboard:view",
             "performance:manager-review:view",
