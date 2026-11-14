@@ -239,6 +239,13 @@ class AssessmentRecord(Base):
     submit_locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # 最终确认的等级（人工确认后写入，不由 AI 决定）
     confirmed_rating: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    
+    # 自评内容
+    self_review_content: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    
+    # 主管评分
+    manager_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
 

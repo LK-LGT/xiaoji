@@ -69,6 +69,69 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
+try:
+    from .routes import import_data as import_data_routes
+    app.include_router(import_data_routes.router)
+    print("[APP] Import data router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register import data router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import organizations as organizations_routes
+    app.include_router(organizations_routes.router)
+    print("[APP] Organizations router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register organizations router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import performance as performance_routes
+    app.include_router(performance_routes.router)
+    print("[APP] Performance router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register performance router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import department as department_routes
+    app.include_router(department_routes.router)
+    print("[APP] Department router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register department router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import auth as auth_routes
+    app.include_router(auth_routes.router)
+    print("[APP] Auth router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register auth router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import messages as messages_routes
+    app.include_router(messages_routes.router)
+    print("[APP] Messages router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register messages router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes.v1 import system as system_routes
+    app.include_router(system_routes.router, prefix="/v1")
+    print("[APP] System router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register system router: {e}")
+    import traceback
+    traceback.print_exc()
+
 # 直接在 main.py 中也注册一份（确保生效）
 try:
     from .schemas_self_review import SelfReviewSubmitRequest, SelfReviewSubmitResponse

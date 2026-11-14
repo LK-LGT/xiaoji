@@ -1,0 +1,60 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+const employeeRoot = new URL('../src/views/employee/', import.meta.url)
+const listSource = readFileSync(fileURLToPath(new URL('EmployeeDayPlanList.vue', employeeRoot)), 'utf8')
+const editorSource = readFileSync(fileURLToPath(new URL('components/EmployeeDayPlanEditor.vue', employeeRoot)), 'utf8')
+const editPageSource = readFileSync(fileURLToPath(new URL('EmployeeDayPlanEdit.vue', employeeRoot)), 'utf8')
+const dashboardSource = readFileSync(fileURLToPath(new URL('EmployeeDashboard.vue', employeeRoot)), 'utf8')
+const asideSource = readFileSync(fileURLToPath(new URL('components/PlanValidationAside.vue', employeeRoot)), 'utf8')
+
+test('day plan list uses one weekly rhythm strip and a selected-day content preview', () => {
+  assert.match(listSource, /class="day-week-track"/)
+  assert.match(listSource, /day\.plan\?\.title/)
+  assert.match(listSource, /aria-label="上一周"/)
+  assert.match(listSource, /is-selected/)
+  assert.match(listSource, /@click="selectDate\(day\.date\)"/)
+  assert.match(listSource, /openDate\(selectedDate\)/)
+  assert.match(listSource, /class="day-record-table"/)
+  assert.match(listSource, /selectedDayPlan/)
+  assert.match(listSource, /<th class="preview-name">姓名<\/th>/)
+  assert.match(listSource, /<th class="preview-content">工作内容<\/th>/)
+  assert.match(listSource, /class="day-record-empty"/)
+  assert.match(listSource, /authStore/)
+  assert.doesNotMatch(listSource, /<el-table-column/)
+  assert.doesNotMatch(listSource, /weekDays\.value\.map\(\(day\) => \{/)
+  assert.doesNotMatch(listSource, /<el-table-column label="(?:AI检查|操作)"/)
+  assert.doesNotMatch(listSource, /el-pagination|pageSize|pagedRows/)
+  assert.doesNotMatch(listSource, /PlanAiReviewCell|PlanAiReviewDrawer/)
+  assert.doesNotMatch(listSource, /class="today-plan-card"/)
+})
+
+test('day editor keeps AI drafting optional and promotes primary actions', () => {
+  assert.match(editorSource, /class="day-task-stage"/)
+  assert.match(editorSource, /class="compact-day-task-table"/)
+  assert.match(editorSource, /class="day-task-view-switch"/)
+  assert.match(editorSource, /DayPlanTaskEditorCard/)
+  assert.match(editorSource, /姓名.*工作内容/)
+  assert.doesNotMatch(editorSource, /<section[^>]*class="day-source-panel"/)
+  assert.match(editorSource, /class="day-ai-floating-entry"/)
+  assert.match(editorSource, /aria-label="打开 AI 日计划助手"/)
+  assert.match(editorSource, /v-model="aiAssistantVisible"[\s\S]*class="day-ai-drawer"/)
+  assert.match(editorSource, /<PlanAiAssistant[\s\S]*mode="day"[\s\S]*@apply="applyAiDraft"/)
+  assert.match(editorSource, /v-if="editable && !compact"/)
+  assert.match(editorSource, /actions-first/)
+  assert.match(editorSource, />提交审批<\/el-button>/)
+  assert.doesNotMatch(editorSource, /AI检查|PlanAiReview|AiReviewPanel|ensurePlanAiReviewApi/)
+  assert.match(asideSource, /actionsFirst/)
+  assert.match(asideSource, /is-actions-first/)
+})
+
+test('day editor has no date switching controls or event contract', () => {
+  assert.doesNotMatch(editorSource, /day-date-track/)
+  assert.doesNotMatch(editorSource, /<el-date-picker/)
+  assert.doesNotMatch(editorSource, /ArrowLeft|ArrowRight/)
+  assert.doesNotMatch(editorSource, /date-change/)
+  assert.doesNotMatch(editPageSource, /date-change|replaceRouteDate/)
+  assert.doesNotMatch(dashboardSource, /date-change|handleDayPlanDateChange/)
+})

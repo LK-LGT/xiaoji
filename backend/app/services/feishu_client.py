@@ -113,9 +113,12 @@ class FeishuClient:
     # -------------------------------------------------------
 
     def fetch_departments(self, page_size: int = 50) -> list[dict[str, Any]]:
-        """拉取所有部门。
+        """拉取所有部门（含子部门）。
 
         文档：https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/contact-v3/department/list
+
+        注意：`/contact/v3/departments` 在不带 department_id 时只返回根部门（id=0）。
+        要拿到整棵组织树，必须用 `/contact/v3/departments/0/children` 并带 fetch_child=true。
 
         Returns:
             部门列表，每个部门包含：
@@ -133,12 +136,15 @@ class FeishuClient:
         while True:
             params = {
                 "page_size": page_size,
+                "department_id_type": "department_id",
                 "fetch_child": "true",
             }
             if page_token:
                 params["page_token"] = page_token
 
-            data = self._request("GET", "/contact/v3/departments", params=params)
+            data = self._request(
+                "GET", "/contact/v3/departments/0/children", params=params
+            )
 
             items = data.get("items", [])
             departments.extend(items)
@@ -155,13 +161,24 @@ class FeishuClient:
     # 员工 API（通讯录）
     # -------------------------------------------------------
 
-    def fetch_employees(self, page_size: int = 50) -> list[dict[str, Any]]:
+    def fetch_employees(
+        self,
+        page_size: int = 50,
+        departments: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         """拉取所有员工。
 
         文档：https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/contact-v3/user/list
 
+        ⚠️ 重要：`/contact/v3/users` **不带 department_id 时会返回空列表**
+        （当前企业的应用可见范围限制所致）。必须按部门逐个查询再合并去重。
+
+        Args:
+            page_size: 每页数量（最大 50）
+            departments: 已知部门列表；不传则自动先拉取部门
+
         Returns:
-            员工列表，每个员工包含：
+            员工列表（按 user_id 去重），每个员工包含：
                 - user_id: 用户 ID
                 - name: 姓名
                 - open_id: 开放 ID
@@ -172,28 +189,77 @@ class FeishuClient:
         """
         # 飞书 API 限制：page_size 最大为 50
         page_size = min(page_size, 50)
-        employees: list[dict[str, Any]] = []
+
+        if departments is None:
+            departments = self.fetch_departments()
+
+        employees: dict[str, dict[str, Any]] = {}
+        empty_departments: list[str] = []
+
+        for dept in departments:
+            dept_id = dept.get("department_id")
+            if not dept_id:
+                continue
+
+            dept_employees = self._fetch_users_in_department(dept_id, page_size)
+            if not dept_employees:
+                empty_departments.append(f"{dept.get('name') or dept_id}")
+
+            for emp in dept_employees:
+                key = emp.get("user_id") or emp.get("open_id")
+                if not key:
+                    continue
+                # 同一员工可能属于多个部门，合并 department_ids
+                if key in employees:
+                    existing = employees[key].get("department_ids") or []
+                    for d in emp.get("department_ids") or []:
+                        if d not in existing:
+                            existing.append(d)
+                    employees[key]["department_ids"] = existing
+                else:
+                    employees[key] = emp
+
+        result = list(employees.values())
+        logger.info(
+            f"Fetched {len(result)} unique employees from Feishu "
+            f"({len(departments)} departments, {len(empty_departments)} empty)"
+        )
+        return result
+
+    def _fetch_users_in_department(
+        self, department_id: str, page_size: int = 50
+    ) -> list[dict[str, Any]]:
+        """拉取单个部门下的直属员工（分页）。"""
+        page_size = min(page_size, 50)
+        users: list[dict[str, Any]] = []
         page_token: str | None = None
 
         while True:
-            params = {
+            params: dict[str, Any] = {
                 "page_size": page_size,
-                "department_id_type": "department_id",  # 使用 department_id，不用 open_department_id
+                "department_id": department_id,
+                "department_id_type": "department_id",
+                "user_id_type": "user_id",
             }
             if page_token:
                 params["page_token"] = page_token
 
-            data = self._request("GET", "/contact/v3/users", params=params)
+            try:
+                data = self._request("GET", "/contact/v3/users", params=params)
+            except Exception as exc:  # 单个部门失败不影响整体
+                logger.warning(
+                    f"Failed to fetch users in department {department_id}: {exc}"
+                )
+                break
 
             items = data.get("items", [])
-            employees.extend(items)
+            users.extend(items)
 
             page_token = data.get("page_token")
             if not page_token:
                 break
 
-        logger.info(f"Fetched {len(employees)} employees from Feishu")
-        return employees
+        return users
 
     def fetch_employee(self, user_id: str) -> dict[str, Any]:
         """拉取单个员工详情。

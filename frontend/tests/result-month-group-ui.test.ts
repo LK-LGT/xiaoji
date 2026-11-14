@@ -1,0 +1,299 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+const read = (relativePath: string) => readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8')
+const employee = read('../src/views/employee/EmployeeResultList.vue')
+const leader = read('../src/views/leader/ResultSuggest.vue')
+const department = read('../src/views/department/ResultConfirm.vue')
+const center = read('../src/views/employee/EmployeeResultCenter.vue')
+const workbench = read('../src/views/employee/components/EmployeeResultWorkbench.vue')
+const workspace = read('../src/views/employee/EmployeeResultPackageWorkspace.vue')
+const monthEditor = read('../src/views/employee/components/MonthResultTaskEditor.vue')
+const archive = read('../src/views/employee/EmployeeResultArchive.vue')
+const archiveDetail = read('../src/views/employee/EmployeeResultArchiveDetail.vue')
+const monthArchiveDetail = read('../src/views/employee/components/EmployeeMonthResultArchiveDetail.vue')
+const monthArchivePrint = read('../src/views/employee/components/EmployeeMonthResultPrintSheet.vue')
+const approvalTimeline = read('../src/views/employee/components/ResultApprovalTimeline.vue')
+const versionHistory = read('../src/views/employee/components/ResultVersionHistory.vue')
+const adapters = read('../src/views/performanceAdapters.ts')
+const monthPlanPeriod = read('../src/utils/monthPlanPeriod.ts')
+
+for (const [role, source] of [
+  ['employee', employee],
+  ['leader', leader],
+] as const) {
+  test(`${role} result records use accessible month groups and 10-group pagination`, () => {
+    assert.match(source, /groupRowsByMonth/)
+    assert.match(source, /const monthPageSize = 10/)
+    assert.match(source, /expandedMonthKeys/)
+    assert.match(source, /:aria-expanded="expandedMonthKeys\.has\(group\.key\)"/)
+    assert.match(source, /v-show="expandedMonthKeys\.has\(group\.key\)"/)
+    assert.match(source, /@click="expandAllMonths"/)
+    assert.match(source, /@click="collapseAllMonths"/)
+    assert.match(source, /:total="monthGroups\.length"/)
+  })
+}
+
+test('employee result records open the current or latest available month after queries', () => {
+  assert.match(employee, /currentMonthKey/)
+  assert.match(employee, /const defaultGroup = monthGroups\.value\.find\(\(group\) => group\.key === currentMonthKey\(\)\) \?\? monthGroups\.value\[0\]/)
+  assert.match(employee, /if \(defaultGroup\) expandedMonthKeys\.add\(defaultGroup\.key\)/)
+})
+
+test('leader result approval can still focus the current month', () => {
+  assert.match(leader, /currentMonthKey\(\)/)
+})
+
+test('department result records group the current server page by month', () => {
+  assert.match(department, /groupRowsByMonth/)
+  assert.match(department, /const pageSize = ref\(10\)/)
+  assert.match(department, /pageNo: pageNo\.value/)
+  assert.match(department, /pageSize: pageSize\.value/)
+  assert.match(department, /tableRows\.value = data\.items\.map\(mapResultConfirm\)/)
+  assert.match(department, /:total="total"/)
+  assert.match(department, /expandedMonthKeys/)
+  assert.match(department, /:aria-expanded="expandedMonthKeys\.has\(group\.key\)"/)
+  assert.match(department, /v-show="expandedMonthKeys\.has\(group\.key\)"/)
+  assert.doesNotMatch(department, /pagedMonthKeys/)
+})
+
+test('leader and department adapters carry result dates into grouped rows', () => {
+  assert.equal((adapters.match(/resultDate: item\.resultDate/g) || []).length, 2)
+})
+
+test('review pages preserve batch selection by month while groups are hidden', () => {
+  assert.match(leader, /selectedRowsByMonth = reactive\(new Map/)
+  assert.match(leader, /toggleRowSelection\(group\.key, employeeGroup\.key, row, Boolean\(\$event\)\)/)
+  assert.match(leader, /selectedRowsByMonth\.set\(key, next\)/)
+  assert.match(leader, /isRowSelected\(group\.key, employeeGroup\.key, row\)/)
+  assert.match(leader, /v-show="pagedMonthKeys\.has\(group\.key\)"/)
+
+  assert.match(department, /selectedRowsByMonth = reactive\(new Map/)
+  assert.match(department, /onMonthSelectionChange\(group\.key, \$event\)/)
+  assert.match(department, /selectedRowsByMonth\.set\(monthKey, rows\)/)
+  assert.match(department, /clearSelection\(\)/)
+  assert.doesNotMatch(department, /v-show="pagedMonthKeys\.has\(group\.key\)"/)
+})
+
+test('result center uses a task-first package workbench and keeps the monthly Excel fields visible', () => {
+  assert.match(center, /成果档案/)
+  assert.match(workbench, /activeFilter = ref<ResultFilter>\('PENDING'\)/)
+  assert.match(workbench, /aria-label="成果状态筛选"/)
+  assert.match(workbench, /<span>待处理<\/span>/)
+  assert.match(workbench, /<span>审批中<\/span>/)
+  assert.match(workbench, /<span>已完成<\/span>/)
+  assert.match(workbench, /class="result-package-row"/)
+  assert.match(workbench, /class="result-package-row"[\s\S]*@click="openPackage\(item, activeFilter\)"/)
+  assert.match(workbench, /\.result-package-row:hover/)
+  assert.match(workbench, /openPackage\(item, activeFilter\)/)
+  assert.doesNotMatch(workbench, /ResultStatusSummary/)
+  assert.doesNotMatch(workbench, /onlyPending/)
+  assert.doesNotMatch(workbench, /<el-progress/)
+  assert.doesNotMatch(workbench, /本周期成果/)
+  assert.doesNotMatch(workbench, /本月共/)
+  assert.match(workspace, /预览汇总表/)
+  assert.match(workspace, /class="package-result-sheet"/)
+  assert.match(workspace, /<th class="sheet-weight">权重<\/th>/)
+  assert.match(workspace, /<th class="sheet-standard">考核标准<\/th>/)
+  assert.match(workspace, /<th class="sheet-date">完成时间<\/th>/)
+  assert.match(workspace, /<th class="sheet-value">预估价值<\/th>/)
+  assert.match(workspace, /v-model="drafts\[task\.key\]\.personalPerformance"/)
+  assert.doesNotMatch(workspace, /检查并提交/)
+  assert.match(workspace, /@click="printPreview"/)
+  assert.match(monthEditor, /class="task-editor"/)
+  assert.doesNotMatch(monthEditor, /<table/)
+})
+
+test('monthly task editor keeps manual personal performance without changing its business rule', () => {
+  assert.match(monthEditor, /v-model="draft\.personalPerformance"/)
+  assert.match(workspace, /personalPerformance/)
+  assert.match(workspace, /payload\.append\('personalPerformance', String\(draft\.personalPerformance\)\)/)
+  assert.doesNotMatch(workspace, /personalPerformanceTotal/)
+})
+
+test('monthly summary preview is read-only and printable', () => {
+  assert.match(workspace, /class="performance-preview-table"/)
+  assert.match(workspace, /@click="printPreview"/)
+  assert.match(workspace, /@media print/)
+  assert.doesNotMatch(workspace, /v-model=.*summary-preview-table/)
+  assert.match(monthPlanPeriod, /`\$\{startText\}-\$\{endText\}`/)
+  assert.match(monthPlanPeriod, /`交付物：\$\{deliverableText\}`/)
+  assert.match(monthPlanPeriod, /`质量：\$\{qualityText\}`/)
+})
+
+test('result workspace uses a bounded editor and stable task navigator', () => {
+  assert.match(workspace, /grid-template-columns:280px minmax\(0,1fr\)/)
+  assert.match(workspace, /\.editor-pane \{ min-width:0;/)
+  assert.match(monthEditor, /max-width:920px/)
+  assert.match(workspace, /\{ label: 'Excel表格', value: 'SHEET' \}, \{ label: '表单填写', value: 'FORM' \}/)
+  assert.match(workspace, /\.sheet-table-wrap \{[^}]*max-width:100%[^}]*overflow-x:auto/)
+  assert.match(workspace, /\.package-result-sheet \{[^}]*width:100%[^}]*min-width:0/)
+  assert.match(workspace, /\.sheet-task \{ width:17%/)
+  assert.match(workspace, /\.sheet-editor-pane \{ padding:16px 16px calc\(var\(--result-workspace-clearance\) \+ 16px\)/)
+  assert.doesNotMatch(workspace, /\.package-workspace \.sheet-table-wrap \{ overflow:visible/)
+  assert.match(monthEditor, /class="result-form-primary"/)
+  assert.match(monthEditor, /class="result-form-secondary"/)
+  assert.doesNotMatch(workspace, /translateX\(360px\)/)
+})
+
+test('leader result approval drills down from month to employee before showing results', () => {
+  assert.doesNotMatch(leader, /title="AI成果核验辅助"/)
+  assert.match(leader, /groupRowsByEmployee\(group\.rows\)/)
+  assert.match(leader, /group\.employees\.length \}\} 名员工/)
+  assert.match(leader, /v-for="employeeGroup in group\.employees"/)
+  assert.match(leader, /@click="selectEmployee\(group\.key, employeeGroup\.key\)"/)
+  assert.match(leader, /请选择一名员工/)
+  assert.match(leader, /activeEmployeeKeys\.get\(group\.key\) === employeeGroup\.key/)
+  assert.doesNotMatch(leader, /prop="employee" label="员工"/)
+})
+
+test('leader result approval uses a responsive list and opens every evidence type', () => {
+  assert.match(leader, /class="result-approval-list"/)
+  assert.match(leader, /class="result-approval-item"/)
+  assert.doesNotMatch(leader, /class="leader-compact-table"/)
+  assert.match(leader, /beginEvidenceDrawerResize/)
+  assert.match(leader, /getLeaderResultEvidencePreviewApi/)
+  assert.match(leader, /previewData\.previewType === 'IMAGE'/)
+  assert.match(leader, /previewData\.previewType === 'DOCUMENT'/)
+  assert.match(leader, /previewData\.previewType === 'ARCHIVE'/)
+  assert.match(leader, /openLeaderResultEvidenceArchiveEntryApi/)
+})
+
+test('leader evidence opens wide by default and completed rows stay concise', () => {
+  assert.match(leader, /evidenceDrawerWidth\.value = defaultEvidenceDrawerWidth\(\)/)
+  assert.match(leader, /window\.innerWidth - 360/)
+  assert.match(leader, /evidenceDrawerWide \? 2 : 1/)
+  assert.match(leader, /compactIssueText\(row\.issue\)/)
+  assert.match(leader, /<template v-if="!row\.terminal">/)
+  assert.doesNotMatch(leader, /:disabled="row\.terminal \|\| actionBusy"/)
+  assert.match(leader, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(leader, /@container evidence-drawer \(max-width: 720px\)/)
+})
+
+test('employee result management separates actionable targets from records', () => {
+  assert.match(center, /activeView === 'workbench'/)
+  assert.match(center, /activeView === 'archive'/)
+  assert.match(center, /<EmployeeResultWorkbench/)
+  assert.match(center, /<EmployeeResultArchive/)
+})
+
+test('result center restores workbench month and archive list context from the route', () => {
+  assert.match(workbench, /route\.query\.month/)
+  assert.match(workbench, /query: \{ \.\.\.route\.query, month: selectedMonth\.value \}/)
+  assert.match(archive, /route\.query\.archiveType/)
+  assert.match(archive, /route\.query\.archiveMonth/)
+  assert.match(archive, /route\.query\.archiveStatus/)
+  assert.match(archive, /route\.query\.archivePage/)
+  assert.match(archive, /employee-result-archive-scroll/)
+  assert.match(archiveDetail, /'archiveType', 'archiveMonth', 'archiveStatus', 'archiveKeyword', 'archivePage'/)
+})
+
+test('employee result archive keeps a compact desktop filter and opaque scan-friendly table', () => {
+  assert.match(archive, /class="archive-filter archive-filter--type"/)
+  assert.match(archive, /class="archive-filter archive-filter--keyword"/)
+  assert.match(archive, /class="archive-filter-actions"/)
+  assert.match(archive, /placeholder="全部月份"/)
+  assert.match(archive, /<colgroup>/)
+  assert.match(archive, /grid-template-columns:160px 170px 170px minmax\(260px,1fr\) auto/)
+  assert.match(archive, /\.archive-table-wrap \{[^}]*background:#fff/)
+  assert.match(archive, /\.archive-table \{[^}]*background:#fff/)
+  assert.match(archive, /-webkit-line-clamp:2/)
+  assert.match(archive, /tabindex="0"[\s\S]*@click="openDetail\(row\)"/)
+  assert.match(archive, /@keydown\.enter="openDetail\(row\)"/)
+  assert.doesNotMatch(archive, /@dblclick="openDetail\(row\)"/)
+})
+
+test('employee monthly archive is grouped by month plan and opens aggregate detail', () => {
+  assert.match(archive, /buildMonthResultArchives\(months\)/)
+  assert.match(archive, /row\.resultCount \}\} \/ \{\{ row\.taskCount/)
+  assert.match(archive, /archiveScope: 'plan'/)
+  assert.match(archive, /row\.searchText/)
+  assert.doesNotMatch(archive, /for \(const version of months\.resultVersions\)/)
+})
+
+test('monthly archive detail loads every task and isolates task failures', () => {
+  assert.match(archiveDetail, /<EmployeeMonthResultArchiveDetail/)
+  assert.match(monthArchiveDetail, /Promise\.allSettled/)
+  assert.match(monthArchiveDetail, /重试失败项/)
+  assert.match(monthArchiveDetail, /成果详情加载失败/)
+  assert.match(monthArchiveDetail, /未提交成果/)
+  assert.match(monthArchiveDetail, /v-for="task in archive\.tasks"/)
+  assert.match(monthArchiveDetail, /downloadEmployeeResultEvidenceApi/)
+  assert.match(monthArchiveDetail, /resolveMonthArchivePlanId/)
+})
+
+test('monthly archive prints the full plan as an A4 landscape record', () => {
+  assert.match(monthArchiveDetail, /<EmployeeMonthResultPrintSheet/)
+  assert.match(monthArchiveDetail, /await nextTick\(\)[\s\S]*window\.print\(\)/)
+  assert.match(monthArchivePrint, /绩效考核表/)
+  assert.match(monthArchivePrint, /完成情况（完成度详细说明）/)
+  assert.match(monthArchivePrint, /占比完成度/)
+  assert.match(monthArchivePrint, /个人本月发放绩效合计/)
+  assert.match(monthArchivePrint, /员工本人签字捺印/)
+  assert.match(monthArchivePrint, /项目经理签字/)
+  assert.match(monthArchivePrint, /部门负责人签字/)
+  assert.doesNotMatch(monthArchivePrint, /附件文件名/)
+  assert.match(monthArchivePrint, /@page[\s\S]*A4 landscape/)
+  assert.match(monthArchivePrint, /table-header-group/)
+  assert.match(monthArchivePrint, /break-inside:avoid/)
+})
+
+test('employee result archive detail uses a two-column business record layout', () => {
+  assert.match(archiveDetail, /class="detail-command-row"/)
+  assert.match(archiveDetail, /class="detail-meta"/)
+  assert.match(archiveDetail, /class="detail-grid"/)
+  assert.match(archiveDetail, /class="result-section"/)
+  assert.match(archiveDetail, /class="archive-info"/)
+  assert.match(archiveDetail, /class="evidence-section"/)
+  assert.match(archiveDetail, /grid-template-columns:minmax\(0,2fr\) minmax\(280px,1fr\)/)
+  assert.match(archiveDetail, /@media print/)
+  assert.match(approvalTimeline, /width:100%/)
+  assert.match(versionHistory, /width:100%/)
+  assert.doesNotMatch(approvalTimeline, /max-width:760px/)
+  assert.doesNotMatch(versionHistory, /max-width:760px/)
+})
+
+test('leader result archive remains record only', () => {
+  assert.match(employee, /v-if="!isLeaderWorkspace" class="result-view-tabs"/)
+  assert.match(employee, /v-if="!isLeaderWorkspace" class="result-header-actions"/)
+})
+
+test('employee result status counts and rows share the current keyword and date result set', () => {
+  assert.match(employee, /const filteredRows = computed/)
+  assert.match(employee, /query\.status\s*\? rows\.value\.filter/)
+  assert.match(employee, /listResultsApi\(\{[\s\S]*keyword: query\.keyword[\s\S]*startDate: query\.startDate[\s\S]*endDate: query\.endDate[\s\S]*mine: true/)
+  assert.doesNotMatch(employee, /summaryRows/)
+  assert.doesNotMatch(employee, /class="result-summary-rail"/)
+  assert.doesNotMatch(employee, /class="status-filter"/)
+})
+
+test('result editor keeps its header focused on editing', () => {
+  assert.match(workspace, /返回周期工作台/)
+  assert.match(workspace, /workspace-title/)
+  assert.match(workspace, /activePackage\.counts\.completed/)
+  assert.doesNotMatch(workspace, /返回成果记录/)
+})
+
+test('result submission does not show an empty plan state when loading fails', () => {
+  assert.match(workbench, /v-if="errorMessage"/)
+  assert.match(workbench, /重新加载/)
+  assert.match(workspace, /v-if="errorMessage"/)
+  assert.match(workspace, /重新加载/)
+})
+
+test('result editor reloads the selected approved plan detail before mapping tasks', () => {
+  assert.match(workbench, /getEmployeeResultSubmitOptionsApi/)
+  assert.match(workbench, /buildResultWorkbench/)
+  assert.match(workspace, /loadWorkspace/)
+  assert.match(workspace, /activePackage\.value\.tasks\.find/)
+})
+
+test('result submission omits the misleading readiness percentage', () => {
+  assert.doesNotMatch(workspace, /提交准备度/)
+  assert.doesNotMatch(workspace, /formCompletion/)
+  assert.doesNotMatch(workspace, /submissionChecks/)
+  assert.match(workspace, /批量提交/)
+  assert.match(workspace, /completionRate', '100'/)
+})

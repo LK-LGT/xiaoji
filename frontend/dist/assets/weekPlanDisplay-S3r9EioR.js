@@ -1,0 +1,3 @@
+const i=/^\s*(?:\d+\s*[.、)]|[-*•])\s*/;function o(e){return String(e||"").split(/\r?\n/).map(n=>n.trim()).filter(Boolean)}function l(e){return e.flatMap(o).map(t=>t.replace(i,"").trim()).filter(Boolean).map((t,a)=>`${a+1}. ${t}`).join(`
+`)}function r(e){const n=new Set;return e.map(t=>String(t||"").trim()).filter(t=>t&&!n.has(t)&&!!n.add(t)).join(`
+`)}function p(e){return{content:l(e.map(n=>n.content)),completionStatus:r(e.map(n=>n.completionStatus)),deliverable:r(e.map(n=>n.deliverable)),quality:r(e.map(n=>n.quality)),remark:r(e.map(n=>n.remark))}}function m(e){return o(e).length}export{r as a,l as b,m as c,p as m};

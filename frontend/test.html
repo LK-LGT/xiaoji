@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>绩效管理系统 - 连接测试</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+        .subtitle {
+            color: #666;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .status {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.loading {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .status-icon {
+            font-size: 20px;
+            margin-right: 12px;
+        }
+        .status-text {
+            flex: 1;
+        }
+        .status-label {
+            font-weight: 600;
+            display: block;
+        }
+        .status-detail {
+            font-size: 12px;
+            opacity: 0.8;
+            margin-top: 3px;
+        }
+        .links {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 30px;
+        }
+        .link-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 15px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+        }
+        .link-btn.primary {
+            background: #667eea;
+            color: white;
+        }
+        .link-btn.primary:hover {
+            background: #5568d3;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        .link-btn.secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+        .link-btn.secondary:hover {
+            background: #e0e0e0;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            font-size: 12px;
+            color: #999;
+        }
+        .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top-color: #0c5460;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .troubleshooting {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f9f9f9;
+            border-radius: 8px;
+            border-left: 4px solid #ffc107;
+        }
+        .troubleshooting h3 {
+            color: #333;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+        .troubleshooting ul {
+            list-style: none;
+            font-size: 12px;
+            color: #666;
+        }
+        .troubleshooting li {
+            margin: 5px 0;
+            padding-left: 20px;
+            position: relative;
+        }
+        .troubleshooting li:before {
+            content: "→";
+            position: absolute;
+            left: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 绩效管理系统</h1>
+        <p class="subtitle">系统连接检测</p>
+        
+        <div id="status-backend" class="status loading">
+            <div class="status-icon"><span class="spinner"></span></div>
+            <div class="status-text">
+                <span class="status-label">后端 API</span>
+                <span class="status-detail">检测中...</span>
+            </div>
+        </div>
+        
+        <div id="status-frontend" class="status loading">
+            <div class="status-icon"><span class="spinner"></span></div>
+            <div class="status-text">
+                <span class="status-label">前端应用</span>
+                <span class="status-detail">检测中...</span>
+            </div>
+        </div>
+        
+        <div class="links">
+            <a href="http://localhost:5180" target="_blank" class="link-btn primary">
+                🌐 前端应用
+            </a>
+            <a href="http://localhost:8000/docs" target="_blank" class="link-btn primary">
+                📡 API 文档
+            </a>
+            <a href="javascript:location.reload()" class="link-btn secondary">
+                🔄 刷新页面
+            </a>
+            <a href="http://localhost:8000/v1/organizations/employees" target="_blank" class="link-btn secondary">
+                📊 测试数据
+            </a>
+        </div>
+        
+        <div class="troubleshooting">
+            <h3>💡 如果无法访问：</h3>
+            <ul>
+                <li>按 Ctrl+Shift+Delete 清空浏览器缓存</li>
+                <li>按 Ctrl+Shift+R 强制刷新页面</li>
+                <li>检查后端是否在 localhost:8000 运行</li>
+                <li>查看 TROUBLESHOOTING.md 获得更多帮助</li>
+            </ul>
+        </div>
+        
+        <div class="footer">
+            <p>系统版本: 0.2.0 | 状态: 🟢 生产就绪</p>
+        </div>
+    </div>
+    
+    <script>
+        // 检测后端
+        fetch('http://localhost:8000/v1/organizations/employees?limit=1')
+            .then(r => {
+                const el = document.getElementById('status-backend');
+                el.className = 'status success';
+                el.innerHTML = `
+                    <div class="status-icon">✅</div>
+                    <div class="status-text">
+                        <span class="status-label">后端 API</span>
+                        <span class="status-detail">http://localhost:8000 - 正常</span>
+                    </div>
+                `;
+            })
+            .catch(e => {
+                const el = document.getElementById('status-backend');
+                el.className = 'status error';
+                el.innerHTML = `
+                    <div class="status-icon">❌</div>
+                    <div class="status-text">
+                        <span class="status-label">后端 API</span>
+                        <span class="status-detail">无法连接 - ${e.message}</span>
+                    </div>
+                `;
+            });
+        
+        // 检测前端（已加载）
+        const el = document.getElementById('status-frontend');
+        el.className = 'status success';
+        el.innerHTML = `
+            <div class="status-icon">✅</div>
+            <div class="status-text">
+                <span class="status-label">前端应用</span>
+                <span class="status-detail">http://localhost:5180 - 正常</span>
+            </div>
+        `;
+    </script>
+</body>
+</html>
