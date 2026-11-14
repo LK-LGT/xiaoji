@@ -1,1 +1,0 @@
-import{aa as u,f as o}from"./index-DNCFA6gS.js";const l="/employee/month-plans",s="/leader/my-month-plans";function h(){const n=u(),a=o(()=>n.path.startsWith(s)),t=o(()=>a.value?s:l);return{isLeaderContext:a,basePath:t,listPath:()=>t.value,editPath:e=>e==null?`${t.value}/new/edit`:`${t.value}/${e}/edit`,aiPath:e=>`${t.value}/${e}/ai`}}export{h as u};

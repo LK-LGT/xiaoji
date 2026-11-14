@@ -1,4 +1,4 @@
-export type WorkspaceId = 'system' | 'department' | 'leader' | 'employee' | 'dispute'
+export type WorkspaceId = 'system' | 'department' | 'leader' | 'employee' | 'dispute' | 'performance'
 
 export interface WorkspaceMenuItem {
   label: string
@@ -101,6 +101,18 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     items: [
       { label: '工作台', path: '/dispute/dashboard', icon: '▣', permission: 'dispute:dashboard:view' },
       { label: '争议案件', path: '/dispute/cases', icon: '!', permission: 'dispute:case:view' },
+    ],
+  },
+  {
+    id: 'performance',
+    title: '绩效管理',
+    homePath: '/performance/dashboard',
+    permission: 'performance:dashboard:view',
+    matches: ['/performance'],
+    items: [
+      { label: '管理工作台', path: '/performance/dashboard', icon: '★', permission: 'performance:dashboard:view' },
+      { label: '员工自评', path: '/performance/self-reviews', icon: '✎', permission: 'performance:self-review:view' },
+      { label: '主管评分', path: '/performance/manager-reviews', icon: '✓', permission: 'performance:manager-review:view' },
     ],
   },
 ]

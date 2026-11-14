@@ -69,6 +69,10 @@ TEST_USERS = {
             # Dispute permissions
             "dispute:dashboard:view",
             "dispute:case:view",
+            # Performance permissions
+            "performance:dashboard:view",
+            "performance:self-review:view",
+            "performance:manager-review:view",
         ],
     },
     "manager": {
@@ -86,6 +90,9 @@ TEST_USERS = {
             "department:score-rule:view",
             "leader:workbench:view",
             "dashboard:view",
+            # Performance permissions
+            "performance:dashboard:view",
+            "performance:manager-review:view",
         ],
     },
     "employee": {
@@ -98,6 +105,9 @@ TEST_USERS = {
             "planning:month:view",
             "planning:day:view",
             "planning:result:view",
+            # Performance permissions
+            "performance:dashboard:view",
+            "performance:self-review:view",
         ],
     },
 }
@@ -174,7 +184,14 @@ async def login(
     
     # 确定角色（基于是否是主管或 HR）
     roles = ["employee"]
-    permissions = ["performance:self_review"]
+    permissions = [
+        "dashboard:view",
+        "planning:month:view",
+        "planning:day:view",
+        "planning:result:view",
+        "performance:dashboard:view",
+        "performance:self-review:view",
+    ]
     
     # 检查是否是部门主管
     is_manager = (
@@ -184,12 +201,62 @@ async def login(
     )
     if is_manager:
         roles = ["manager"]
-        permissions = ["performance:review", "organization:read"]
+        permissions = [
+            "department:dashboard:view",
+            "department:month-approval:view",
+            "department:result-confirm:view",
+            "department:todo:view",
+            "department:template:view",
+            "department:standard:view",
+            "department:score-rule:view",
+            "leader:workbench:view",
+            "dashboard:view",
+            "planning:month:view",
+            "planning:day:view",
+            "planning:result:view",
+            "performance:dashboard:view",
+            "performance:manager-review:view",
+        ]
     
     # 检查是否是 HR（特定部门或特殊标记）
     if employee.department_id == "hr":  # 假设 HR 部门 ID 为 "hr"
         roles = ["admin"]
-        permissions = ["*"]
+        permissions = [
+            "system:dashboard:view",
+            "system:employee:register",
+            "system:employee:view",
+            "system:org:view",
+            "system:role:view",
+            "system:permission:view",
+            "system:workday:view",
+            "system:week-standard:view",
+            "system:audit:view",
+            "system:knowledge:view",
+            "department:dashboard:view",
+            "department:month-approval:view",
+            "department:result-confirm:view",
+            "department:todo:view",
+            "department:template:view",
+            "department:standard:view",
+            "department:score-rule:view",
+            "department:export-task:view",
+            "department:department-ledger:view",
+            "leader:workbench:view",
+            "leader:month-approval:view",
+            "leader:daily-review:view",
+            "leader:result-suggest:view",
+            "leader:plan-adjust:view",
+            "leader:team-ledger:view",
+            "dashboard:view",
+            "planning:month:view",
+            "planning:day:view",
+            "planning:result:view",
+            "dispute:dashboard:view",
+            "dispute:case:view",
+            "performance:dashboard:view",
+            "performance:self-review:view",
+            "performance:manager-review:view",
+        ]
     
     access_token, refresh_token = _generate_token(employee.id, username)
     

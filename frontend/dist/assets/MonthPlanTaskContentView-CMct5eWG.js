@@ -1,4 +1,0 @@
-import{g as v,o as e,j as t,n as f,F as i,k,t as o,r as y,f as n}from"./index-DNCFA6gS.js";import{_ as g}from"./_plugin-vue_export-helper-DlAUqK2U.js";const h={key:1},x=v({__name:"MonthPlanTaskContentView",props:{content:{},fallback:{default:""},emptyText:{default:"未填写工作计划内容"}},setup(p){const s=p,a=n(()=>String(s.content||s.fallback||"").replace(/\r\n?/g,`
-`).split(`
-`).map(r=>r.trim()).filter(Boolean)),l=n(()=>a.value.length>1),u=n(()=>a.value[0]||""),m=n(()=>a.value.slice(1)),d=n(()=>a.value.join(`
-`)||s.emptyText);return(r,T)=>(e(),t("div",{class:f(["month-plan-task-content-view",{"is-structured":l.value}])},[l.value?(e(),t(i,{key:0},[k("strong",null,o(u.value),1),(e(!0),t(i,null,y(m.value,(c,_)=>(e(),t("span",{key:`${_}-${c}`},o(c),1))),128))],64)):(e(),t("span",h,o(d.value),1))],2))}}),b=g(x,[["__scopeId","data-v-5c64231c"]]);export{b as M};
