@@ -16,12 +16,12 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db
-from app.domain.models import Employee, Department
+from ..core.db import get_db
+from ..domain.models import Employee, Department
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/department", tags=["department"])
+router = APIRouter(prefix="/v1/department", tags=["department"])
 
 
 # ============================================
@@ -408,55 +408,73 @@ async def get_department_dashboard(
         )
 
 
-@router.get("/plan-approval")
+@router.get("/month-plan-approvals", include_in_schema=True)
 async def list_plan_approvals(db: Session = Depends(get_db)):
-    """获取月计划审批列表"""
+    """获取月计划审批列表
+
+    响应结构：MonthPlanApprovalItem[]（前端直接 .map()，故返回裸数组）
+    """
     return {
         "code": 0,
-        "data": {
-            "records": [],
-            "total": 0,
-            "pageNo": 1,
-            "pageSize": 20,
-        }
+        "data": []
     }
 
 
-@router.get("/week-plan-approval")
+# 兼容旧路径（前端已切换到 /month-plan-approvals）
+@router.get("/plan-approval", include_in_schema=False)
+async def list_plan_approvals_legacy(db: Session = Depends(get_db)):
+    """获取月计划审批列表（旧路径，已废弃）"""
+    return await list_plan_approvals(db)
+
+
+@router.get("/week-plan-approvals", include_in_schema=True)
 async def list_week_plan_approvals(db: Session = Depends(get_db)):
-    """获取周计划审批列表"""
+    """获取周计划审批列表
+
+    响应结构：WeekPlanSummary[]（前端直接 .map()，故返回裸数组）
+    """
     return {
         "code": 0,
-        "data": {
-            "records": [],
-            "total": 0,
-            "pageNo": 1,
-            "pageSize": 20,
-        }
+        "data": []
     }
 
 
-@router.get("/daily-review")
+# 兼容旧路径（前端已切换到 /week-plan-approvals）
+@router.get("/week-plan-approval", include_in_schema=False)
+async def list_week_plan_approvals_legacy(db: Session = Depends(get_db)):
+    """获取周计划审批列表（旧路径，已废弃）"""
+    return await list_week_plan_approvals(db)
+
+
+@router.get("/daily-reviews", include_in_schema=True)
 async def list_daily_reviews(db: Session = Depends(get_db)):
-    """获取日计划点评列表"""
+    """获取日计划点评列表
+
+    响应结构：DailyReviewItem[]（前端直接 .map()，故返回裸数组）
+    """
     return {
         "code": 0,
-        "data": {
-            "records": [],
-            "total": 0,
-            "pageNo": 1,
-            "pageSize": 20,
-        }
+        "data": []
     }
+
+
+# 兼容旧路径（前端已切换到 /daily-reviews）
+@router.get("/daily-review", include_in_schema=False)
+async def list_daily_reviews_legacy(db: Session = Depends(get_db)):
+    """获取日计划点评列表（旧路径，已废弃）"""
+    return await list_daily_reviews(db)
 
 
 @router.get("/result-confirm")
 async def list_result_confirms(db: Session = Depends(get_db)):
-    """获取成果确认列表"""
+    """获取成果确认列表
+
+    响应结构：PageResponse<ResultConfirmItem>，即 { items, total, pageNo, pageSize }
+    """
     return {
         "code": 0,
         "data": {
-            "records": [],
+            "items": [],
             "total": 0,
             "pageNo": 1,
             "pageSize": 20,
@@ -464,13 +482,16 @@ async def list_result_confirms(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/todo")
+@router.get("/todos", include_in_schema=True)
 async def list_todo_items(db: Session = Depends(get_db)):
-    """获取待办项列表"""
+    """获取待办项列表
+
+    响应结构：PageResponse<TodoItem>，即 { items, total, pageNo, pageSize }
+    """
     return {
         "code": 0,
         "data": {
-            "records": [],
+            "items": [],
             "total": 0,
             "pageNo": 1,
             "pageSize": 20,
@@ -478,55 +499,80 @@ async def list_todo_items(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/template")
+# 兼容旧路径（前端已切换到 /todos）
+@router.get("/todo", include_in_schema=False)
+async def list_todo_items_legacy(db: Session = Depends(get_db)):
+    """获取待办项列表（旧路径，已废弃）"""
+    return await list_todo_items(db)
+
+
+@router.get("/templates", include_in_schema=True)
 async def list_templates(db: Session = Depends(get_db)):
-    """获取交付物模板列表"""
+    """获取交付物模板列表
+
+    响应结构：DeliverableTemplate[]（前端直接 .map()，故返回裸数组）
+    """
     return {
         "code": 0,
-        "data": {
-            "records": [],
-            "total": 0,
-            "pageNo": 1,
-            "pageSize": 20,
-        }
+        "data": []
     }
 
 
-@router.get("/standard")
+# 兼容旧路径（前端已切换到 /templates）
+@router.get("/template", include_in_schema=False)
+async def list_templates_legacy(db: Session = Depends(get_db)):
+    """获取交付物模板列表（旧路径，已废弃）"""
+    return await list_templates(db)
+
+
+@router.get("/acceptance-standards", include_in_schema=True)
 async def list_standards(db: Session = Depends(get_db)):
-    """获取验收标准列表"""
+    """获取验收标准列表
+
+    响应结构：AcceptanceStandard[]（前端直接 .map()，故返回裸数组）
+    """
     return {
         "code": 0,
-        "data": {
-            "records": [],
-            "total": 0,
-            "pageNo": 1,
-            "pageSize": 20,
-        }
+        "data": []
     }
 
 
-@router.get("/score-rule")
+# 兼容旧路径（前端已切换到 /acceptance-standards）
+@router.get("/standard", include_in_schema=False)
+async def list_standards_legacy(db: Session = Depends(get_db)):
+    """获取验收标准列表（旧路径，已废弃）"""
+    return await list_standards(db)
+
+
+@router.get("/score-rules", include_in_schema=True)
 async def list_score_rules(db: Session = Depends(get_db)):
-    """获取参考分规则列表"""
+    """获取参考分规则列表
+
+    响应结构：ScoreRule[]（前端直接 .map()，故返回裸数组）
+    """
     return {
         "code": 0,
-        "data": {
-            "records": [],
-            "total": 0,
-            "pageNo": 1,
-            "pageSize": 20,
-        }
+        "data": []
     }
+
+
+# 兼容旧路径（前端已切换到 /score-rules）
+@router.get("/score-rule", include_in_schema=False)
+async def list_score_rules_legacy(db: Session = Depends(get_db)):
+    """获取参考分规则列表（旧路径，已废弃）"""
+    return await list_score_rules(db)
 
 
 @router.get("/export-tasks")
 async def list_export_tasks(db: Session = Depends(get_db)):
-    """获取导出任务列表"""
+    """获取导出任务列表
+
+    响应结构：PageResponse<ExportTask>，即 { items, total, pageNo, pageSize }
+    """
     return {
         "code": 0,
         "data": {
-            "records": [],
+            "items": [],
             "total": 0,
             "pageNo": 1,
             "pageSize": 20,

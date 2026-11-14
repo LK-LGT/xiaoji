@@ -6,9 +6,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db
+from ...core.db import get_db
 
-router = APIRouter(prefix="/system", tags=["system"])
+router = APIRouter(prefix="/v1/system", tags=["system"])
 
 
 # ─────────────────────────────────────────────────────

@@ -48,8 +48,26 @@ def get_sessionmaker() -> sessionmaker[Session]:
 
 
 def init_db() -> None:
-    """建表（幂等）。"""
-    Base.metadata.create_all(get_engine())
+    """建表并补齐缺失列（幂等）。
+
+    生产环境的 schema 由 Alembic 迁移管理（backend/migrations）。
+    只有显式开启 AUTO_CREATE_TABLES 时才在运行时建表，
+    避免 Alembic 与 create_all 互相干扰导致 schema 漂移。
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if not settings.auto_create_tables:
+        logger.debug("AUTO_CREATE_TABLES 未开启，schema 由 Alembic 管理")
+        return
+
+    from .migrations import sync_schema
+
+    logger.warning("AUTO_CREATE_TABLES 已开启，仅建议在本地开发使用")
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    sync_schema(engine)
 
 
 def get_db() -> Iterator[Session]:

@@ -14,8 +14,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db
-from app.domain.models import Department, Employee
+from ..core.db import get_db
+from ..domain.models import Department, Employee
 
 logger = logging.getLogger(__name__)
 

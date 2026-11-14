@@ -24,6 +24,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
@@ -62,6 +63,8 @@ class Department(Base):
     leader_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    last_seen_batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    feishu_deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Employee(Base):
@@ -73,6 +76,11 @@ class Employee(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     email: Mapped[str | None] = mapped_column(String(128), nullable=True)
     feishu_open_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    feishu_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    feishu_union_id: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
+    login_account: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    account_status: Mapped[str] = mapped_column(String(32), default="enabled", nullable=False)
+    token_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")
     department_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("department.id"), nullable=True)
     position: Mapped[str | None] = mapped_column(String(128), nullable=True)
     manager_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("employee.id"), nullable=True)
@@ -81,6 +89,188 @@ class Employee(Base):
     # 兼岗 / 虚拟组等飞书表达不清的关系，由 HR 补一张对应表（见方案第八节）
     special_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    last_seen_batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    feishu_deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class EmployeeDepartment(Base):
+    """员工部门关联。一个员工可属于多个飞书部门，第一条作为主部门。"""
+
+    __tablename__ = "employee_department"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "department_id", name="uq_employeedept"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    employee_id: Mapped[str] = mapped_column(String(64), ForeignKey("employee.id"), nullable=False, index=True)
+    department_id: Mapped[str] = mapped_column(String(64), ForeignKey("department.id"), nullable=False, index=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
+class FeishuIdentity(Base):
+    """飞书身份映射。
+
+    同一身份值只能绑定一个有效员工；换绑保留历史行并关闭旧绑定。
+    """
+
+    __tablename__ = "feishu_identity"
+    __table_args__ = (
+        UniqueConstraint("identity_type", "identity_value", name="uq_feishu_identity_value"),
+        Index("ix_feishu_identity_employee_active", "employee_id", "active"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    employee_id: Mapped[str] = mapped_column(String(64), ForeignKey("employee.id"), nullable=False, index=True)
+    identity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    identity_value: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    bound_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bound_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    unbound_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
+class HrDepartmentConfig(Base):
+    """HR 部门配置。成员属于任一启用的 HR 部门时自动获得 HR 角色。"""
+
+    __tablename__ = "hr_department_config"
+    __table_args__ = (
+        UniqueConstraint("department_id", name="uq_hrdepartmentconfig"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    department_id: Mapped[str] = mapped_column(String(64), ForeignKey("department.id"), nullable=False, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    granted_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
+class SystemAdmin(Base):
+    """系统管理员显式授权。管理员仅管理配置，不获得业务数据范围。"""
+
+    __tablename__ = "system_admin"
+    __table_args__ = (
+        UniqueConstraint("employee_id", name="uq_systemadminemployee"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    employee_id: Mapped[str] = mapped_column(String(64), ForeignKey("employee.id"), nullable=False, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    granted_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
+class OrganizationSyncBatch(Base):
+    """飞书组织架构同步批次。"""
+
+    __tablename__ = "organization_sync_batch"
+    __table_args__ = (
+        Index("ix_org_sync_batch_status_started", "status", "started_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    batch_no: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="running", nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(32), default="full", nullable=False)
+    trigger_type: Mapped[str] = mapped_column(String(32), default="manual", nullable=False)
+    departments_synced: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    departments_skipped: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    departments_failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    employees_synced: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    employees_skipped: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    employees_failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    triggered_by: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reconciliation_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class OrganizationSyncCursor(Base):
+    """增量同步游标。每种资源独立保存成功推进的位置。"""
+
+    __tablename__ = "organization_sync_cursor"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    resource_type: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    cursor_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    page_token: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    last_batch_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("organization_sync_batch.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+
+class OrganizationSyncItemError(Base):
+    """组织同步的单条失败记录，用于定位和重试。"""
+
+    __tablename__ = "organization_sync_item_error"
+    __table_args__ = (
+        Index("ix_org_sync_error_retry", "status", "next_retry_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    batch_id: Mapped[str] = mapped_column(String(64), ForeignKey("organization_sync_batch.id"), nullable=False, index=True)
+    resource_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
+class OrganizationSyncAudit(Base):
+    """同步操作审计，不保存 Token、Secret 或完整敏感响应。"""
+
+    __tablename__ = "organization_sync_audit"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    batch_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("organization_sync_batch.id"), nullable=True, index=True)
+    actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(128), nullable=False)
+    resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    result: Mapped[str] = mapped_column(String(32), default="ok", nullable=False)
+    detail_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
+class FeishuIdentityAudit(Base):
+    """身份映射变更审计，保留变更前后值。"""
+
+    __tablename__ = "feishu_identity_audit"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    identity_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    identity_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    identity_value: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    employee_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    old_value_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    new_value_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
+class ScheduledJobLock(Base):
+    """定时任务分布式锁。
+
+    多实例部署时保证同一个定时任务在同一时刻只有一个实例执行。
+    锁带过期时间：持有者异常退出后，锁过期即可被其他实例抢占，
+    避免任务永久卡死。锁表由 Alembic 迁移创建。
+    """
+
+    __tablename__ = "scheduled_job_lock"
+
+    job_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    locked_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    locked_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +509,79 @@ class ApprovalEvent(Base):
 # ---------------------------------------------------------------------------
 # 证据域
 # ---------------------------------------------------------------------------
+
+
+class AttendanceRecord(Base):
+    """考勤打卡原始记录（飞书考勤同步落库）。
+
+    定位：**原始事实层**，不是算分集。
+    - 每个「员工 × 日期 × 班段」一条记录（task_shift_type 区分正常/加班班段）。
+    - 保存飞书返回的原始打卡结果与打卡明细，便于复算与追溯。
+    - `anomaly_types` 是本地的六类异常归类结果（late/early_leave/missing_punch/
+      leave/overtime/outside），由 `attendance_sync` 依据飞书 check_result 归类。
+    - 本表的任何数据都**不得**直接进入 MetricValue 算分集；
+      只能经 `evidence_service.record_attendance_anomalies` 转成
+      usage=reference_only 的 Evidence 证据。
+
+    唯一键用飞书的 result_id + 班段序号，保证重复同步幂等。
+    """
+
+    __tablename__ = "attendance_record"
+    __table_args__ = (
+        UniqueConstraint(
+            "employee_id", "work_date", "shift_seq", name="uq_attendancerecord"
+        ),
+        Index("ix_attendancerecord_employee_date", "employee_id", "work_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    employee_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("employee.id"), nullable=False, index=True
+    )
+    # 工作日（YYYY-MM-DD），由飞书 day(yyyyMMdd) 转换而来
+    work_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    # 同一员工同一天的班段序号（0=正常班段，1=加班班段...）
+    shift_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 飞书原始班段类型：0=正常班段，1=加班班段
+    task_shift_type: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # 飞书考勤结果 ID（result_id），用于幂等与追溯
+    feishu_result_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # 考勤组 ID / 班次 ID
+    attendance_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    shift_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # 上班/下班打卡结果（飞书 check_result 原值）
+    check_in_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    check_out_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    check_in_result_supplement: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    check_out_result_supplement: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # 班次规定上下班时间（epoch 秒）
+    check_in_shift_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    check_out_shift_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 实际打卡时间（epoch 秒）
+    check_in_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    check_out_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 打卡明细 ID（飞书 record_id）
+    check_in_record_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    check_out_record_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 打卡位置 / 是否外勤 / 是否 Wi-Fi 打卡
+    check_in_location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    check_out_location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_field: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_wifi: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # 打卡方式（飞书 type：0=用户打卡 1=管理员修改 2=用户补卡 ...）
+    check_in_type: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    check_out_type: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # 六类异常归类结果（JSON 数组，取值见 AttendanceAnomalyType）
+    anomaly_types: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    # 数据截至时间：考勤有延迟与补卡回溯，必须标注 as_of
+    as_of: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 原始响应留档，便于口径变更后重算
+    raw_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
 
 class MetricValue(Base):

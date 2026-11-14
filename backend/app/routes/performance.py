@@ -18,8 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db
-from app.domain.models import (
+from ..core.db import get_db
+from ..domain.models import (
     AssessmentRecord,
     AssessmentTask,
     Employee,
@@ -27,6 +27,7 @@ from app.domain.models import (
     Score,
     RatingDraft,
 )
+from ..services.access_control import PermissionAction, build_access_context
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +81,12 @@ class PerformanceQueryRequest(BaseModel):
 
 
 def check_is_hr(db: Session, employee_id: str) -> bool:
-    """检查是否 HR（簡易實現：后续应从数据库读权限）。"""
+    """检查是否为 HR：所属任一部门命中启用的 HR 部门配置。"""
     emp = db.query(Employee).filter(Employee.id == employee_id).first()
     if not emp:
         return False
-    # 簡易：HR 部門或特定職位
-    return emp.department_id in ("DEPT_HR", "cc7a7gf9e937gb42")  # DEPT_HR 或 人事行政部
+    context = build_access_context(db, emp)
+    return "hr" in context.roles
 
 
 def check_is_manager_of(db: Session, manager_id: str, employee_id: str) -> bool:

@@ -102,15 +102,15 @@ class TestScoreCalculator:
     
     def test_adjustments_attendance(self):
         """✅ 测试：考勤调整"""
-        
-        # 缺勤 2 天，应该 -2 分
+
+        # 缺勤 2 天：第 1 周每天 -2 分 → 2 × -2 = -4 分
         score, adjustments = ScoreCalculator.apply_adjustments(
             score=93.1,
             absent_days=2
         )
-        
-        assert adjustments["attendance"] == -2.0
-        assert abs(score - 91.1) < 0.01
+
+        assert adjustments["attendance"] == -4.0
+        assert abs(score - 89.1) < 0.01
     
     def test_adjustments_praise(self):
         """✅ 测试：表彰调整"""
@@ -138,18 +138,18 @@ class TestScoreCalculator:
     
     def test_adjustments_combined(self):
         """✅ 测试：组合调整"""
-        
-        # 缺勤 2 天 (-2), 表彰 1 次 (+5), 投诉 1 次 (-3)
+
+        # 缺勤 2 天 (-4), 表彰 1 次 (+5), 投诉 1 次 (-3)
         score, adjustments = ScoreCalculator.apply_adjustments(
             score=90.0,
             absent_days=2,
             praise_count=1,
             complaint_count=1
         )
-        
-        # 90 - 2 + 5 - 3 = 90
-        assert abs(score - 90.0) < 0.01
-        assert adjustments["attendance"] == -2.0
+
+        # 90 - 4 + 5 - 3 = 88
+        assert abs(score - 88.0) < 0.01
+        assert adjustments["attendance"] == -4.0
         assert adjustments["praise"] == 5.0
         assert adjustments["complaint"] == -3.0
 
@@ -284,11 +284,11 @@ class TestRulesEngineComplete:
         # 加权: 95*0.6 + 92*0.3 + 85*0.1 = 93.1
         assert abs(detail.weighted_score - 93.1) < 0.01
         
-        # 调整: 93.1 - 2 = 91.1
-        assert detail.attendance_adjustment == -2.0
-        assert abs(detail.final_score - 91.1) < 0.01
-        
-        # 等级: 91.1 ∈ [85, 92] → 4
+        # 调整: 93.1 - 4 = 89.1（缺勤 2 天，每天 -2 分）
+        assert detail.attendance_adjustment == -4.0
+        assert abs(detail.final_score - 89.1) < 0.01
+
+        # 等级: 89.1 ∈ [85, 92] → 4
         assert detail.rating_level == 4
         assert detail.rating_label == "超标"
     

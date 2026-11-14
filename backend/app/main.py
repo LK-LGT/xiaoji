@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -28,6 +29,7 @@ from .domain.models import (
     Score,
 )
 from .services import evidence_service, review_service, qa_service
+from .services.access_control import PermissionAction, build_access_context
 from .services.review_service import AgentClient, InvalidState, NotFound
 from . import schemas, exceptions, dependencies
 from .domain.models import (
@@ -46,6 +48,35 @@ app = FastAPI(
     version="0.1.0",
     description="唯一事实源。数字只在这里产生；AI 只做判断与写作。",
 )
+
+
+@app.middleware("http")
+async def _redact_sensitive_response_headers(request: Request, call_next):
+    """兜底：确保任何响应都不会回显凭据相关响应头。"""
+    response = await call_next(request)
+    for header in ("X-Feishu-Secret", "X-Auth-Token", "X-Authorization", "X-Tenant-Token"):
+        if header in response.headers:
+            del response.headers[header]
+    return response
+
+# ──────────────────────────────────────────────────────────────
+# 全局异常处理
+# 领域异常（BaseAppError 子类）统一转换为正确的 HTTP 状态码，
+# 否则路由内未捕获时会退化成 500，掩盖真实的权限/校验问题。
+# ──────────────────────────────────────────────────────────────
+
+
+@app.exception_handler(exceptions.BaseAppError)
+async def _handle_base_app_error(request: Request, exc: exceptions.BaseAppError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "code": exc.status_code,
+            "message": exc.message,
+            "detail": exc.message,
+        },
+    )
+
 
 # ┌─────────────────────────────────────────────────────────────┐
 # │ 注册路由（【板块3】自评接口）                              │
@@ -132,6 +163,24 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
+try:
+    from .routes.v1 import system_config as system_config_routes
+    app.include_router(system_config_routes.router)
+    print("[APP] System config router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register system config router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes.v1 import attendance as attendance_routes
+    app.include_router(attendance_routes.router)
+    print("[APP] Attendance router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register attendance router: {e}")
+    import traceback
+    traceback.print_exc()
+
 # 直接在 main.py 中也注册一份（确保生效）
 try:
     from .schemas_self_review import SelfReviewSubmitRequest, SelfReviewSubmitResponse
@@ -185,6 +234,11 @@ except Exception as e:
 def _startup() -> None:
     from .core.db import init_db
     init_db()
+    try:
+        from .services.feishu_scheduler import start_scheduler
+        start_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("启动飞书定时同步失败")
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +428,8 @@ def create_assessment_task(
         # ─────────────────────────────────────────────────────────────
         # 1. 权限检查：仅 HR 可调用
         # ─────────────────────────────────────────────────────────────
-        if not dependencies.check_permission(current_user, "view_all_scores"):
+        access_context = build_access_context(db, current_user)
+        if not access_context.has_permission(PermissionAction.VIEW_ALL_SCORES):
             # 仅 HR 有 view_all_scores 权限
             raise exceptions.PermissionDenied(
                 user_id=current_user.id,

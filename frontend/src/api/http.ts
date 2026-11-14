@@ -9,6 +9,10 @@ function isLoginRequest(url?: string) {
   return url === '/auth/login'
 }
 
+function isLogoutRequest(url?: string) {
+  return url === '/auth/logout'
+}
+
 function clearLocalSession() {
   localStorage.removeItem('planning_access_token')
   localStorage.removeItem('planning_refresh_token')
@@ -61,6 +65,12 @@ http.interceptors.response.use((response) => {
     return Promise.reject(error)
   }
   if (error?.response?.status === 401 && !isLoginRequest(error?.config?.url)) {
+    if (isLogoutRequest(error?.config?.url)) {
+      // 退出接口返回 401：凭证已失效，直接清理本地状态，不做整页跳转
+      // 由调用方（authStore.logout / App.logout）负责后续路由跳转
+      clearLocalSession()
+      return Promise.reject(error)
+    }
     if (Number(error?.response?.data?.code) === SESSION_REPLACED_CODE) {
       handleSessionReplaced()
     } else {

@@ -10,8 +10,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, UploadFile, File
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db
-from app.domain.models import Employee, Department
+from ..core.db import get_db
+from ..domain.models import Employee, Department
 
 logger = logging.getLogger(__name__)
 

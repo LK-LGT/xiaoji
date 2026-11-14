@@ -22,7 +22,9 @@ from fastapi import Depends, Header
 from sqlalchemy.orm import Session
 
 from .core.db import get_db
+from .core.config import settings
 from .domain import models
+from .routes.auth import _decode_token
 from .exceptions import (
     NotAuthenticated,
     PermissionDenied,
@@ -200,12 +202,27 @@ async def get_current_user(
         raise NotAuthenticated("Authorization header 格式错误，应为 'Bearer <token>'")
     
     token = parts[1]
-    
+
+    if settings.secure_auth:
+        try:
+            payload = _decode_token(token)
+        except Exception:
+            raise NotAuthenticated("Token 无效或已过期")
+        employee = db.query(models.Employee).filter_by(id=str(payload.get("sub"))).first()
+        if employee is None:
+            raise NotAuthenticated("Token 对应用户不存在")
+        if employee.employment_status == "exited" or employee.account_status != "enabled":
+            raise NotAuthenticated("员工已离职或账号已禁用")
+        if int(payload.get("ver", 1)) != employee.token_version:
+            raise NotAuthenticated("登录状态已失效，请重新登录")
+        logger.info("Auth success: %s (%s)", employee.name, employee.id)
+        return employee
+
     # 从 Mock 数据库中查询
     token_data = MOCK_TOKENS.get(token)
     if not token_data:
-        logger.warning(f"Invalid token received: {token}")
-        raise NotAuthenticated(f"Token 无效或已过期")
+        logger.warning("Invalid token received")
+        raise NotAuthenticated("Token 无效或已过期")
     
     employee_id = token_data["employee_id"]
     
@@ -237,26 +254,14 @@ async def get_current_user(
 # └─────────────────────────────────────────────────────┘
 
 def _get_user_role(user: models.Employee) -> UserRole:
-    """根据员工的 position 和 manager_id 推断角色。
-    
-    规则：
-    - position 包含 "HR" → HR 角色
-    - 有直属下级 → manager 角色
-    - 否则 → ordinary_employee 角色
-    
-    【板块1】实现：Mock 版本。
-    """
-    # 先查 Mock 数据中的角色
+    """兼容旧接口：角色只能表示单一最高角色；新代码请使用 access_context。"""
     for token_data in MOCK_TOKENS.values():
         if token_data["employee_id"] == user.id:
             return UserRole(token_data["role"])
-    
-    # 如果不在 Mock 中，根据 position 推断
+
     if user.position and "HR" in user.position:
         return UserRole.HR
-    
-    # 检查是否有直属下级
-    # （在完整实现中，这里会查数据库）
+
     return UserRole.ORDINARY_EMPLOYEE
 
 
@@ -286,23 +291,31 @@ def get_direct_reports(
 
 def check_permission(
     user: models.Employee,
-    action: str
+    action: str,
+    db: Session | None = None,
 ) -> bool:
     """权限矩阵检查。
-    
-    参数：
-    - user: 当前用户
-    - action: 要执行的操作（见 PERMISSION_MATRIX 的 key）
-    
-    返回：
-    - True 如果有权
-    - False 如果无权
-    
-    【板块1】实现：根据角色查权限矩阵。
+
+    新代码优先使用 build_access_context_for_user；此函数保留兼容已有调用。
+    传入 db 时按数据库配置计算角色与权限。
     """
+    if db is not None:
+        context = build_access_context_for_user(user, db)
+        return context.has_permission(action)
+
     role = _get_user_role(user)
     permissions = PERMISSION_MATRIX.get(role, {})
     return permissions.get(action, False)
+
+
+def build_access_context_for_user(
+    user: models.Employee,
+    db: Session,
+):
+    """构建阶段一统一权限上下文。"""
+    from .services.access_control import build_access_context
+
+    return build_access_context(db, user)
 
 
 def check_can_view_score(
@@ -315,6 +328,7 @@ def check_can_view_score(
     权限规则：
     - 自己能查自己（view_own_score）
     - 主管能查直属下级（view_direct_report_score）
+    - 部门负责人能查管理范围内员工
     - HR 能查所有人（view_all_scores）
     
     参数：
@@ -331,8 +345,8 @@ def check_can_view_score(
     - 权限不通过时，抛出 exceptions.PermissionDenied，不返回普通 HTTPException
     - 没有写死业务逻辑，不混入业务接口代码，只做依赖注入
     """
-    
-    # 第 1 步：查询当前用户完整信息
+    from .services.access_control import can_access_employee
+
     user = db.query(models.Employee).filter_by(id=user_id).first()
     if not user:
         raise PermissionDenied(
@@ -341,7 +355,6 @@ def check_can_view_score(
             resource=f"employee:{target_employee_id}（当前用户不存在）"
         )
     
-    # 第 2 步：查询目标员工
     target_emp = db.query(models.Employee).filter_by(id=target_employee_id).first()
     if not target_emp:
         raise PermissionDenied(
@@ -350,28 +363,10 @@ def check_can_view_score(
             resource=f"employee:{target_employee_id}（目标员工不存在）"
         )
     
-    # 第 3 步：查看自己
-    if user_id == target_employee_id:
-        if check_permission(user, "view_own_score"):
-            return True
-        else:
-            raise PermissionDenied(
-                user_id=user_id,
-                action="view_score",
-                resource=f"employee:{target_employee_id}"
-            )
-    
-    # 第 4 步：查看所有人（HR）
-    if check_permission(user, "view_all_scores"):
+    context = build_access_context_for_user(user, db)
+    if can_access_employee(context, target_emp, db):
         return True
-    
-    # 第 5 步：查看直属下级
-    if check_permission(user, "view_direct_report_score"):
-        # 验证 target_employee 是否是 user 的直属下级
-        if target_emp.manager_id == user_id:
-            return True
-    
-    # 都不符合，无权
+
     raise PermissionDenied(
         user_id=user_id,
         action="view_score",
@@ -407,6 +402,8 @@ def check_can_submit_review(
     - 没有写死业务逻辑，不混入业务接口代码，只做依赖注入
     """
     
+    from .services.access_control import can_access_employee
+
     # 第 1 步：查询当前用户完整信息
     user = db.query(models.Employee).filter_by(id=user_id).first()
     if not user:
@@ -430,24 +427,16 @@ def check_can_submit_review(
             resource=f"record:{target_record_id}（目标员工不存在）"
         )
     
-    # 第 4 步：自己的自评
-    if record.employee_id == user_id:
-        if check_permission(user, "submit_own_review"):
-            return record
-        else:
-            raise PermissionDenied(
-                user_id=user_id,
-                action="submit_review",
-                resource=f"record:{target_record_id}"
-            )
-    
-    # 第 5 步：主管的评分
-    if check_permission(user, "submit_direct_report_review"):
-        # 验证目标员工是否是当前用户的直属下级
-        if target_emp.manager_id == user_id:
-            return record
-    
-    # 都不符合
+    context = build_access_context_for_user(user, db)
+    if record.employee_id == user_id and context.has_permission("submit_own_review"):
+        return record
+
+    from .services.access_control import can_access_employee
+    if context.has_permission("submit_direct_report_review") and can_access_employee(
+        context, target_emp, db
+    ):
+        return record
+
     raise PermissionDenied(
         user_id=user_id,
         action="submit_review",
@@ -460,14 +449,12 @@ def check_can_submit_review(
 # └─────────────────────────────────────────────────────┘
 
 async def get_current_hr(
-    user: models.Employee = Depends(get_current_user)
+    user: models.Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> models.Employee:
-    """只有 HR 才能调用的接口的依赖。
-    
-    【板块1】实现：检查 position 或角色。
-    """
-    
-    if not check_permission(user, "view_all_scores"):
+    """只有 HR 才能调用的接口的依赖。"""
+    context = build_access_context_for_user(user, db)
+    if not context.has_permission("view_all_scores"):
         raise PermissionDenied(
             user_id=user.id,
             action="access_hr_interface",
@@ -479,19 +466,14 @@ async def get_current_hr(
 
 async def get_current_manager(
     user: models.Employee = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> models.Employee:
-    """检查 user 是否是某个部门的主管（有直属下级）。
-    
-    【板块1】实现：检查是否有直属下级。
-    """
-    
-    direct_reports = db.query(models.Employee).filter_by(
-        manager_id=user.id,
-        employment_status="active"
-    ).all()
-    
-    if not direct_reports:
+    """检查 user 是否是直属主管或部门负责人。"""
+    context = build_access_context_for_user(user, db)
+    if not (
+        context.has_permission("view_direct_report_score")
+        or "department_leader" in context.roles
+    ):
         raise PermissionDenied(
             user_id=user.id,
             action="access_manager_interface",

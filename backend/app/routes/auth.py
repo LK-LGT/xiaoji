@@ -3,14 +3,19 @@
 from datetime import datetime, timedelta
 from typing import Any, Optional
 import base64
+import hashlib
+import hmac
 import json
+import time
 
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db
-from app.domain.models import Employee, Department
+from ..core.db import get_db
+from ..core.config import settings
+from ..domain.models import Employee, Department, FeishuIdentity
+from ..services.access_control import build_access_context
 
 router = APIRouter(prefix="/v1/auth", tags=["认证"])
 
@@ -94,20 +99,154 @@ TEST_USERS = {
 }
 
 
-def _generate_token(user_id: str, username: str) -> tuple[str, str]:
-    """生成 JWT Token（简化版）。"""
-    # 这是简化实现，生产环境应该使用真正的 JWT
-    import base64
-    import json
-    
+# 前端菜单/按钮权限标识。
+# 后端权限体系（access_control）使用动作级标识，
+# 这里把角色映射成前端已使用的权限串，保证两套标识同时可用。
+ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
+    "employee": [
+        "dashboard:view",
+        "planning:month:view",
+        "planning:day:view",
+        "planning:result:view",
+        "performance:dashboard:view",
+        "performance:self-review:view",
+    ],
+    "manager": [
+        "department:dashboard:view",
+        "department:month-approval:view",
+        "department:result-confirm:view",
+        "department:todo:view",
+        "department:template:view",
+        "department:standard:view",
+        "department:score-rule:view",
+        "leader:workbench:view",
+    ],
+    "department_leader": [
+        "department:dashboard:view",
+        "department:month-approval:view",
+        "department:result-confirm:view",
+        "department:todo:view",
+        "department:template:view",
+        "department:standard:view",
+        "department:score-rule:view",
+        "department:export-task:view",
+        "department:department-ledger:view",
+        "leader:workbench:view",
+        "leader:month-approval:view",
+        "leader:daily-review:view",
+        "leader:result-suggest:view",
+        "leader:plan-adjust:view",
+        "leader:team-ledger:view",
+    ],
+    "hr": [
+        "system:dashboard:view",
+        "system:employee:register",
+        "system:employee:view",
+        "system:org:view",
+        "system:role:view",
+        "system:permission:view",
+        "system:workday:view",
+        "system:week-standard:view",
+        "system:audit:view",
+        "system:knowledge:view",
+        "dispute:dashboard:view",
+        "dispute:case:view",
+    ],
+    "admin": [
+        "system:dashboard:view",
+        "system:employee:register",
+        "system:employee:view",
+        "system:org:view",
+        "system:role:view",
+        "system:permission:view",
+        "system:workday:view",
+        "system:week-standard:view",
+        "system:audit:view",
+        "system:knowledge:view",
+    ],
+}
+
+
+def _resolve_permissions(db: Session, employee: Employee) -> tuple[list[str], list[str]]:
+    """返回 (前端权限串, 后端动作权限串)。
+
+    角色来自 access_control 的统一解析（HR 走部门配置、
+    部门负责人走飞书 leader_id、管理员走 system_admin 显式授权）。
+    """
+    context = build_access_context(db, employee)
+
+    ui_permissions: set[str] = set()
+    for role in context.roles:
+        ui_permissions.update(ROLE_UI_PERMISSIONS.get(role, []))
+
+    # 后端动作权限原样透出，便于前端/客户端按需判断。
+    backend_permissions = set(context.permissions)
+    return sorted(ui_permissions), sorted(backend_permissions)
+
+
+def _generate_token(user_id: str, username: str, token_version: int = 1) -> tuple[str, str]:
+    """生成不可伪造的 HMAC Token。
+
+    Payload 包含 token_version；离职或禁用账号时递增版本即可立即使旧 Token 失效。
+    """
+    now = int(time.time())
     payload = {
         "sub": user_id,
         "username": username,
-        "exp": (datetime.utcnow() + timedelta(days=7)).timestamp(),
+        "ver": token_version,
+        "iat": now,
+        "exp": now + 7 * 24 * 3600,
     }
-    token = base64.b64encode(json.dumps(payload).encode()).decode()
-    refresh_token = base64.b64encode(json.dumps({"sub": user_id}).encode()).decode()
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    ).decode().rstrip("=")
+    signature = hmac.new(
+        settings.auth_token_secret.encode(),
+        encoded.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    token = f"{encoded}.{signature}"
+    refresh_token = hmac.new(
+        settings.auth_token_secret.encode(),
+        f"refresh:{user_id}:{token_version}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
     return token, refresh_token
+
+
+def _decode_token(token: str) -> dict[str, Any]:
+    """校验签名与有效期。
+
+    密钥轮换过渡期同时接受新旧两个密钥（旧密钥来自 AUTH_TOKEN_SECRET_PREV），
+    轮换完成观察一个 Token 有效期后应清空旧密钥。
+    """
+    try:
+        encoded, signature = token.split(".", 1)
+    except ValueError as exc:
+        raise ValueError("Token 格式错误") from exc
+
+    candidates = [settings.auth_token_secret]
+    if settings.auth_token_secret_prev:
+        candidates.append(settings.auth_token_secret_prev)
+
+    matched = False
+    for secret in candidates:
+        expected = hmac.new(
+            secret.encode(),
+            encoded.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        if hmac.compare_digest(signature, expected):
+            matched = True
+            break
+    if not matched:
+        raise ValueError("Token 签名无效")
+
+    padded = encoded + "=" * (-len(encoded) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(padded).decode())
+    if int(payload.get("exp", 0)) < int(time.time()):
+        raise ValueError("Token 已过期")
+    return payload
 
 
 @router.post("/login")
@@ -148,12 +287,40 @@ async def login(
             },
         }
     
-    # 检查数据库中的员工
-    employee = db.query(Employee).filter(Employee.name == username).first()
+    # 检查数据库中的员工：支持登录账号、手机号或飞书身份登录。
+    employee = (
+        db.query(Employee)
+        .filter(
+            (Employee.login_account == username.lower())
+            | (Employee.email == username)
+            | (Employee.name == username)
+        )
+        .first()
+    )
+    if not employee:
+        identity = (
+            db.query(FeishuIdentity)
+            .filter(
+                FeishuIdentity.identity_value == username,
+                FeishuIdentity.active.is_(True),
+            )
+            .first()
+        )
+        employee = db.get(Employee, identity.employee_id) if identity else None
     if not employee:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误",
+        )
+    if employee.employment_status == "exited":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="员工已离职，账号已禁用",
+        )
+    if employee.account_status != "enabled":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="账号已禁用，请联系管理员",
         )
     
     # 简化实现：任何员工使用 "123456" 作为密码
@@ -163,83 +330,18 @@ async def login(
             detail="用户名或密码错误",
         )
     
-    # 确定角色（基于是否是主管或 HR）
-    roles = ["employee"]
-    permissions = [
-        "dashboard:view",
-        "planning:month:view",
-        "planning:day:view",
-        "planning:result:view",
-        "performance:dashboard:view",
-        "performance:self-review:view",
-    ]
-    
-    # 检查是否是部门主管
-    is_manager = (
-        db.query(Department)
-        .filter(Department.leader_id == employee.id)
-        .first() is not None
+    # 角色与权限统一由 access_control 解析：
+    #   - HR：成员属于 hr_department_config 中任一启用的部门
+    #   - 部门负责人：飞书部门 leader_id（自动覆盖子部门）
+    #   - 系统管理员：system_admin 表显式授权（不参与业务评分）
+    #   - 多个角色可叠加
+    context = build_access_context(db, employee)
+    roles = sorted(context.roles)
+    permissions, backend_permissions = _resolve_permissions(db, employee)
+
+    access_token, refresh_token = _generate_token(
+        employee.id, username, employee.token_version
     )
-    if is_manager:
-        roles = ["manager"]
-        permissions = [
-            "department:dashboard:view",
-            "department:month-approval:view",
-            "department:result-confirm:view",
-            "department:todo:view",
-            "department:template:view",
-            "department:standard:view",
-            "department:score-rule:view",
-            "leader:workbench:view",
-            "dashboard:view",
-            "planning:month:view",
-            "planning:day:view",
-            "planning:result:view",
-            "performance:dashboard:view",
-            "performance:manager-review:view",
-        ]
-    
-    # 检查是否是 HR（特定部门或特殊标记）
-    if employee.department_id == "hr":  # 假设 HR 部门 ID 为 "hr"
-        roles = ["admin"]
-        permissions = [
-            "system:dashboard:view",
-            "system:employee:register",
-            "system:employee:view",
-            "system:org:view",
-            "system:role:view",
-            "system:permission:view",
-            "system:workday:view",
-            "system:week-standard:view",
-            "system:audit:view",
-            "system:knowledge:view",
-            "department:dashboard:view",
-            "department:month-approval:view",
-            "department:result-confirm:view",
-            "department:todo:view",
-            "department:template:view",
-            "department:standard:view",
-            "department:score-rule:view",
-            "department:export-task:view",
-            "department:department-ledger:view",
-            "leader:workbench:view",
-            "leader:month-approval:view",
-            "leader:daily-review:view",
-            "leader:result-suggest:view",
-            "leader:plan-adjust:view",
-            "leader:team-ledger:view",
-            "dashboard:view",
-            "planning:month:view",
-            "planning:day:view",
-            "planning:result:view",
-            "dispute:dashboard:view",
-            "dispute:case:view",
-            "performance:dashboard:view",
-            "performance:self-review:view",
-            "performance:manager-review:view",
-        ]
-    
-    access_token, refresh_token = _generate_token(employee.id, username)
     
     return {
         "code": 0,
@@ -253,60 +355,66 @@ async def login(
             "forceChangePassword": False,
             "roles": roles,
             "permissions": permissions,
+            "backendPermissions": backend_permissions,
         },
     }
 
 
 @router.get("/me")
-async def get_me(request: Request) -> dict:
-    """获取当前用户信息。"""
-    # 从前端的 Authorization 请求头中获取用户信息
-    # Token 格式为 base64 编码的 JSON，包含 username 和其他信息
-    # 这是简化实现，生产环境应该使用真正的 JWT
-    
+async def get_me(request: Request, db: Session = Depends(get_db)) -> dict:
+    """获取当前用户信息，并校验离职/禁用状态与 Token 版本。"""
     authorization = request.headers.get("Authorization")
-    
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="缺少认证凭据",
-        )
-    
+        raise HTTPException(status_code=401, detail="缺少认证凭据")
+    token = authorization[7:]
     try:
-        token = authorization[7:]  # 移除 "Bearer " 前缀
-        # 尝试从 token 中解析用户信息
-        # Token 来自 _generate_token，格式为 base64(json({sub, username, exp}))
-        payload_json = base64.b64decode(token).decode()
-        payload = json.loads(payload_json)
-        username = payload.get("username")
-        
-        if not username:
-            raise ValueError("Token 中缺少 username")
-            
-        # 从 TEST_USERS 中查找用户信息
-        if username in TEST_USERS:
-            user_info = TEST_USERS[username]
-            return {
-                "code": 0,
-                "data": {
-                    "userId": user_info["id"],
-                    "username": username,
-                    "realName": user_info["name"],
-                    "forceChangePassword": False,
-                    "roles": user_info["roles"],
-                    "permissions": user_info["permissions"],
-                },
-            }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="用户不存在",
-            )
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"无效的认证凭据: {str(e)}",
-        )
+        payload = _decode_token(token)
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError, base64.binascii.Error):
+        raise HTTPException(status_code=401, detail="无效的认证凭据")
+
+    username = payload.get("username")
+    user_id = payload.get("sub")
+    if not username or not user_id:
+        raise HTTPException(status_code=401, detail="Token 中缺少用户信息")
+
+    employee = db.get(Employee, str(user_id))
+    if employee:
+        if employee.employment_status == "exited" or employee.account_status != "enabled":
+            raise HTTPException(status_code=403, detail="员工已离职或账号已禁用")
+        if int(payload.get("ver", 1)) != employee.token_version:
+            raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")
+
+    if username in TEST_USERS:
+        user_info = TEST_USERS[username]
+        return {
+            "code": 0,
+            "data": {
+                "userId": user_info["id"],
+                "username": username,
+                "realName": user_info["name"],
+                "forceChangePassword": False,
+                "roles": user_info["roles"],
+                "permissions": user_info["permissions"],
+            },
+        }
+    if not employee:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    # 与登录接口保持一致：角色/权限均来自 access_context 实时解析。
+    context = build_access_context(db, employee)
+    permissions, backend_permissions = _resolve_permissions(db, employee)
+    return {
+        "code": 0,
+        "data": {
+            "userId": employee.id,
+            "username": employee.login_account or username,
+            "realName": employee.name,
+            "forceChangePassword": False,
+            "roles": sorted(context.roles),
+            "permissions": permissions,
+            "backendPermissions": backend_permissions,
+        },
+    }
 
 
 @router.post("/logout")

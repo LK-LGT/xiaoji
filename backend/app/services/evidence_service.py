@@ -92,6 +92,11 @@ def record_attendance_anomalies(
             summary=summary,
             impact=note,
             source=EvidenceSource.ATTENDANCE.value,
+            # source_ref 承载「周期 + 考勤来源 + 异常类型」的定位键，
+            # 便于按 (员工, 周期, 类型) 幂等重建，避免跨员工误删。
+            source_ref=(
+                f"{anom.employee_id}|{anom.period}|attendance|{anom.anomaly_type.value}"
+            ),
             as_of=anom.as_of,
             # 决策②：六类全部只作参考，不自动扣分
             usage=EvidenceUsage.REFERENCE_ONLY.value,

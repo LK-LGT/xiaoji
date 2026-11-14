@@ -4,6 +4,7 @@ import { defaultWorkspacePath, hasPermission } from '@/navigation/workspaces'
 import { resolveLegacyResultPath } from '@/navigation/resultRoutes'
 import { useAuthStore } from '@/stores/auth'
 import { pinia } from '@/stores'
+import { withAppShell } from '@/router/layout'
 
 // 扩展 Vue Router 的路由 Meta 类型
 declare module 'vue-router' {
@@ -14,97 +15,155 @@ declare module 'vue-router' {
   }
 }
 
-const EmployeeDashboard = () => import('@/views/employee/EmployeeDashboard.vue')
-const EmployeeMonthPlanEdit = () => import('@/views/employee/EmployeeMonthPlanEdit.vue')
-const EmployeeMonthPlanAiWorkspace = () => import('@/views/employee/EmployeeMonthPlanAiWorkspace.vue')
-const EmployeeDayPlanEdit = () => import('@/views/employee/EmployeeDayPlanEdit.vue')
-const EmployeePerformanceEvidence = () => import('@/views/employee/EmployeePerformanceEvidence.vue')
-const EmployeeAppeals = () => import('@/views/employee/EmployeeAppeals.vue')
-const EmployeeMonthPlanList = () => import('@/views/employee/EmployeeMonthPlanListRefactored.vue')
-const EmployeeDayPlanList = () => import('@/views/employee/EmployeeDayPlanList.vue')
-const EmployeeWeekPlanList = () => import('@/views/employee/EmployeeWeekPlanList.vue')
-const EmployeeWeekPlanEdit = () => import('@/views/employee/EmployeeWeekPlanEdit.vue')
-const EmployeeWeekPlanDetail = () => import('@/views/employee/EmployeeWeekPlanDetail.vue')
-const EmployeeResultCenter = () => import('@/views/employee/EmployeeResultCenter.vue')
-const EmployeeResultPackageWorkspace = () => import('@/views/employee/EmployeeResultPackageWorkspace.vue')
-const EmployeeResultArchiveDetail = () => import('@/views/employee/EmployeeResultArchiveDetail.vue')
-const DisputeDashboard = () => import('@/views/dispute/DisputeDashboard.vue')
-const DisputeCases = () => import('@/views/dispute/DisputeCases.vue')
-const DisputeCaseDetail = () => import('@/views/dispute/DisputeCaseDetail.vue')
-const DisputeReviewPanel = () => import('@/views/dispute/DisputeReviewPanel.vue')
+// ---------------------------------------------------------------------------
+// 路由组件一律使用「静态 import」。
+//
+// 止血原因：此前所有页面都是 () => import(...) 懒加载，在
+// @vitejs/plugin-vue 5.2.4 + vite 6.4.3 组合下偶发出现模块 default 为
+// undefined 的情况，Vue Router 解析出来的组件是 undefined，<router-view />
+// 直接渲染成空注释节点（<!---->），表现为「左侧菜单能点、右侧整页空白」。
+//
+// 静态 import 让 Vite 在模块图里一次性解析出真实的组件对象，
+// 从根上绕开动态 chunk 的 default 解析问题。
+// 后续业务稳定后可以再按需切回懒加载，但必须配合 Suspense + 错误兜底。
+// ---------------------------------------------------------------------------
+
+import Login from '@/views/Login.vue'
+import ChangePassword from '@/views/ChangePassword.vue'
+import NoAccess from '@/views/NoAccess.vue'
+import MessageCenter from '@/views/MessageCenter.vue'
+import UserProfile from '@/views/profile/UserProfile.vue'
+
+import EmployeeDashboard from '@/views/employee/EmployeeDashboard.vue'
+import EmployeeMonthPlanEdit from '@/views/employee/EmployeeMonthPlanEdit.vue'
+import EmployeeMonthPlanAiWorkspace from '@/views/employee/EmployeeMonthPlanAiWorkspace.vue'
+import EmployeeDayPlanEdit from '@/views/employee/EmployeeDayPlanEdit.vue'
+import EmployeePerformanceEvidence from '@/views/employee/EmployeePerformanceEvidence.vue'
+import EmployeeAppeals from '@/views/employee/EmployeeAppeals.vue'
+import EmployeeMonthPlanList from '@/views/employee/EmployeeMonthPlanListRefactored.vue'
+import EmployeeDayPlanList from '@/views/employee/EmployeeDayPlanList.vue'
+import EmployeeWeekPlanList from '@/views/employee/EmployeeWeekPlanList.vue'
+import EmployeeWeekPlanEdit from '@/views/employee/EmployeeWeekPlanEdit.vue'
+import EmployeeWeekPlanDetail from '@/views/employee/EmployeeWeekPlanDetail.vue'
+import EmployeeResultCenter from '@/views/employee/EmployeeResultCenter.vue'
+import EmployeeResultPackageWorkspace from '@/views/employee/EmployeeResultPackageWorkspace.vue'
+import EmployeeResultArchiveDetail from '@/views/employee/EmployeeResultArchiveDetail.vue'
+
+import LeaderWorkbench from '@/views/leader/LeaderWorkbench.vue'
+import LeaderEmployeeWork from '@/views/leader/LeaderEmployeeWork.vue'
+import DailyReview from '@/views/leader/DailyReview.vue'
+import WeekPlanApproval from '@/views/leader/WeekPlanApproval.vue'
+import WeekResultApproval from '@/views/leader/WeekResultApproval.vue'
+import ResultSuggest from '@/views/leader/ResultSuggest.vue'
+import PlanAdjust from '@/views/leader/PlanAdjust.vue'
+import TeamLedger from '@/views/leader/TeamLedger.vue'
+import AiMonthPlanContext from '@/views/leader/AiMonthPlanContext.vue'
+import LeaderKnowledge from '@/views/leader/LeaderKnowledge.vue'
+
+import DepartmentDashboard from '@/views/department/DepartmentDashboard.vue'
+import MonthPlanApproval from '@/views/department/MonthPlanApproval.vue'
+import ResultConfirm from '@/views/department/ResultConfirm.vue'
+import Todo from '@/views/department/Todo.vue'
+import DeliverableTemplate from '@/views/department/DeliverableTemplate.vue'
+import AcceptanceStandard from '@/views/department/AcceptanceStandard.vue'
+import ScoreRule from '@/views/department/ScoreRule.vue'
+import DepartmentLedger from '@/views/department/DepartmentLedger.vue'
+import WeekPlanLedger from '@/views/department/WeekPlanLedger.vue'
+import ExportTasks from '@/views/department/ExportTasks.vue'
+
+import SystemDashboard from '@/views/system/SystemDashboard.vue'
+import EmployeeRegister from '@/views/system/EmployeeRegister.vue'
+import EmployeeManagement from '@/views/system/EmployeeManagement.vue'
+import OrgManagement from '@/views/system/OrgManagement.vue'
+import RoleManagement from '@/views/system/RoleManagement.vue'
+import PermissionManagement from '@/views/system/PermissionManagement.vue'
+import WorkdayRules from '@/views/system/WorkdayRules.vue'
+import WeekPlanStandardSupplement from '@/views/system/WeekPlanStandardSupplement.vue'
+import AuditLog from '@/views/system/AuditLog.vue'
+import AiManagement from '@/views/system/AiManagement.vue'
+import EnterpriseKnowledge from '@/views/system/EnterpriseKnowledge.vue'
+
+import PerformanceDashboard from '@/views/performance/PerformanceDashboard.vue'
+import EmployeeSelfReview from '@/views/performance/EmployeeSelfReview.vue'
+import ManagerReview from '@/views/performance/ManagerReview.vue'
+
+import DisputeDashboard from '@/views/dispute/DisputeDashboard.vue'
+import DisputeCases from '@/views/dispute/DisputeCases.vue'
+import DisputeCaseDetail from '@/views/dispute/DisputeCaseDetail.vue'
+import DisputeReviewPanel from '@/views/dispute/DisputeReviewPanel.vue'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/login', component: () => import('@/views/Login.vue'), meta: { public: true } },
-    { path: '/change-password', component: () => import('@/views/ChangePassword.vue'), meta: { passwordChange: true } },
-    { path: '/', component: () => import('@/views/NoAccess.vue') },
-    { path: '/no-access', component: () => import('@/views/NoAccess.vue') },
-    { path: '/messages', component: () => import('@/views/MessageCenter.vue') },
-    { path: '/profile', component: () => import('@/views/profile/UserProfile.vue') },
-    { path: '/leader/workbench', component: () => import('@/views/leader/LeaderWorkbench.vue'), meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/employees/:ownerId/work', component: () => import('@/views/leader/LeaderEmployeeWork.vue'), meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/my-month-plans', component: EmployeeMonthPlanList, meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/my-month-plans/new/edit', component: EmployeeMonthPlanEdit, meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/my-month-plans/:id/edit', component: EmployeeMonthPlanEdit, meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/my-month-plans/:id/ai', component: EmployeeMonthPlanAiWorkspace, meta: { permission: 'leader:workbench:view' } },
+    // --- 独立页面（不套后台框架） ---
+    { path: '/login', component: Login, meta: { public: true } },
+    { path: '/change-password', component: ChangePassword, meta: { passwordChange: true } },
+
+    // --- 后台框架页面 ---
+    withAppShell('/', NoAccess),
+    withAppShell('/no-access', NoAccess),
+    withAppShell('/messages', MessageCenter),
+    withAppShell('/profile', UserProfile),
+
+    // --- 领导工作台 ---
+    withAppShell('/leader/workbench', LeaderWorkbench, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/employees/:ownerId/work', LeaderEmployeeWork, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/my-month-plans', EmployeeMonthPlanList, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/my-month-plans/new/edit', EmployeeMonthPlanEdit, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/my-month-plans/:id/edit', EmployeeMonthPlanEdit, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/my-month-plans/:id/ai', EmployeeMonthPlanAiWorkspace, { permission: 'leader:workbench:view' }),
     { path: '/leader/my-month-plans/:id', redirect: '/leader/my-month-plans' },
-    { path: '/leader/my-week-plans', component: EmployeeWeekPlanList, meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/my-week-plans/new/edit', component: EmployeeWeekPlanEdit, meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/my-week-plans/:id/edit', component: EmployeeWeekPlanEdit, meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/my-week-plans/:id', component: EmployeeWeekPlanDetail, meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/my-day-plans', component: EmployeeDayPlanList, meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/my-day-plans/edit', component: EmployeeDayPlanEdit, meta: { permission: 'leader:workbench:view' } },
+    withAppShell('/leader/my-week-plans', EmployeeWeekPlanList, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/my-week-plans/new/edit', EmployeeWeekPlanEdit, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/my-week-plans/:id/edit', EmployeeWeekPlanEdit, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/my-week-plans/:id', EmployeeWeekPlanDetail, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/my-day-plans', EmployeeDayPlanList, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/my-day-plans/edit', EmployeeDayPlanEdit, { permission: 'leader:workbench:view' }),
     {
       path: '/leader/results/submit',
       redirect: (to) => resolveLegacyResultPath('/leader/results/submit', to.query),
       meta: { permission: 'leader:workbench:view' },
     },
-    { path: '/leader/results/workspace/:type/:planId', component: EmployeeResultPackageWorkspace, meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/results/archive/:type/:resultId', component: EmployeeResultArchiveDetail, meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/results', component: EmployeeResultCenter, meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/month-plan-approval', component: () => import('@/views/department/MonthPlanApproval.vue'), meta: { permission: 'leader:month-approval:view' } },
-    { path: '/leader/daily-review', component: () => import('@/views/leader/DailyReview.vue'), meta: { permission: 'leader:daily-review:view' } },
-    { path: '/leader/week-plan-approval', component: () => import('@/views/leader/WeekPlanApproval.vue'), meta: { permission: 'leader:workbench:view' } },
+    withAppShell('/leader/results/workspace/:type/:planId', EmployeeResultPackageWorkspace, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/results/archive/:type/:resultId', EmployeeResultArchiveDetail, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/results', EmployeeResultCenter, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/month-plan-approval', MonthPlanApproval, { permission: 'leader:month-approval:view' }),
+    withAppShell('/leader/daily-review', DailyReview, { permission: 'leader:daily-review:view' }),
+    withAppShell('/leader/week-plan-approval', WeekPlanApproval, { permission: 'leader:workbench:view' }),
     {
       path: '/leader/week-result-approval',
       redirect: (to) => resolveLegacyResultPath('/leader/week-result-approval', to.query),
       meta: { permission: 'leader:result-suggest:view' },
     },
-    { path: '/leader/result-suggest', component: () => import('@/views/leader/ResultSuggest.vue'), meta: { permission: 'leader:result-suggest:view' } },
-    { path: '/leader/plan-adjust', component: () => import('@/views/leader/PlanAdjust.vue'), meta: { permission: 'leader:plan-adjust:view' } },
-    { path: '/leader/team-ledger', component: () => import('@/views/leader/TeamLedger.vue'), meta: { permission: 'leader:team-ledger:view' } },
-    { path: '/leader/ai-month-context', component: () => import('@/views/leader/AiMonthPlanContext.vue'), meta: { permission: 'leader:workbench:view' } },
-    { path: '/leader/knowledge', component: () => import('@/views/leader/LeaderKnowledge.vue'), meta: { permission: 'leader:workbench:view' } },
-    { path: '/department/dashboard', component: () => import('@/views/department/DepartmentDashboard.vue'), meta: { permission: 'department:dashboard:view' } },
-    { path: '/department/employees/:ownerId/work', component: () => import('@/views/leader/LeaderEmployeeWork.vue'), meta: { permission: 'department:dashboard:view' } },
-    { path: '/department/plan-approval', component: () => import('@/views/department/MonthPlanApproval.vue'), meta: { permission: 'department:month-approval:view' } },
-    { path: '/department/week-plan-approval', component: () => import('@/views/leader/WeekPlanApproval.vue'), meta: { permission: 'department:month-approval:view' } },
-    { path: '/department/week-result-approval', component: () => import('@/views/leader/WeekResultApproval.vue'), meta: { permission: 'department:result-confirm:view' } },
-    { path: '/department/daily-review', component: () => import('@/views/leader/DailyReview.vue'), meta: { permission: 'department:dashboard:view' } },
-    { path: '/department/result-confirm', component: () => import('@/views/department/ResultConfirm.vue'), meta: { permission: 'department:result-confirm:view' } },
-    { path: '/department/todo', component: () => import('@/views/department/Todo.vue'), meta: { permission: 'department:todo:view' } },
-    { path: '/department/template', component: () => import('@/views/department/DeliverableTemplate.vue'), meta: { permission: 'department:template:view' } },
-    { path: '/department/standard', component: () => import('@/views/department/AcceptanceStandard.vue'), meta: { permission: 'department:standard:view' } },
-    { path: '/department/score-rule', component: () => import('@/views/department/ScoreRule.vue'), meta: { permission: 'department:score-rule:view' } },
-    { path: '/department/department-ledger', component: () => import('@/views/department/DepartmentLedger.vue'), meta: { permission: 'department:department-ledger:view' } },
-    { path: '/department/week-plan-ledger', component: () => import('@/views/department/WeekPlanLedger.vue'), meta: { permission: 'department:dashboard:view' } },
-    { path: '/department/export-tasks', component: () => import('@/views/department/ExportTasks.vue'), meta: { permission: 'department:export-task:view' } },
-    { path: '/system/dashboard', alias: '/dashboard', component: () => import('@/views/system/SystemDashboard.vue'), meta: { permission: 'system:dashboard:view' } },
-    { path: '/performance', alias: '/performance/dashboard', component: () => import('@/views/performance/PerformanceDashboard.vue'), meta: { permission: 'performance:dashboard:view' } },
-    { path: '/performance/self-reviews', component: () => import('@/views/performance/EmployeeSelfReview.vue'), meta: { permission: 'performance:self-review:view' } },
-    { path: '/performance/manager-reviews', component: () => import('@/views/performance/ManagerReview.vue'), meta: { permission: 'performance:manager-review:view' } },
-    { path: '/employee/dashboard', alias: '/employee/workbench', component: EmployeeDashboard, meta: { permission: 'dashboard:view' } },
+    withAppShell('/leader/result-suggest', ResultSuggest, { permission: 'leader:result-suggest:view' }),
+    withAppShell('/leader/plan-adjust', PlanAdjust, { permission: 'leader:plan-adjust:view' }),
+    withAppShell('/leader/team-ledger', TeamLedger, { permission: 'leader:team-ledger:view' }),
+    withAppShell('/leader/ai-month-context', AiMonthPlanContext, { permission: 'leader:workbench:view' }),
+    withAppShell('/leader/knowledge', LeaderKnowledge, { permission: 'leader:workbench:view' }),
+
+    // --- 部门管理 ---
+    withAppShell('/department/dashboard', DepartmentDashboard, { permission: 'department:dashboard:view' }),
+    withAppShell('/department/employees/:ownerId/work', LeaderEmployeeWork, { permission: 'department:dashboard:view' }),
+    withAppShell('/department/plan-approval', MonthPlanApproval, { permission: 'department:month-approval:view' }),
+    withAppShell('/department/week-plan-approval', WeekPlanApproval, { permission: 'department:month-approval:view' }),
+    withAppShell('/department/week-result-approval', WeekResultApproval, { permission: 'department:result-confirm:view' }),
+    withAppShell('/department/daily-review', DailyReview, { permission: 'department:dashboard:view' }),
+    withAppShell('/department/result-confirm', ResultConfirm, { permission: 'department:result-confirm:view' }),
+    withAppShell('/department/todo', Todo, { permission: 'department:todo:view' }),
+    withAppShell('/department/template', DeliverableTemplate, { permission: 'department:template:view' }),
+    withAppShell('/department/standard', AcceptanceStandard, { permission: 'department:standard:view' }),
+    withAppShell('/department/score-rule', ScoreRule, { permission: 'department:score-rule:view' }),
+    withAppShell('/department/department-ledger', DepartmentLedger, { permission: 'department:department-ledger:view' }),
+    withAppShell('/department/week-plan-ledger', WeekPlanLedger, { permission: 'department:dashboard:view' }),
+    withAppShell('/department/export-tasks', ExportTasks, { permission: 'department:export-task:view' }),
+
+    // --- 员工工作台 ---
+    withAppShell('/employee/dashboard', EmployeeDashboard, { permission: 'dashboard:view' }, '/employee/workbench'),
     { path: '/employee/month-detail', redirect: '/employee/month-plans' },
     { path: '/employee/month-plans/:id', redirect: '/employee/month-plans' },
-    {
-      path: '/employee/month-edit',
-      alias: ['/employee/month-plans/new/edit', '/employee/month-plans/:id/edit'],
-      component: EmployeeMonthPlanEdit,
-      meta: { permission: 'planning:month:view' },
-    },
-    { path: '/employee/month-plans/:id/ai', component: EmployeeMonthPlanAiWorkspace, meta: { permission: 'planning:month:view' } },
-    { path: '/employee/daily-plan', alias: '/employee/day-plans/edit', component: EmployeeDayPlanEdit, meta: { permission: 'planning:day:view' } },
+    withAppShell('/employee/month-edit', EmployeeMonthPlanEdit, { permission: 'planning:month:view' }, ['/employee/month-plans/new/edit', '/employee/month-plans/:id/edit']),
+    withAppShell('/employee/month-plans/:id/ai', EmployeeMonthPlanAiWorkspace, { permission: 'planning:month:view' }),
+    withAppShell('/employee/daily-plan', EmployeeDayPlanEdit, { permission: 'planning:day:view' }, '/employee/day-plans/edit'),
     {
       path: '/employee/result-submit',
       alias: '/employee/results/submit',
@@ -121,12 +180,12 @@ const router = createRouter({
       },
       meta: { permission: 'planning:result:view' },
     },
-    { path: '/employee/ledger', alias: '/employee/performance-evidence', component: EmployeePerformanceEvidence, meta: { permission: 'dashboard:view' } },
-    { path: '/employee/appeal', alias: '/employee/appeals', component: EmployeeAppeals, meta: { permission: 'dashboard:view' } },
-    { path: '/employee/month-plans', alias: '/planning/month', component: EmployeeMonthPlanList, meta: { permission: 'planning:month:view' } },
-    { path: '/employee/week-plans', alias: '/planning/week', component: EmployeeWeekPlanList, meta: { permission: 'dashboard:view' } },
-    { path: '/employee/week-plans/new/edit', component: EmployeeWeekPlanEdit, meta: { permission: 'dashboard:view' } },
-    { path: '/employee/week-plans/:id/edit', component: EmployeeWeekPlanEdit, meta: { permission: 'dashboard:view' } },
+    withAppShell('/employee/ledger', EmployeePerformanceEvidence, { permission: 'dashboard:view' }, '/employee/performance-evidence'),
+    withAppShell('/employee/appeal', EmployeeAppeals, { permission: 'dashboard:view' }, '/employee/appeals'),
+    withAppShell('/employee/month-plans', EmployeeMonthPlanList, { permission: 'planning:month:view' }, '/planning/month'),
+    withAppShell('/employee/week-plans', EmployeeWeekPlanList, { permission: 'dashboard:view' }, '/planning/week'),
+    withAppShell('/employee/week-plans/new/edit', EmployeeWeekPlanEdit, { permission: 'dashboard:view' }),
+    withAppShell('/employee/week-plans/:id/edit', EmployeeWeekPlanEdit, { permission: 'dashboard:view' }),
     {
       path: '/employee/week-plans/:weekPlanId/items/:itemId/results/submit',
       redirect: (to) => ({
@@ -135,25 +194,35 @@ const router = createRouter({
       }),
       meta: { permission: 'dashboard:view' },
     },
-    { path: '/employee/week-plans/:id', component: EmployeeWeekPlanDetail, meta: { permission: 'dashboard:view' } },
-    { path: '/employee/day-plans', alias: '/planning/day', component: EmployeeDayPlanList, meta: { permission: 'planning:day:view' } },
-    { path: '/employee/results/workspace/:type/:planId', component: EmployeeResultPackageWorkspace, meta: { permission: 'planning:result:view' } },
-    { path: '/employee/results/archive/:type/:resultId', component: EmployeeResultArchiveDetail, meta: { permission: 'planning:result:view' } },
-    { path: '/employee/results', alias: '/planning/result', component: EmployeeResultCenter, meta: { permission: 'planning:result:view' } },
-    { path: '/system/employee-register', component: () => import('@/views/system/EmployeeRegister.vue'), meta: { permission: 'system:employee:register' } },
-    { path: '/system/employees', alias: '/system/users', component: () => import('@/views/system/EmployeeManagement.vue'), meta: { permission: 'system:employee:view' } },
-    { path: '/system/orgs', component: () => import('@/views/system/OrgManagement.vue'), meta: { permission: 'system:org:view' } },
-    { path: '/system/roles', component: () => import('@/views/system/RoleManagement.vue'), meta: { permission: 'system:role:view' } },
-    { path: '/system/permissions', component: () => import('@/views/system/PermissionManagement.vue'), meta: { permission: 'system:permission:view' } },
-    { path: '/system/workday-rules', component: () => import('@/views/system/WorkdayRules.vue'), meta: { permission: 'system:workday:view' } },
-    { path: '/system/week-plan-standard-supplements', component: () => import('@/views/system/WeekPlanStandardSupplement.vue'), meta: { permission: 'system:week-standard:view' } },
-    { path: '/system/audits', component: () => import('@/views/system/AuditLog.vue'), meta: { permission: 'system:audit:view' } },
-    { path: '/system/ai', component: () => import('@/views/system/AiManagement.vue'), meta: { permission: 'system:dashboard:view' } },
-    { path: '/system/knowledge', component: () => import('@/views/system/EnterpriseKnowledge.vue'), meta: { permission: 'system:knowledge:view' } },
-    { path: '/dispute/dashboard', component: DisputeDashboard, meta: { permission: 'dispute:dashboard:view' } },
-    { path: '/dispute/cases', component: DisputeCases, meta: { permission: 'dispute:case:view' } },
-    { path: '/dispute/cases/:id', component: DisputeCaseDetail, meta: { permission: 'dispute:case:view' } },
-    { path: '/dispute/cases/:id/review-panel', component: DisputeReviewPanel, meta: { permission: 'dispute:case:view' } },
+    withAppShell('/employee/week-plans/:id', EmployeeWeekPlanDetail, { permission: 'dashboard:view' }),
+    withAppShell('/employee/day-plans', EmployeeDayPlanList, { permission: 'planning:day:view' }, '/planning/day'),
+    withAppShell('/employee/results/workspace/:type/:planId', EmployeeResultPackageWorkspace, { permission: 'planning:result:view' }),
+    withAppShell('/employee/results/archive/:type/:resultId', EmployeeResultArchiveDetail, { permission: 'planning:result:view' }),
+    withAppShell('/employee/results', EmployeeResultCenter, { permission: 'planning:result:view' }, '/planning/result'),
+
+    // --- 绩效 ---
+    withAppShell('/performance', PerformanceDashboard, { permission: 'performance:dashboard:view' }, '/performance/dashboard'),
+    withAppShell('/performance/self-reviews', EmployeeSelfReview, { permission: 'performance:self-review:view' }),
+    withAppShell('/performance/manager-reviews', ManagerReview, { permission: 'performance:manager-review:view' }),
+
+    // --- 系统管理 ---
+    withAppShell('/system/dashboard', SystemDashboard, { permission: 'system:dashboard:view' }, '/dashboard'),
+    withAppShell('/system/employee-register', EmployeeRegister, { permission: 'system:employee:register' }),
+    withAppShell('/system/employees', EmployeeManagement, { permission: 'system:employee:view' }, '/system/users'),
+    withAppShell('/system/orgs', OrgManagement, { permission: 'system:org:view' }),
+    withAppShell('/system/roles', RoleManagement, { permission: 'system:role:view' }),
+    withAppShell('/system/permissions', PermissionManagement, { permission: 'system:permission:view' }),
+    withAppShell('/system/workday-rules', WorkdayRules, { permission: 'system:workday:view' }),
+    withAppShell('/system/week-plan-standard-supplements', WeekPlanStandardSupplement, { permission: 'system:week-standard:view' }),
+    withAppShell('/system/audits', AuditLog, { permission: 'system:audit:view' }),
+    withAppShell('/system/ai', AiManagement, { permission: 'system:dashboard:view' }),
+    withAppShell('/system/knowledge', EnterpriseKnowledge, { permission: 'system:knowledge:view' }),
+
+    // --- 争议处理 ---
+    withAppShell('/dispute/dashboard', DisputeDashboard, { permission: 'dispute:dashboard:view' }),
+    withAppShell('/dispute/cases', DisputeCases, { permission: 'dispute:case:view' }),
+    withAppShell('/dispute/cases/:id', DisputeCaseDetail, { permission: 'dispute:case:view' }),
+    withAppShell('/dispute/cases/:id/review-panel', DisputeReviewPanel, { permission: 'dispute:case:view' }),
   ],
 })
 

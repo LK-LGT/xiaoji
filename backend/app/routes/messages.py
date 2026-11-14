@@ -1,12 +1,31 @@
 """消息 API 路由。"""
 
-from typing import Optional
+from typing import Any, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db
+from ..core.db import get_db
 
 router = APIRouter(prefix="/v1/messages", tags=["消息"])
+
+
+def _empty_summary() -> dict[str, Any]:
+    """返回前端 MessageSummary 契约的空值。
+
+    前端 `src/api/messages.ts` 期望 camelCase 字段：
+    unreadCount / pendingTodoCount / unreadNoticeCount /
+    menuBadges / unreadMessages。
+    历史实现返回的是 unread_count / total_count / messages，
+    会让前端 `summary.menuBadges` 为 undefined，
+    进而在 AppShell 渲染时抛错、导致整个布局 patch 中断。
+    """
+    return {
+        "unreadCount": 0,
+        "pendingTodoCount": 0,
+        "unreadNoticeCount": 0,
+        "menuBadges": {},
+        "unreadMessages": [],
+    }
 
 
 @router.get("/summary")
@@ -17,11 +36,7 @@ async def get_messages_summary(
     """获取消息汇总（未读消息数等）。"""
     return {
         "code": 0,
-        "data": {
-            "unread_count": 0,
-            "total_count": 0,
-            "messages": [],
-        },
+        "data": _empty_summary(),
     }
 
 
@@ -36,10 +51,11 @@ async def list_messages(
     return {
         "code": 0,
         "data": {
-            "items": [],
+            "records": [],
             "total": 0,
-            "page": page,
-            "page_size": page_size,
+            "pageNo": page,
+            "pageSize": page_size,
+            "unreadCount": 0,
         },
     }
 
@@ -60,4 +76,4 @@ async def mark_all_as_read(
     db: Session = Depends(get_db),
 ) -> dict:
     """标记所有消息为已读。"""
-    return {"code": 0, "data": {"message": "所有消息已标记为已读"}}
+    return {"code": 0, "data": {"updated": 0}}

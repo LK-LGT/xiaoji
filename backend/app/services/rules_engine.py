@@ -13,7 +13,7 @@ from datetime import datetime
 import logging
 import time
 
-from backend.app.schemas_block4 import (
+from ..schemas_block4 import (
     NormalizationType,
     CalculationDetail,
     NormalizedMetricDetail,

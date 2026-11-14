@@ -8,9 +8,10 @@
 
 import pytest
 from datetime import datetime, timedelta
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
 
-from backend.app.core.db import get_sessionmaker, init_db
+from backend.app.domain.models import Base
 from backend.app.domain.models import (
     Employee,
     Department,
@@ -23,26 +24,21 @@ from backend.app.domain.models import (
 
 @pytest.fixture
 def db():
-    """创建测试数据库会话"""
-    init_db()
-    SessionLocal = get_sessionmaker()
+    """创建隔离的内存测试数据库会话。
+
+    旧实现复用线上库（init_db + get_sessionmaker）并在测试后
+    DELETE 全量 Employee / Department，会直接清空真实组织数据。
+    这里改为每个测试独立的内存库，不触碰 perf.db。
+    """
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
     session = SessionLocal()
-    
+
     yield session
-    
-    # 测试后清理
-    try:
-        session.query(AssessmentTask).delete()
-        session.query(ConfigSnapshot).delete()
-        session.query(WeightSet).delete()
-        session.query(Metric).delete()
-        session.query(Employee).delete()
-        session.query(Department).delete()
-        session.commit()
-    except Exception:
-        session.rollback()
-    finally:
-        session.close()
+
+    session.close()
+    engine.dispose()
 
 
 @pytest.fixture

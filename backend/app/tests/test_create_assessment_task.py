@@ -30,45 +30,26 @@ from backend.app import schemas, exceptions
 
 @pytest.fixture
 def db():
-    """创建测试数据库会话。"""
-    from backend.app.core.db import get_sessionmaker, init_db
-    init_db()
-    SessionLocal = get_sessionmaker()
+    """创建隔离的内存测试数据库会话。
+
+    旧实现复用线上库（init_db + get_sessionmaker），
+    会把测试数据写进真实 perf.db，且清理列表不完整，
+    导致 UNIQUE 约束冲突并污染线上数据。
+    这里改为每个测试独立的内存库，互不影响。
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from backend.app.domain.models import Base
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
     session = SessionLocal()
+
     yield session
-    
-    # 【B 优化】自动清理测试数据 - 解决 fixture 重复键约束
-    try:
-        from sqlalchemy import inspect
-        from backend.app.domain.models import Base
-        
-        # 获取所有表
-        inspector = inspect(session.bind)
-        tables = inspector.get_table_names()
-        
-        # 按依赖关系清理（外键最多的先删）
-        cleanup_order = [
-            'assessment_record',
-            'assessment_task',
-            'config_snapshot',
-            'weight_set',
-            'rubric',
-            'metric',
-            'employee',
-            'department',
-            'user',
-            'form_template',
-        ]
-        
-        for table in cleanup_order:
-            if table in tables:
-                session.execute(f"DELETE FROM {table}")
-        
-        session.commit()
-    except Exception as e:
-        session.rollback()
-    finally:
-        session.close()
+
+    session.close()
+    engine.dispose()
 
 
 @pytest.fixture

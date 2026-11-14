@@ -9,22 +9,22 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 import logging
 
-from backend.app.core.security import get_current_user
-from backend.app.core.db import get_db
-from backend.app.domain.models import (
+from ...core.security import get_current_user
+from ...core.db import get_db
+from ...domain.models import (
     Employee,
     AssessmentRecord,
     AssessmentTask,
     ConfigSnapshot,
 )
-from backend.app import exceptions
-from backend.app.schemas_block4 import (
+from ... import exceptions
+from ...schemas_block4 import (
     RulesEngineRequest,
     RulesEngineResponse,
     RulesEngineErrorResponse,
     CalculationDetail,
 )
-from backend.app.services.rules_engine import RulesEngine
+from ...services.rules_engine import RulesEngine
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/assessment/records", tags=["rules_engine"])
@@ -181,7 +181,7 @@ async def execute_rules_engine(
             )
         
         # 从 MetricValue 表读取指标值
-        from backend.app.domain.models import MetricValue
+        from ....domain.models import MetricValue
         
         metric_values = db.query(MetricValue).filter_by(
             record_id=record_id,

@@ -31,21 +31,26 @@ export const useAuthStore = defineStore('auth', {
       await this.logout()
     },
     async logout() {
+      // 无论服务端接口是否成功，本地凭证都必须在退出流程中清空
+      let apiError: unknown = null
       try {
         await logoutApi()
       } catch (error) {
-        // 即使logout请求失败，也继续清空本地状态
+        apiError = error
         console.error('Logout API error:', error)
       } finally {
-        // 确保无论如何都清空所有认证信息
+        // 1. 清空内存中的登录状态
         this.token = ''
         this.refreshToken = ''
         this.user = null
+        // 2. 清空本地存储中的登录凭证
         localStorage.removeItem('planning_access_token')
         localStorage.removeItem('planning_refresh_token')
-        // 清除其他可能的缓存
+        // 3. 清理会话级缓存
         sessionStorage.clear()
       }
+      // 接口异常不再向上抛出，避免阻断后续的路由跳转
+      if (apiError) return
     },
   },
 })
