@@ -1065,7 +1065,7 @@ class AuthUserResponse(BaseModel):
     permissions: list[str]
 
 
-# Mock 用户数据库
+# Mock 用户数据库 - 每个账号只有其对应角色的权限
 MOCK_USERS = {
     "admin": {
         "password": "admin123",
@@ -1075,30 +1075,73 @@ MOCK_USERS = {
         "mobile": "13800000001",
         "dept_id": "DEPT_HR",
         "department_name": "人力资源部",
-        "roles": ["admin", "hr"],
-        "permissions": ["system:dashboard:view", "system:employee:register", "system:employee:view", "system:org:view", "system:role:view", "system:permission:view", "system:workday:view", "system:week-standard:view", "system:audit:view", "system:knowledge:view"],
+        "roles": ["admin"],
+        "permissions": [
+            "system:dashboard:view",
+            "system:employee:register",
+            "system:employee:view",
+            "system:org:view",
+            "system:role:view",
+            "system:permission:view",
+            "system:workday:view",
+            "system:week-standard:view",
+            "system:audit:view",
+            "system:knowledge:view",
+        ],
     },
     "manager": {
         "password": "manager123",
         "user_id": 2,
         "username": "manager",
-        "realName": "王伟（销售经理）",
+        "realName": "王伟（部门主管）",
         "mobile": "13800000002",
         "dept_id": "DEPT_SALES",
         "department_name": "销售部",
         "roles": ["manager"],
-        "permissions": ["department:dashboard:view", "department:month-approval:view", "department:result-confirm:view", "department:todo:view", "department:template:view", "department:standard:view", "department:score-rule:view", "department:export-task:view"],
+        "permissions": [
+            "department:dashboard:view",
+            "department:month-approval:view",
+            "department:result-confirm:view",
+            "department:todo:view",
+            "department:template:view",
+            "department:standard:view",
+            "department:score-rule:view",
+            "department:export-task:view",
+        ],
+    },
+    "leader": {
+        "password": "leader123",
+        "user_id": 4,
+        "username": "leader",
+        "realName": "李明（直属领导）",
+        "mobile": "13800000004",
+        "dept_id": "DEPT_SALES",
+        "department_name": "销售部",
+        "roles": ["leader"],
+        "permissions": [
+            "leader:workbench:view",
+            "leader:month-approval:view",
+            "leader:daily-review:view",
+            "leader:result-suggest:view",
+        ],
     },
     "employee": {
         "password": "employee123",
         "user_id": 3,
         "username": "employee",
-        "realName": "刘刚（销售代表）",
+        "realName": "刘刚（普通员工）",
         "mobile": "13800000003",
         "dept_id": "DEPT_SALES",
         "department_name": "销售部",
         "roles": ["employee"],
-        "permissions": ["dashboard:view", "planning:month:view", "planning:day:view", "planning:result:view"],
+        "permissions": [
+            "dashboard:view",
+            "planning:month:view",
+            "planning:day:view",
+            "planning:result:view",
+            "performance:dashboard:view",
+            "performance:self-review:view",
+        ],
     },
 }
 
