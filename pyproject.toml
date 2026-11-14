@@ -1,0 +1,43 @@
+[project]
+name = "performance-management-framework"
+version = "0.1.0"
+description = "绩效管理平台 —— 后端 / 前端 / 智能体服务"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [
+    ".git",
+    "__pycache__",
+    "frontend",
+    "node_modules",
+    "backend/backup",
+    "backend/data",
+]
+
+[tool.ruff.lint]
+# 默认规则集：E（pycodestyle 错误）+ F（pyflakes）
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",    # 行长度由 formatter 管
+    "B008",    # FastAPI 的 Depends() 在默认值里是标准写法
+    "B904",    # raise ... from 在本项目不是强制
+    "UP038",   # isinstance 元组写法不强制
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试文件允许更宽松
+"backend/app/tests/*" = ["E402", "F401", "F811", "B017"]
+"backend/tests/*" = ["E402", "F401", "F811", "B017"]
+"agent-service/tests/*" = ["E402", "F401", "F811", "B017"]
+# 迁移脚本由 Alembic 管理
+"backend/migrations/*" = ["E402", "F401", "E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/app/tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5180",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:ci": "node scripts/run-tests-with-baseline.mjs",
+    "test:baseline": "node scripts/run-tests-with-baseline.mjs --update",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 5181"
   },
