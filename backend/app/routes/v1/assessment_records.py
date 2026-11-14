@@ -20,7 +20,15 @@ from sqlalchemy.orm import Session
 
 from ...core.db import get_db
 from ...dependencies import get_current_user
-from ...domain.models import AssessmentRecord, AssessmentTask, Employee
+from ...domain.models import (
+    AssessmentRecord,
+    AssessmentTask,
+    CommentDraft,
+    Employee,
+    RatingDraft,
+    Score,
+)
+from ...services import evidence_service
 from ...services.access_control import (
     AccessContext,
     PermissionAction,
@@ -208,3 +216,115 @@ def list_visible_periods(
         )
 
     return {"code": 0, "data": {"items": items, "total": len(items)}}
+
+
+@router.get("/{record_id}")
+def get_assessment_record(
+    record_id: str,
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """考核记录详情（主管评分页主数据源）。
+
+    证据按**考核周期**过滤：考勤证据的周期写在 source_ref 里，
+    必须用考核任务自身的 period 去筛，否则评 10 月绩效会混进 11 月的考勤异常。
+    """
+    record = db.get(AssessmentRecord, record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="考核记录不存在")
+
+    context = build_access_context(db, current_user)
+    employee = db.get(Employee, record.employee_id)
+    if employee is None:
+        raise HTTPException(status_code=404, detail="考核记录关联的员工不存在")
+    if not can_access_employee(context, employee, db):
+        raise HTTPException(status_code=403, detail="无权查看该考核记录")
+
+    task = db.get(AssessmentTask, record.task_id)
+    period = task.period if task is not None else None
+
+    # 注意：Score 模型有 query 列，会遮蔽 db.query 方法，这里统一用 select。
+    score = db.execute(
+        select(Score).where(Score.record_id == record_id)
+    ).scalar_one_or_none()
+    rating = db.execute(
+        select(RatingDraft)
+        .where(RatingDraft.record_id == record_id)
+        .order_by(RatingDraft.created_at.desc())
+    ).scalars().first()
+    comment = db.execute(
+        select(CommentDraft)
+        .where(CommentDraft.record_id == record_id)
+        .order_by(CommentDraft.created_at.desc())
+    ).scalars().first()
+
+    # 按考核周期过滤证据，避免跨月考勤异常混入
+    ev_rows = evidence_service.list_scoring_evidence(
+        db, record.employee_id, period=period
+    )
+    scoring_ev, reference_ev = evidence_service.split_by_usage(ev_rows)
+
+    return {
+        "code": 0,
+        "data": {
+            "record_id": record.id,
+            "task_id": record.task_id,
+            "status": record.status,
+            "period": period,
+            "period_display": to_dashed_period(period),
+            "employee": {
+                "id": employee.id,
+                "name": employee.name,
+                "position": employee.position,
+                "department_id": employee.department_id,
+            },
+            "submit_source": record.submit_source,
+            "confirmed_rating": record.confirmed_rating,
+            "manager_comment": record.manager_comment,
+            "self_review": record.self_review_content,
+            "score": (
+                {
+                    "total": score.total,
+                    "per_metric": score.per_metric_json,
+                    "computed_at": score.computed_at.isoformat(),
+                }
+                if score
+                else None
+            ),
+            "rating_draft": (
+                {
+                    "ratings": rating.ratings_json,
+                    "citations": rating.citations,
+                    "gaps": rating.gaps_json,
+                    "fairness": rating.fairness_json,
+                    "status": rating.status,
+                }
+                if rating
+                else None
+            ),
+            "comment_draft": (
+                {
+                    "markdown": comment.markdown,
+                    "citations": comment.citations,
+                    "status": comment.status,
+                }
+                if comment
+                else None
+            ),
+            "evidence": {
+                "scoring": [
+                    {
+                        "id": e.id,
+                        "summary": e.summary,
+                        "impact": e.impact,
+                        "source": e.source,
+                    }
+                    for e in scoring_ev
+                ],
+                # 决策②：参考类证据（考勤）单独返回，带免责标注
+                "reference_only": evidence_service.build_attendance_view(reference_ev),
+            },
+            "created_at": record.created_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
+        },
+    }

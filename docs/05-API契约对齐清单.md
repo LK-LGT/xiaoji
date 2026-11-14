@@ -10,16 +10,22 @@
 
 | 指标 | 数值 | 测量方式 |
 |---|---|---|
-| 前端 `方法+路径` 调用对 | **263** | 正则扫描 `frontend/src/api/*.ts` |
-| 后端已实现并命中 | **152** | `backend/scripts/check_api_contract.py` |
-| 后端缺失 | **111** | 同上 |
-| 缺失业务组数 | **22** | 按路径前两段聚合 |
-| 后端已注册端点 | **223** | 含 `include_in_schema=False` 的兼容旧路径 |
-| OpenAPI 可用路径数 | **207** | `GET /openapi.json` → 200 |
+| 前端 `方法+路径` 调用对 | **267** | 正则扫描 `frontend/src/api/*.ts` |
+| 后端已实现并命中 | **216** | `backend/scripts/check_api_contract.py` |
+| 后端缺失 | **51** | 同上 |
+| 缺失业务组数 | **16** | 按路径前两段聚合 |
+| 后端已注册端点 | **284** | 含 `include_in_schema=False` 的兼容旧路径 |
+| OpenAPI 可用路径数 | **199** | `GET /openapi.json` → 200 |
 
 > **关于「运行时 404 比例 27%」**：该结论来自批次 0 时的 `backend/uvicorn.log` 实测。
 > 2026-11-14 复测时该日志仅剩 13 条请求、0 条 404（服务重启后日志被截断），
 > **已无法复现**，故不再作为验收指标。批次 2 的验收改为契约脚本的已对齐数量。
+
+> **关于当前数字与批次 2 提交点的差异**：批次 2 提交时为「已对齐 152 / 缺失 111」。
+> 此后「已对齐 216 / 缺失 51」的增量同时包含**批次 3.1 员工计划闭环（24 个）**
+> 与**并行的 AI 域端点补齐**（`employee_ai.py` / `system_ai.py`）。
+> 其中属于批次 3.1 的部分已由 `backend/app/tests/test_employee_plan_api.py`
+> 的 41 条断言单独锁定。
 
 ### 里程碑进度
 
@@ -29,8 +35,9 @@
 | 1 | 重命名 7 处 + 契约脚本 | 36 → 42 | ✅ 完成 |
 | 2 | 同组补子路径（38） | 42 → **91** | ✅ 完成（2026-11-14） |
 | 2+ | 顺带补齐审批/点评/台账等闭环端点 | 91 → **152** | ✅ 完成（2026-11-14） |
-| 3 | 核心业务域 | 152 → ~226 | ⏳ 未开始 |
-| 4 | AI 域 | — | ⏳ 未开始 |
+| 3.1 | 员工计划闭环（24） | 152 → **216** | ✅ 完成（2026-11-14，含并行的 AI 域增量） |
+| 3 | 核心业务域（其余） | 216 → ~226 | ⏳ 进行中 |
+| 4 | AI 域 | — | ⏳ 进行中（并行工作中） |
 
 ---
 
@@ -347,32 +354,59 @@ if (body && typeof body.code !== 'undefined') {
 
 > 排序依据：按**业务闭环**排，不按模块排。同一业务链的端点一起做，避免反复返工。
 
-### 3.1 员工计划闭环（24）
+### 3.1 员工计划闭环（24）— ✅ 已完成（2026-11-14）
 
-- [ ] `POST /employee/month-plans/draft`
-- [ ] `GET /employee/month-plans/{id}`
-- [ ] `POST /employee/month-plans/{id}/draft`
-- [ ] `POST /employee/month-plans/{id}/draft/clear`
-- [ ] `DELETE /employee/month-plans/{id}/items/{itemId}`
-- [ ] `POST /employee/month-plans/{id}/submit`
-- [ ] `GET /employee/month-plans/{id}/template-download`
-- [ ] `GET /employee/month-plans/{id}/template-preview`
-- [ ] `POST /employee/month-plans/{id}/withdraw`
-- [ ] `GET /employee/day-plans/detail`
-- [ ] `POST /employee/day-plans/draft`
-- [ ] `POST /employee/day-plans/submit`
-- [ ] `DELETE /employee/day-plans/{id}`
-- [ ] `POST /employee/day-plans/{id}/withdraw`
-- [ ] `GET /employee/week-plans`
-- [ ] `POST /employee/week-plans`
-- [ ] `GET /employee/week-plans/parent-options`
-- [ ] `DELETE /employee/week-plans/{id}`
-- [ ] `GET /employee/week-plans/{id}`
-- [ ] `PUT /employee/week-plans/{id}`
-- [ ] `POST /employee/week-plans/{id}/items/{itemId}/results/submit`
-- [ ] `GET /employee/week-plans/{id}/items/{itemId}/results/submit-context`
-- [ ] `POST /employee/week-plans/{id}/submit`
-- [ ] `POST /employee/week-plans/{id}/withdraw`
+> **实现说明**：本批为**契约层实现**。后端当前 34 张表中没有任何计划类表
+> （无 `month_plan` / `week_plan` / `day_plan` 及其 item / 版本 / 结果表），
+> 因此这 24 个端点的**路由、HTTP 方法、请求参数、响应结构**已全部对齐前端
+> TypeScript 接口，但**尚未接入领域模型**，返回结构正确、内容为空的响应。
+> 「领域建模 + 真实 CRUD + 状态机」作为独立排期项。
+>
+> 路由归属：
+> - 月计划 9 个 → `backend/app/routes/employee_plans.py`（前缀 `/v1/employee`）
+> - 周计划 10 个 → `backend/app/routes/employee_week_plan.py`（前缀 `/v1/employee/week-plans`）
+> - 日计划 5 个 → `backend/app/routes/employee_plans.py`（前缀 `/v1/employee`）
+
+- [x] `POST /employee/month-plans/draft`
+- [x] `GET /employee/month-plans/{id}`
+- [x] `POST /employee/month-plans/{id}/draft`
+- [x] `POST /employee/month-plans/{id}/draft/clear`
+- [x] `DELETE /employee/month-plans/{id}/items/{itemId}`
+- [x] `POST /employee/month-plans/{id}/submit`
+- [x] `GET /employee/month-plans/{id}/template-download`
+- [x] `GET /employee/month-plans/{id}/template-preview`
+- [x] `POST /employee/month-plans/{id}/withdraw`
+- [x] `GET /employee/day-plans/detail`
+- [x] `POST /employee/day-plans/draft`
+- [x] `POST /employee/day-plans/submit`
+- [x] `DELETE /employee/day-plans/{id}`
+- [x] `POST /employee/day-plans/{id}/withdraw`
+- [x] `GET /employee/week-plans`
+- [x] `POST /employee/week-plans`
+- [x] `GET /employee/week-plans/parent-options`
+- [x] `DELETE /employee/week-plans/{id}`
+- [x] `GET /employee/week-plans/{id}`
+- [x] `PUT /employee/week-plans/{id}`
+- [x] `POST /employee/week-plans/{id}/items/{itemId}/results/submit`
+- [x] `GET /employee/week-plans/{id}/items/{itemId}/results/submit-context`
+- [x] `POST /employee/week-plans/{id}/submit`
+- [x] `POST /employee/week-plans/{id}/withdraw`
+
+**验证结果**
+
+| 项目 | 结果 |
+|---|---|
+| 契约脚本 | 3 组全部对齐，缺失 0 |
+| 新增断言 | `backend/app/tests/test_employee_plan_api.py` — 41 passed |
+| 冒烟测试 | 8 GET + 12 POST + 1 PUT + 3 DELETE = 24/24 通过 |
+| 鉴权 | 全部端点要求 token，无 token 返回 401 |
+| 响应结构 | 逐字段核对前端 TS 接口（`EmployeeMonthPlanDetailResp` / `WeekPlanDetail` / `WeekPlanSummary` / `EmployeeDayPlanDetailResp` / `WeekResultSubmitContext`） |
+| 前端 `vue-tsc --noEmit` | 0 errors |
+| 全量 pytest | **无新增失败**（与基线 `git stash` 对比：基线 22 failed + 20 errors，当前 22 failed + 20 errors） |
+
+> **注**：基线的 42 项失败/错误为**既有问题**（`pytest-asyncio` 未安装导致
+> `Unknown pytest.mark.asyncio` 标记失效，以及 `app.db` schema 陈旧），
+> 与本批次无关，已用 `git stash` 对比确认。
 
 ### 3.2 审批闭环（26）
 

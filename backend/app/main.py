@@ -173,6 +173,15 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    from .routes import employee_plans as employee_plans_routes
+    app.include_router(employee_plans_routes.router)
+    print("[APP] Employee plans router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register employee plans router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     from .routes import dispute as dispute_routes
     app.include_router(dispute_routes.router)
     print("[APP] Dispute router registered successfully")
@@ -187,6 +196,33 @@ try:
     print("[APP] Planning router registered successfully")
 except Exception as e:
     print(f"[APP] WARNING: Failed to register planning router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import employee_ai as employee_ai_routes
+    app.include_router(employee_ai_routes.router)
+    print("[APP] Employee AI router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register employee AI router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import employee_week_plan as employee_week_plan_routes
+    app.include_router(employee_week_plan_routes.router)
+    print("[APP] Employee week-plan router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register employee week-plan router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes.v1 import system_ai as system_ai_routes
+    app.include_router(system_ai_routes.router)
+    print("[APP] System AI router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register system AI router: {e}")
     import traceback
     traceback.print_exc()
 

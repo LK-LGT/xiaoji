@@ -349,6 +349,49 @@ def test_record_detail_404_for_unknown(client):
 
 
 # ---------------------------------------------------------------------------
+# 3b. v1 记录详情（前端实际调用的路径）
+# ---------------------------------------------------------------------------
+
+
+def test_v1_record_detail_filters_attendance_by_task_period(client, db, org):
+    """GET /v1/assessment/records/{id} 同样必须按考核周期过滤。"""
+    resp = client.get(
+        f"/v1/assessment/records/{org['rec_pending'].id}",
+        headers=auth("leader_token_001"),
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+
+    assert data["period"] == "202611"
+    assert data["period_display"] == "2026-11"
+    assert data["employee"]["id"] == "E_EMP"
+
+    ref = data["evidence"]["reference_only"]
+    assert len(ref) == 1
+    assert ref[0]["count"] == 1
+    assert ref[0]["type"] == "missing_punch"
+    assert ref[0]["disclaimer"] == evidence_service.ATTENDANCE_DISCLAIMER
+
+
+def test_v1_record_detail_requires_auth(client):
+    resp = client.get("/v1/assessment/records/REC_PENDING")
+    assert resp.status_code in (401, 403)
+
+
+def test_v1_record_detail_forbidden_for_other_employee(client):
+    """普通员工不能查看别人的记录详情。"""
+    resp = client.get(
+        "/v1/assessment/records/REC_DONE", headers=auth("emp_token_001")
+    )
+    assert resp.status_code == 403
+
+
+def test_v1_record_detail_404_unknown(client):
+    resp = client.get("/v1/assessment/records/NOPE", headers=auth("leader_token_001"))
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # 4. 待评记录列表
 # ---------------------------------------------------------------------------
 
