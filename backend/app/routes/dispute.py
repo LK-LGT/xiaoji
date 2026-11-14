@@ -417,7 +417,7 @@ async def recuse_dispute(
     if mine is None:
         raise HTTPException(status_code=403, detail="仅被指派的评审人可以申请回避")
 
-    dispute_service.recuse_reviewer(db, case, mine.id, payload.reason)
+    dispute_service.recuse_reviewer(db, case, current_user.id, payload.reason)
     return _ok(None)
 
 

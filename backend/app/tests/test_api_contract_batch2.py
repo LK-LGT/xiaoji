@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.dependencies import get_current_user
+from backend.app.domain.models import Employee
 from backend.app.main import app
 
 # backend/app/tests/test_api_contract_batch2.py
@@ -31,8 +33,51 @@ CONTRACT_SCRIPT = REPO_ROOT / "backend" / "scripts" / "check_api_contract.py"
 
 @pytest.fixture(scope="module")
 def client():
-    with TestClient(app) as c:
-        yield c
+    """契约测试用的已登录客户端。
+
+    ⚠️ 两点需要处理：
+
+    1. 部分端点（如 ``/v1/dispute/dashboard``）已启用 token 鉴权，
+       未登录会返回 401 —— 因此注入一个 HR 身份，
+       让契约测试校验的是「响应信封结构」而不是「鉴权」。
+    2. 应用默认连的是开发用的 ``data/_autogen_tmp.db``（表结构不完整），
+       契约测试不应依赖它 —— 改用独立的内存库 + ``create_all``。
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from backend.app.core.db import get_db
+    from backend.app.domain.models import Base
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    hr_user = Employee(
+        id="contract-test-hr",
+        name="契约测试用户",
+        department_id="DEPT_HR",
+        employment_status="active",
+        account_status="enabled",
+    )
+    session.add(hr_user)
+    session.commit()
+
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_current_user] = lambda: hr_user
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_db, None)
+        session.close()
+        engine.dispose()
 
 
 @pytest.fixture(scope="module")

@@ -234,6 +234,9 @@ def assign_reviewer(
     """指派评审人。
 
     重复指派同一评审人时返回已有记录（幂等）。
+
+    首次指派会把案件从 ``SUBMITTED`` 推进到 ``REVIEWING`` ——
+    案件进入评审中是「已开始评审」的客观信号，不应由路由层额外维护。
     """
     existing = db.execute(
         select(DisputeReviewer).where(
@@ -252,6 +255,12 @@ def assign_reviewer(
     )
     db.add(record)
     db.flush()
+
+    # SUBMITTED → REVIEWING（已评审中则保持不变）
+    if case.status == DisputeStatus.SUBMITTED:
+        case.status = assert_dispute_transition(case.status, "assign")
+        db.flush()
+
     return record
 
 
@@ -439,3 +448,154 @@ def list_reviewers(db: Session, case_id: str) -> list[DisputeReviewer]:
         .order_by(DisputeReviewer.created_at.asc())
     )
     return list(db.execute(stmt).scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# 候选评审人
+# ---------------------------------------------------------------------------
+
+
+def list_reviewer_candidates(
+    db: Session,
+    *,
+    case_id: str | None = None,
+    keyword: str | None = None,
+    limit: int = 50,
+) -> list[Employee]:
+    """列出可指派的评审人候选。
+
+    排除：
+    - 案件提交人本人（不能审自己的案子）；
+    - 已被指派为该案件评审人的人；
+    - 非在职 / 账号未启用的员工。
+    """
+    stmt = select(Employee).where(
+        Employee.employment_status == "active",
+        Employee.account_status == "enabled",
+    )
+
+    if case_id:
+        case = get_case(db, case_id)
+        stmt = stmt.where(Employee.id != case.owner_id)
+
+        assigned = set(
+            db.execute(
+                select(DisputeReviewer.user_id).where(
+                    DisputeReviewer.case_id == case_id
+                )
+            ).scalars()
+        )
+        if assigned:
+            stmt = stmt.where(Employee.id.not_in(assigned))
+
+    if keyword:
+        like = f"%{keyword.strip()}%"
+        stmt = stmt.where(
+            Employee.name.like(like)
+            | Employee.login_account.like(like)
+            | Employee.position.like(like)
+        )
+
+    stmt = stmt.order_by(Employee.name.asc()).limit(limit)
+    return list(db.execute(stmt).scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# 序列化
+#
+# ⚠️ 字段名与 `frontend/src/api/dispute.ts` 的接口严格对齐。
+# 后端主键是 UUID 字符串，前端类型声明为 `number` 是历史遗留；
+# 在 JS 运行时字符串 ID 用于索引、比较与 URL 拼接都正常。
+# ---------------------------------------------------------------------------
+
+
+def serialize_case_summary(
+    db: Session,
+    case: DisputeCase,
+    *,
+    employee_name: str = "",
+    org_name: str = "",
+) -> dict[str, Any]:
+    """案件摘要（列表与详情共用）。"""
+    reviewer_count = db.execute(
+        select(func.count())
+        .select_from(DisputeReviewer)
+        .where(DisputeReviewer.case_id == case.id)
+    ).scalar_one()
+    opinion_count = db.execute(
+        select(func.count())
+        .select_from(DisputeOpinionRecord)
+        .where(DisputeOpinionRecord.case_id == case.id)
+    ).scalar_one()
+
+    return {
+        "id": case.id,
+        "caseNo": case.case_no,
+        "appealId": case.appeal_id or "",
+        "employeeName": employee_name,
+        "orgName": org_name,
+        "periodStart": _iso_date(case.period_start),
+        "periodEnd": _iso_date(case.period_end),
+        "disputeSubject": case.dispute_subject,
+        "appealTitle": case.appeal_title,
+        "status": case.status,
+        "packageStatus": case.package_status,
+        "deadlineAt": _iso_datetime(case.deadline_at),
+        "reviewerCount": int(reviewer_count),
+        "opinionCount": int(opinion_count),
+    }
+
+
+def serialize_reviewer(
+    reviewer: DisputeReviewer,
+    *,
+    user_name: str = "",
+    current_user_id: str | None = None,
+) -> dict[str, Any]:
+    """评审人记录。"""
+    return {
+        "id": reviewer.id,
+        "userId": reviewer.user_id,
+        "userName": user_name,
+        "sourceType": reviewer.source_type,
+        "recusalStatus": reviewer.recusal_status,
+        "recusalReason": reviewer.recusal_reason or "",
+        "currentUser": bool(current_user_id) and reviewer.user_id == current_user_id,
+    }
+
+
+def serialize_opinion(
+    opinion: DisputeOpinionRecord,
+    *,
+    reviewer_name: str = "",
+) -> dict[str, Any]:
+    """评审意见记录。"""
+    return {
+        "id": opinion.id,
+        "reviewerId": opinion.reviewer_id,
+        "reviewerName": reviewer_name,
+        "opinion": opinion.opinion,
+        "comment": opinion.comment,
+        "versionNo": opinion.version_no,
+        "submittedAt": _iso_datetime(opinion.submitted_at),
+    }
+
+
+def serialize_candidate(employee: Employee) -> dict[str, Any]:
+    """评审人候选。"""
+    return {
+        "userId": employee.id,
+        "employeeNo": employee.login_account or "",
+        "userName": employee.name,
+        "deptId": employee.department_id or "",
+    }
+
+
+def _iso_date(value: date | None) -> str:
+    """date → ISO 字符串。"""
+    return value.isoformat() if value else ""
+
+
+def _iso_datetime(value: datetime | None) -> str:
+    """datetime → ISO 字符串。"""
+    return value.isoformat() if value else ""
