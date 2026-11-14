@@ -1169,4 +1169,52 @@ draft ──submit──> submitted ──approve──> approved
 
 ---
 
+## 🗃️ 阶段三：领域建模与持久化（2026-11-14）
+
+> 详细说明（含给领导的书面汇报版本）见 [`08-阶段三领域建模交付说明.md`](08-阶段三领域建模交付说明.md)。
+
+### 背景
+
+契约层面已「全绿」（267 / 缺失 0），但**契约骨架 ≠ 可用功能**——
+`week-plan`、`dispute`、`ai` 相关端点多数只返回固定空对象，
+缺少数据表、数据迁移、持久化 CRUD 与状态机。
+
+### ✅ 交付内容
+
+| 交付项 | 内容 |
+|---|---|
+| 数据模型 | 新增 **9 张表**：`plan_draft_version`、`plan_approval`、`dispute_case`、`dispute_reviewer`、`dispute_opinion`、`ai_review`、`ai_conversation`、`ai_message`、`ai_suggestion_action` |
+| 数据库迁移 | `backend/migrations/versions/0004_phase3_domain_modeling.py`（幂等、可降级、SQLite 兼容） |
+| 服务层 | `services/dispute_service.py`（含状态机 + 序列化）、`services/ai_service.py`、`services/ai_review_engine.py`（确定性规则引擎） |
+| 路由改造 | `routes/dispute.py`（12 端点接真实持久化 + 权限）、`routes/ai_review.py`（含 `/latest/batch`）、`routes/employee_ai.py`（会话 CRUD） |
+| 状态机 | 争议：`SUBMITTED → REVIEWING → NEEDS_SUPPLEMENT → DECIDED → ARCHIVED`；非法迁移 → 409 |
+| 权限 | 复用 `get_current_user` + `build_access_context`；匿名 401、越权 403 |
+| 测试 | `backend/app/tests/test_phase3_domain_modeling.py` → **30 个用例全部通过** |
+
+### ⚠️ 一处事实校正
+
+任务描述称「week-plan / dispute / ai 接口都是空骨架」，实测**计划域已完整实现**
+（`services/planning.py` 922 行 + `0003_phase3_planning` 迁移）。
+本次因此**未重复建设计划 CRUD**，只补齐真正缺失的版本快照表与审批流水表。
+
+### ✅ 验收结果（2026-11-14 实测）
+
+- [x] 真实库 `backend/data/perf.db` 迁移成功：**49 表 / 9 新表 / 20 索引 / FK 违规 0**
+- [x] `alembic downgrade -1` → `upgrade head` 往返无损；`alembic current` → `0004_phase3_domain_modeling (head)`
+- [x] 后端 `pytest backend/app/tests` → **441 passed, 1 skipped, 0 failed**
+- [x] 契约脚本 `--strict` → **已对齐 267 / 缺失 0**，退出码 0
+- [x] 前端 `vue-tsc --noEmit` → **0 errors**
+- [x] `GET /openapi.json` → **HTTP 200**，**317 条路径**
+- [x] `GET /v1/health` → **HTTP 200**
+- [x] 未登录访问 `/v1/dispute/cases` 与 `/v1/ai/reviews/latest` → **401** ✅
+- [x] 服务启动日志无 `Traceback` / `Duplicate Operation ID` / `ImportError`
+
+### 📋 里程碑补充
+
+| 批次 | 内容 | 已对齐端点数 | 预估工作量 | 状态 |
+|---|---|---|---|---|
+| 5 | **领域建模与持久化** | 267（不变） | 3-5d | ✅ **完成（9 张新表 + CRUD + 状态机 + 30 测试）** |
+
+---
+
 *文档基于 2026-11-14 的实测数据生成。所有数量均来自脚本测量，非估算。*

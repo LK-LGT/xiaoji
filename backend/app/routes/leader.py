@@ -82,6 +82,21 @@ def _run_approval(action, *args, **kwargs) -> Any:
         raise HTTPException(status_code=400, detail=exc.message) from exc
 
 
+def _request_version(data: dict) -> int | None:
+    """从请求体取 `versionNo`（乐观锁版本号）。
+
+    前端 `weekPlan.ts` / `leader.ts` 的审批接口会带 `versionNo`。
+    缺省视为不校验（兼容旧调用方）。
+    """
+    raw = data.get("versionNo")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _batch_approve(
     current_user: Employee,
     db: Session,
@@ -98,6 +113,7 @@ def _batch_approve(
     if not isinstance(ids, list):
         ids = []
     comment = data.get("comment")
+    version_no = _request_version(data)
 
     results: list[dict] = []
     for raw_id in ids:
@@ -110,14 +126,20 @@ def _batch_approve(
                     if approved
                     else plan_approval.reject_month_plan
                 )
-                _run_approval(action, db, current_user.id, plan_id, comment=comment)
+                _run_approval(
+                    action, db, current_user.id, plan_id,
+                    comment=comment, version_no=version_no,
+                )
             elif plan_type == plan_approval.PLAN_TYPE_WEEK:
                 action = (
                     plan_approval.approve_week_plan
                     if approved
                     else plan_approval.reject_week_plan
                 )
-                _run_approval(action, db, current_user.id, plan_id, comment=comment)
+                _run_approval(
+                    action, db, current_user.id, plan_id,
+                    comment=comment, version_no=version_no,
+                )
             else:
                 _run_approval(
                     plan_approval.review_day_plan,
@@ -126,6 +148,7 @@ def _batch_approve(
                     plan_id,
                     approved=approved,
                     comment=comment,
+                    version_no=version_no,
                 )
             results.append(
                 _action_result(plan_id, "APPROVED" if approved else "REJECTED")
@@ -583,6 +606,7 @@ async def approve_month_plan(
         current_user.id,
         approval_id,
         comment=data.get("comment"),
+        version_no=_request_version(data),
     )
     return _ok(_action_result(approval_id, "APPROVED"))
 
@@ -607,6 +631,7 @@ async def reject_month_plan(
         current_user.id,
         approval_id,
         comment=data.get("comment"),
+        version_no=_request_version(data),
     )
     return _ok(_action_result(approval_id, "REJECTED"))
 
@@ -670,6 +695,7 @@ async def approve_week_plan(
         current_user.id,
         approval_id,
         comment=data.get("comment"),
+        version_no=_request_version(data),
     )
     return _ok(_action_result(approval_id, "APPROVED"))
 
@@ -694,6 +720,7 @@ async def reject_week_plan(
         current_user.id,
         approval_id,
         comment=data.get("comment"),
+        version_no=_request_version(data),
     )
     return _ok(_action_result(approval_id, "REJECTED"))
 
@@ -760,6 +787,7 @@ async def comment_daily_review(
         review_id,
         approved=True,
         comment=data.get("comment"),
+        version_no=_request_version(data),
     )
     return _ok(_action_result(review_id, "COMMENTED"))
 

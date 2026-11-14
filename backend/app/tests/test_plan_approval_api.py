@@ -386,6 +386,49 @@ def test_approving_draft_returns_409(client, db, org):
     assert resp.status_code == 409
 
 
+def test_stale_version_no_returns_409(client, db, org):
+    """版本号过期返回 409（两个主管同时审批的场景）。
+
+    前端 `weekPlan.ts` 的审批接口会带 `versionNo`。
+    """
+    plan = _month_plan(db)
+
+    resp = client.post(
+        f"/v1/leader/month-plan-approvals/{plan.id}/approve",
+        json={"versionNo": 999},
+    )
+    assert resp.status_code == 409, resp.text
+
+    db.refresh(plan)
+    assert plan.status == PlanStatus.SUBMITTED.value
+
+
+def test_matching_version_no_succeeds(client, db, org):
+    """版本号一致 → 审批成功。"""
+    plan = _month_plan(db)
+    version = plan.version_no
+
+    resp = client.post(
+        f"/v1/leader/month-plan-approvals/{plan.id}/approve",
+        json={"versionNo": version},
+    )
+    assert resp.status_code == 200, resp.text
+
+    db.refresh(plan)
+    assert plan.status == PlanStatus.APPROVED.value
+
+
+def test_week_plan_stale_version_no_returns_409(client, db, org):
+    """周计划审批同样校验版本号。"""
+    plan = _week_plan(db)
+
+    resp = client.post(
+        f"/v1/leader/week-plan-approvals/{plan.id}/approve",
+        json={"versionNo": 999},
+    )
+    assert resp.status_code == 409, resp.text
+
+
 # ===========================================================================
 # 5. 批量审批
 # ===========================================================================

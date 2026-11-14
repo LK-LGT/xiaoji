@@ -365,16 +365,34 @@ def _assert_approvable(status: str) -> None:
         raise PlanApprovalConflict(f"当前状态（{status}）不允许审批")
 
 
+def _assert_version(plan: Any, expected: int | None) -> None:
+    """乐观锁校验：前端回传的 `versionNo` 必须与服务端一致。
+
+    前端 `weekPlan.ts` 的审批接口会带 `versionNo`，用于避免两个主管
+    同时审批同一条计划。`expected` 为 None 表示前端未带版本号（不校验）。
+    """
+    if expected is None:
+        return
+    try:
+        planning.assert_version(plan, int(expected))
+    except planning.PlanVersionConflict as exc:
+        raise PlanApprovalConflict(
+            f"版本冲突：期望 {exc.expected}，实际 {exc.actual}"
+        ) from exc
+
+
 def approve_month_plan(
     db: Session,
     actor_id: str,
     plan_id: str,
     *,
     comment: str | None = None,
+    version_no: int | None = None,
 ) -> MonthPlan:
     """主管批准月计划：`submitted → approved`。"""
     plan = fetch_plan(db, PLAN_TYPE_MONTH, plan_id)
     _assert_approvable(plan.status)
+    _assert_version(plan, version_no)
 
     from_status = plan.status
     dedup_key = _build_dedup_key(
@@ -402,10 +420,12 @@ def reject_month_plan(
     plan_id: str,
     *,
     comment: str | None = None,
+    version_no: int | None = None,
 ) -> MonthPlan:
     """主管驳回月计划：`submitted → rejected`。"""
     plan = fetch_plan(db, PLAN_TYPE_MONTH, plan_id)
     _assert_approvable(plan.status)
+    _assert_version(plan, version_no)
 
     from_status = plan.status
     dedup_key = _build_dedup_key(
@@ -433,10 +453,12 @@ def approve_week_plan(
     plan_id: str,
     *,
     comment: str | None = None,
+    version_no: int | None = None,
 ) -> WeekPlan:
     """主管批准周计划：`submitted → approved`。"""
     plan = fetch_plan(db, PLAN_TYPE_WEEK, plan_id)
     _assert_approvable(plan.status)
+    _assert_version(plan, version_no)
 
     from_status = plan.status
     dedup_key = _build_dedup_key(
@@ -464,10 +486,12 @@ def reject_week_plan(
     plan_id: str,
     *,
     comment: str | None = None,
+    version_no: int | None = None,
 ) -> WeekPlan:
     """主管驳回周计划：`submitted → rejected`。"""
     plan = fetch_plan(db, PLAN_TYPE_WEEK, plan_id)
     _assert_approvable(plan.status)
+    _assert_version(plan, version_no)
 
     from_status = plan.status
     dedup_key = _build_dedup_key(
@@ -496,6 +520,7 @@ def review_day_plan(
     *,
     approved: bool,
     comment: str | None = None,
+    version_no: int | None = None,
 ) -> DayPlan:
     """主管抽检日计划。
 
@@ -505,6 +530,7 @@ def review_day_plan(
     plan = fetch_plan(db, PLAN_TYPE_DAY, plan_id)
     if plan.status != PlanStatus.SUBMITTED.value:
         raise PlanApprovalConflict(f"当前状态（{plan.status}）不允许抽检")
+    _assert_version(plan, version_no)
 
     action = (
         PlanApprovalAction.APPROVE.value
