@@ -948,3 +948,155 @@ def list_month_plan_items(db: Session, plan_id: str) -> list[MonthPlanItem]:
         .scalars()
         .all()
     )
+
+
+# ===========================================================================
+# 审批人侧序列化（对齐前端 `ResultSuggestionItem` / `ResultConfirmItem`）
+# ===========================================================================
+
+
+def _result_evidences(db: Session, result: Result) -> list[ResultEvidence]:
+    """成果的证据附件列表。"""
+    return list(
+        db.execute(
+            select(ResultEvidence)
+            .where(ResultEvidence.result_id == result.id)
+            .order_by(ResultEvidence.created_at)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _plan_period_label(db: Session, result: Result) -> tuple[str, str]:
+    """返回 ``(计划周期, 计划标题)``。
+
+    月成果 → ``2026-11``；周成果 → ``2026-11-16``（周起始日）。
+    """
+    if result.plan_type == RESULT_PLAN_TYPE_MONTH:
+        plan = db.get(MonthPlan, result.plan_id)
+        return (getattr(plan, "plan_month", "") or "", getattr(plan, "title", "") or "")
+    plan = db.get(WeekPlan, result.plan_id)
+    week_start = getattr(plan, "week_start", None)
+    label = week_start.isoformat() if hasattr(week_start, "isoformat") else str(week_start or "")
+    return (label, getattr(plan, "title", "") or "")
+
+
+def _auto_level_for(result: Result) -> str:
+    """按完成度推导一个**确定性**的等级标签。
+
+    ⚠️ 这里**不接 AI** —— 等级只由完成度推导，保证可复现、可解释。
+    真正的算分走 `services/review_service.compute_score()`（规则引擎）。
+    """
+    rate = float(result.completion_rate or 0.0)
+    if rate >= 100:
+        return "EXCELLENT"
+    if rate >= 80:
+        return "GOOD"
+    if rate >= 60:
+        return "NORMAL"
+    return "NEEDS_IMPROVEMENT"
+
+
+def _issue_codes_for(result: Result, evidences: list[ResultEvidence]) -> list[str]:
+    """成果本身的**结构性**问题（与 AI 复核无关）。
+
+    - 缺完成情况 → `MISSING_COMPLETION`
+    - 缺证明材料 → `MISSING_EVIDENCE`
+    """
+    codes: list[str] = []
+    if not (result.completion_status or result.description or "").strip():
+        codes.append("MISSING_COMPLETION")
+    if not evidences:
+        codes.append("MISSING_EVIDENCE")
+    return codes
+
+
+def serialize_result_suggestion(
+    db: Session,
+    result: Result,
+    *,
+    evidence_base_url: str = "/v1/leader/result-suggestions",
+) -> dict[str, Any]:
+    """审批人侧的成果条目（对齐前端 `ResultSuggestionItem`）。
+
+    ⚠️ 主键一律用**字符串**（飞书 user_id / UUID 都是十六进制串），
+    绝不能 `int()` —— 否则全部塌成 0（见 BUG-R6-06）。
+    """
+    owner = db.get(Employee, result.owner_id)
+    dept = getattr(owner, "department", None) if owner is not None else None
+    evidences = _result_evidences(db, result)
+    period, plan_title = _plan_period_label(db, result)
+    issue_codes = _issue_codes_for(result, evidences)
+
+    # 结果状态 → 前端 `resultStatusLabels` 认识的取值。
+    if result.status == RESULT_STATUS_CONFIRMED:
+        result_status = "CONFIRMED"
+    elif result.status == RESULT_STATUS_REJECTED:
+        result_status = "REJECTED"
+    else:
+        result_status = "PENDING"
+
+    # 建议状态 → 前端 `suggestionStatusLabels` 认识的取值。
+    if result_status == "CONFIRMED":
+        suggestion_status = "SUGGEST_CONFIRM"
+    elif result_status == "REJECTED":
+        suggestion_status = "SUGGEST_REJECT"
+    else:
+        suggestion_status = "PENDING_SUGGEST"
+
+    # 确认状态 → 前端 `confirmStatusLabels` 认识的取值。
+    if result_status == "CONFIRMED":
+        confirm_status = "CONFIRMED"
+    elif result_status == "REJECTED":
+        confirm_status = "REJECTED"
+    else:
+        confirm_status = "PENDING_CONFIRM"
+
+    evidence_items = [
+        {
+            "fileId": _as_id(e.id),
+            "fileName": e.file_name,
+            "evidenceType": e.file_type or "",
+            "status": e.status or "",
+            "reviewPassed": bool(e.review_passed),
+            "fileSize": e.file_size,
+            "checksum": e.checksum,
+            "downloadUrl": f"{evidence_base_url}/{result.id}/evidence/{e.id}",
+            "createdAt": _iso(e.created_at) or "",
+        }
+        for e in evidences
+    ]
+
+    return {
+        "id": _as_id(result.id),
+        "ownerId": _as_id(result.owner_id),
+        "employeeNo": (getattr(owner, "login_account", "") or "") if owner else "",
+        "employeeName": (getattr(owner, "name", "") or "") if owner else "",
+        "orgId": _as_id(getattr(owner, "department_id", "") or "") if owner else "",
+        "orgName": (getattr(dept, "name", "") or "") if dept else "",
+        "resultNo": _as_id(result.id),
+        "resultTitle": result.title or "",
+        "resultDate": _iso_date(result.result_date) or period,
+        "planType": "MONTH" if result.plan_type == RESULT_PLAN_TYPE_MONTH else "WEEK",
+        "planId": _as_id(result.plan_id),
+        "planNo": plan_title or _as_id(result.plan_id),
+        "period": period,
+        "completionRatio": float(result.completion_rate or 0.0),
+        "autoLevel": _auto_level_for(result),
+        "evidenceStatus": "COMPLETE" if evidences else "INCOMPLETE",
+        "issueCodes": issue_codes,
+        "issueText": "、".join(issue_codes),
+        "suggestionStatus": suggestion_status,
+        "confirmStatus": confirm_status,
+        "leaderSuggestion": result.approval_comment or "",
+        "resultStatus": result_status,
+        "resultState": result.status,
+        "completionStatus": result.completion_status or "",
+        "remark": result.remark or "",
+        "personalPerformance": result.personal_performance,
+        "submittedAt": _iso(result.submitted_at) or "",
+        "approverId": _as_id(result.approver_id) if result.approver_id else "",
+        "approvedAt": _iso(result.approved_at) or "",
+        "evidences": evidence_items,
+    }
