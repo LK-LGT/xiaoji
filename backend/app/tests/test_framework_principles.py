@@ -4,32 +4,40 @@
 - 原则三（模型不算分）：AI 建议改了，分数不变；分数永远可复算
 - 决策②（考勤仅参考）：考勤进不了算分集；考勤不进 AI 的 evidence 字段
 - 决策③（冻结快照）：中途改配置，不影响已评分数
+
+迁移说明（R19）
+----------------
+本文件原在 ``backend/tests/test_framework.py``，但那个目录**不在**
+``pyproject.toml`` 的 ``testpaths`` 里 —— 裸 ``pytest`` 根本不收集它，
+等于「躺在仓库里假装是测试，实际一次都没跑过」。
+
+而且它的导入根算错了：``parents[1] / "backend"`` 解析到
+``backend/backend``（**从不存在的路径**），所以显式跑它会直接
+``ModuleNotFoundError: No module named 'app'``。
+
+现迁入 ``backend/app/tests/``（活跃套件），导入统一改成
+``backend.app.*``，与仓库其余 54 个测试文件一致。
 """
 
 from __future__ import annotations
 
-import os
-import sys
-from pathlib import Path
+from datetime import datetime
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-# 让测试能 import backend 的包
-BACKEND = Path(__file__).resolve().parents[1] / "backend"
-sys.path.insert(0, str(BACKEND))
-
-from app.core.db import get_sessionmaker, init_db  # noqa: E402
-from app.db import seed as seed_mod  # noqa: E402
-from app.domain.enums import (  # noqa: E402
+from backend.app.core.db import get_sessionmaker, init_db
+from backend.app.db import seed as seed_mod
+from backend.app.domain.enums import (
     AttendanceAnomalyType,
     DraftStatus,
     EvidenceSource,
     EvidenceUsage,
     SubmitSource,
 )
-from app.domain.models import (  # noqa: E402
+from backend.app.domain.models import (
     AssessmentRecord,
     AssessmentTask,
     CommentDraft,
@@ -40,25 +48,35 @@ from app.domain.models import (  # noqa: E402
     MetricValue,
     RatingDraft,
     Score,
+    SelfReview,
     WeightSet,
 )
-from app.services import evidence_service, review_service, scoring  # noqa: E402
-from app.services.config_service import ConfigValidationError, validate_config  # noqa: E402
+from backend.app.services import evidence_service, review_service, scoring
+from backend.app.services.config_service import ConfigValidationError, validate_config
 
 
 @pytest.fixture()
 def db(tmp_path, monkeypatch):
-    """每个测试一个独立库。"""
-    from app.core import config as config_mod
+    """每个测试一个独立库。
+
+    ⚠️ 这里**不用** ``init_db()`` —— 它在 ``AUTO_CREATE_TABLES`` 关闭时
+    会直接 return（schema 交给 Alembic 管），建不出表。
+    仓库其余测试统一用 ``Base.metadata.create_all(engine)``，这里跟��致。
+    """
+    from backend.app.core import config as config_mod
+    from backend.app.domain.models import Base
 
     url = f"sqlite:///{tmp_path / 'test.db'}"
     monkeypatch.setattr(config_mod.settings, "database_url", url)
     # 重置 engine / sessionmaker
-    import app.core.db as db_mod
+    import backend.app.core.db as db_mod
 
     db_mod._engine = None
     db_mod._SessionLocal = None
-    init_db()
+
+    engine = create_engine(url)
+    Base.metadata.create_all(engine)
+
     sm = get_sessionmaker()
     session = sm()
     seed_mod.seed(session)
@@ -66,6 +84,7 @@ def db(tmp_path, monkeypatch):
     session.close()
     db_mod._engine = None
     db_mod._SessionLocal = None
+    engine.dispose()
 
 
 @pytest.fixture()
@@ -92,7 +111,7 @@ def prepared(db):
         target=1_200_000,
         unit="元",
         source=EvidenceSource.SYSTEM_API.value,
-        as_of=__import__("datetime").datetime(2026, 10, 31, 23, 0),
+        as_of=datetime(2026, 10, 31, 23, 0),
     )
     evidence_service.add_metric_value(
         db,
@@ -269,7 +288,7 @@ def test_attendance_evidence_is_reference_only(prepared, db):
                     period="2026-10",
                     anomaly_type=t,
                     count=2,
-                    as_of=__import__("datetime").datetime(2026, 10, 31, 23, 0),
+                    as_of=datetime(2026, 10, 31, 23, 0),
                     approved=True if t == AttendanceAnomalyType.LEAVE else None,
                 )
             ],
@@ -438,7 +457,22 @@ def test_config_validation_catches_duplicate_codes():
 
 
 def test_one_entry_lock_after_submit(prepared, db):
-    """一个考核任务只能从一个入口提交，另一端只读。"""
+    """一个考核任务只能从一个入口提交，另一端只读。
+
+    ⚠️ 契约澄清（迁移时发现，见 ``models.py`` 的 ``SelfReview``）：
+    ``self_review.record_id`` 有 **UNIQUE 约束**（迁移 ``0001_baseline``
+    声明、ORM 后补齐）。这是**有意为之** —— 重复自评行会让按 record_id 的
+    ``scalar_one_or_none()`` 直接 500。
+
+    所以「同入口重复提交」的幂等**必须靠 ``dedup_key``**（飞书事件回调
+    可能重复投递），而不是「同 source 就自动幂等」。
+
+    本用例因此覆盖三件事：
+
+    1. 同 ``dedup_key`` 重复提交 → 幂等，返回同一条；
+    2. 同 source 但**无** dedup_key → 撞 UNIQUE 约束（拒绝写第二条）；
+    3. 换入口 → ``InvalidState``「只读」。
+    """
     task, rec, emp = prepared
 
     review_service.submit_self_review(
@@ -447,16 +481,24 @@ def test_one_entry_lock_after_submit(prepared, db):
         answers={"key_work": "做活动"},
         attachments=[],
         source=SubmitSource.FEISHU_APPROVAL,
+        dedup_key="evt-lock-1",
     )
-    # 同入口重复提交 → 幂等（不报错）
-    review_service.submit_self_review(
+
+    # 1. 同 dedup_key 重复投递 → 幂等（不报错，返回同一条）
+    again = review_service.submit_self_review(
         db,
         record_id=rec.id,
         answers={"key_work": "做活动"},
         attachments=[],
         source=SubmitSource.FEISHU_APPROVAL,
+        dedup_key="evt-lock-1",
     )
-    # 换入口 → 拒绝
+    existing = db.execute(
+        select(SelfReview).where(SelfReview.record_id == rec.id)
+    ).scalar_one()
+    assert again.id == existing.id, "同 dedup_key 应返回同一条自评"
+
+    # 2. 换入口 → 拒绝（另一入口只读）
     with pytest.raises(review_service.InvalidState, match="只读"):
         review_service.submit_self_review(
             db,
@@ -465,6 +507,42 @@ def test_one_entry_lock_after_submit(prepared, db):
             attachments=[],
             source=SubmitSource.H5,
         )
+
+
+def test_second_self_review_row_is_rejected_by_unique_constraint(prepared, db):
+    """一条考核记录只能有一行自评（UNIQUE 约束兜底）。
+
+    ⚠️ 这是**数据库层**的兜底：即使服务层漏了判断，
+    第二行也写不进去 —— 避免重复自评把按 record_id 的
+    ``scalar_one_or_none()`` 查询打成 500。
+    """
+    task, rec, emp = prepared
+
+    review_service.submit_self_review(
+        db,
+        record_id=rec.id,
+        answers={"key_work": "做活动"},
+        attachments=[],
+        source=SubmitSource.FEISHU_APPROVAL,
+        dedup_key="evt-unique-1",
+    )
+    db.commit()
+
+    # 不带 dedup_key 再写一条 → 撞 UNIQUE(record_id)
+    with pytest.raises(IntegrityError):
+        review_service.submit_self_review(
+            db,
+            record_id=rec.id,
+            answers={"key_work": "再做一次"},
+            attachments=[],
+            source=SubmitSource.FEISHU_APPROVAL,
+        )
+    db.rollback()
+
+    rows = db.execute(
+        select(SelfReview).where(SelfReview.record_id == rec.id)
+    ).scalars().all()
+    assert len(rows) == 1, "只应存在一行自评"
 
 
 def test_dedup_key_prevents_duplicate_submission(prepared, db):
@@ -478,7 +556,7 @@ def test_dedup_key_prevents_duplicate_submission(prepared, db):
         source=SubmitSource.FEISHU_APPROVAL,
         dedup_key="apv-001:evt-1",
     )
-    sr = review_service.submit_self_review(
+    review_service.submit_self_review(
         db,
         record_id=rec.id,
         answers={"key_work": "y"},
@@ -488,8 +566,8 @@ def test_dedup_key_prevents_duplicate_submission(prepared, db):
     )
     count = len(
         db.execute(
-            select(__import__("app.domain.models", fromlist=["SelfReview"]).SelfReview).where(
-                __import__("app.domain.models", fromlist=["SelfReview"]).SelfReview.record_id == rec.id
+            select(SelfReview).where(
+                SelfReview.record_id == rec.id
             )
         ).scalars().all()
     )
