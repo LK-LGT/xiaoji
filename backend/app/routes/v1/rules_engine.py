@@ -169,6 +169,10 @@ def _build_calculation_detail(
         final_score=float(result.total),
         rating_level=_level_int(primary_level),
         rating_label=_level_label(primary_level),
+        # ⚠️ 算分告警必须回显 —— 未参与算分的指标与原因。
+        #    这些指标**不是**扣了分（权重已重新归一），但分数不完整，
+        #    运维看不到就无从追溯。
+        warnings=list(result.warnings or []),
         calculation_duration_ms=round(duration_ms, 2),
     )
 
@@ -275,7 +279,10 @@ async def execute_rules_engine(
         db.flush()
 
         logger.info(
-            "[规则引擎] 执行成功 record_id=%s total=%s", record_id, result.total
+            "[规则引擎] 执行成功 record_id=%s total=%s warnings=%s",
+            record_id,
+            result.total,
+            detail.warnings or "无",
         )
 
         return RulesEngineResponse(
@@ -288,6 +295,12 @@ async def execute_rules_engine(
             message=(
                 f"规则引擎执行成功，最终得分 {detail.final_score}"
                 f"（{detail.rating_label}）"
+                + (
+                    f"；注意：{len(detail.warnings)} 个指标未参与算分"
+                    f"（{detail.warnings[0]} …）"
+                    if detail.warnings
+                    else ""
+                )
             ),
         )
 

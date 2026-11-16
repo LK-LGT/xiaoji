@@ -70,10 +70,15 @@ from backend.app.tests.test_rules_engine_api import (  # noqa: F401
 # ---------------------------------------------------------------------------
 
 
-def test_null_target_scores_zero_without_crashing(db, org, login):
-    """`MetricValue.target` 为 NULL → 该指标记 0 分，不崩、不静默吞掉。
+def test_null_target_excludes_metric_and_renormalizes(db, org, login):
+    """`MetricValue.target` 为 NULL → 该指标**不参与**算分，权重重新归一。
 
-    口径来自 ``scoring.py``：``缺少目标值，无法计算达成率，按 0 计``。
+    口径变更（自检轮 P0）：
+        旧实现 → 该指标参与并记 0 分 → 总分 24（静默扣掉 70% 权重）
+        新实现 → 该指标不参与 → gmv 权重归一为 1.0 → 总分 56
+
+    语义依据：决策③「缺数据 ≠ 扣分」。目标值缺失属于**数据不可用**，
+    与「彻底没数据」是同一类，不该被区别对待。
     """
     _make_task(db, "E_A")
     db.add(MetricValue(
@@ -92,12 +97,19 @@ def test_null_target_scores_zero_without_crashing(db, org, login):
         resp = c.post(ENDPOINT.format(record_id="R_1"), json={})
 
     assert resp.status_code == 200, resp.text
-    # gmv 记 0，conv 记 80 → 总分 0.3 * 80 = 24
-    assert resp.json()["final_score"] == pytest.approx(24.0)
+    body = resp.json()
+    # gmv 不参与 → conv 权重归一为 1.0 → 总分 = 1.0 * 80 = 80
+    assert body["final_score"] == pytest.approx(80.0)
+    # gmv 不得出现在参与算分的指标里
+    codes = {m["metric_code"] for m in body["calculation_detail"]["normalized_metrics"]}
+    assert "gmv" not in codes
+    # 必须有告警说明原因
+    warnings = body["calculation_detail"]["warnings"]
+    assert any("gmv" in w and "目标值" in w for w in warnings), warnings
 
 
-def test_zero_target_scores_zero_without_crashing(db, org, login):
-    """`target = 0` → 同样记 0 分（不产生除零异常）。"""
+def test_zero_target_excludes_metric_and_renormalizes(db, org, login):
+    """`target = 0` → 同样不参与（不产生除零异常，也不静默扣分）。"""
     _make_task(db, "E_A")
     db.add(MetricValue(
         id="MV_ZERO_TARGET", employee_id="E_A", metric_code="gmv", period=PERIOD,
@@ -115,13 +127,17 @@ def test_zero_target_scores_zero_without_crashing(db, org, login):
         resp = c.post(ENDPOINT.format(record_id="R_1"), json={})
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["final_score"] == pytest.approx(24.0)
+    body = resp.json()
+    assert body["final_score"] == pytest.approx(80.0)
+    assert body["calculation_detail"]["warnings"], "缺目标值必须产生告警"
 
 
-def test_ratio_missing_from_level_band_scores_zero(db, org, login):
-    """达成率落在等级区间**缝隙**里 → 该指标记 0 分（并记 warning）。
+def test_ratio_missing_from_level_band_excludes_metric(db, org, login):
+    """达成率落在等级区间**缝隙**里 → 该指标不参与算分（配置问题）。
 
-    口径来自 ``scoring.py``：``未命中任何等级区间``。
+    口径变更（自检轮 P0）：
+        旧实现 → 参与并记 0 分（静默扣权重）
+        新实现 → 不参与，权重重新归一
     """
     gapped = [
         {"level": "A", "min_ratio": 1.05, "max_ratio": None, "score": 100},
@@ -136,13 +152,16 @@ def test_ratio_missing_from_level_band_scores_zero(db, org, login):
     ]
     db.flush()
     _add_metric_values(db, "E_A", gmv=1_000_000.0, conversion=96.0)
-    # ratio: gmv = 0.8333（缝隙），conv = 0.96（缝隙）
+    # ratio: gmv = 0.8333（缝隙），conv = 0.96（缝隙）→ 两个都不参与
 
     with login(org["lead"]) as c:
         resp = c.post(ENDPOINT.format(record_id="R_1"), json={})
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["final_score"] == pytest.approx(0.0)
+    # 所有指标都算不出分数 → 必须阻断，不能出 0 分
+    assert resp.status_code == 500, resp.text
+    assert resp.json()["detail"]["error_code"] == "CONFIG_ERROR"
+    db.expire_all()
+    assert _scores(db) == []
 
 
 def test_missing_snapshot_is_blocked(db, org, login):
@@ -319,11 +338,15 @@ def test_scoring_never_emits_out_of_range_total():
     assert 0.0 <= result.total <= 100.0
 
 
-def test_missing_rubric_entry_is_blocked_not_silently_zeroed(db, org, login):
-    """快照缺某指标的 rubric → 该指标无法定级。
+def test_missing_rubric_entry_excludes_metric_not_silently_zeroed(db, org, login):
+    """快照缺某指标的 rubric → 该指标**不参与**算分（并产生告警）。
 
-    ⚠️ 当前口径是「该指标记 0 分」（``scoring.py`` 的既定行为）。
-    这里固化现状，防止未来无意改变；如果将来改成阻断，只需更新本测试。
+    口径变更（自检轮 P0）：
+        旧实现 → 参与并记 0 分（rubric 配错被伪装成业务低绩效）
+        新实现 → 不参与，权重重新归一 + 明确告警
+
+    ⚠️ 这条是「配置错误」而非「业务缺失」，所以必须**可追溯**：
+    告警要同时进响应和 `trace_json`（落库）。
     """
     _make_task(db, "E_A")
     snapshot = db.get(ConfigSnapshot, "CS_1")
@@ -338,8 +361,65 @@ def test_missing_rubric_entry_is_blocked_not_silently_zeroed(db, org, login):
         resp = c.post(ENDPOINT.format(record_id="R_1"), json={})
 
     assert resp.status_code == 200, resp.text
-    # gmv=B(80)，conv 无 rubric → 0 → 0.7 * 80 = 56
-    assert resp.json()["final_score"] == pytest.approx(56.0)
+    body = resp.json()
+    # conv 不参与 → gmv 权重归一为 1.0 → 总分 = 80
+    assert body["final_score"] == pytest.approx(80.0)
+
+    warnings = body["calculation_detail"]["warnings"]
+    assert any("conversion_rate" in w and "rubric" in w for w in warnings), warnings
+
+    # ⚠️ 告警必须**落库** —— 否则运维事后无从追溯这个分数不完整
+    db.expire_all()
+    score = db.execute(select(Score)).scalars().first()
+    assert score is not None
+    assert score.trace_json.get("warnings"), score.trace_json
+    assert any("conversion_rate" in w for w in score.trace_json["warnings"])
+
+
+def test_warnings_are_persisted_and_echoed(db, org, login):
+    """告警**双向可见**：进响应 + 进 `trace_json`（落库审计）。
+
+    回归背景：旧实现算出了 `warnings` 但**全库无人消费** ——
+    既不在响应里，也不在 `trace_json` 里，信号彻底丢失。
+    """
+    _make_task(db, "E_A")
+    _add_metric_values(db, "E_A", gmv=1_200_000.0, conversion=96.0)
+    # 让 conv 没有 rubric
+    snapshot = db.get(ConfigSnapshot, "CS_1")
+    snapshot.rubric_json = [
+        {"metric_code": "gmv", "levels_json": GMV_LEVELS},
+    ]
+    db.flush()
+
+    with login(org["lead"]) as c:
+        resp = c.post(ENDPOINT.format(record_id="R_1"), json={})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # 1) 响应里可见
+    assert body["calculation_detail"]["warnings"], "响应必须回显告警"
+    # 2) message 里要点明分数不完整
+    assert "未参与算分" in body["message"], body["message"]
+    # 3) 落库里可见
+    db.expire_all()
+    score = db.execute(select(Score)).scalars().first()
+    assert score.trace_json.get("warnings"), score.trace_json
+
+
+def test_no_warnings_when_all_metrics_participate(db, org, login):
+    """全部指标正常参与 → 不产生任何告警（别制造噪音）。"""
+    _make_task(db, "E_A")
+    _add_metric_values(db, "E_A", gmv=1_200_000.0, conversion=96.0)
+
+    with login(org["lead"]) as c:
+        resp = c.post(ENDPOINT.format(record_id="R_1"), json={})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["calculation_detail"]["warnings"] == []
+    assert body["final_score"] == pytest.approx(80.0)
+    assert "未参与算分" not in body["message"], body["message"]
 
 
 def test_not_started_state_requires_force(db, org, login):

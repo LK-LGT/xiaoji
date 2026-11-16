@@ -162,7 +162,16 @@ class CalculationDetail(BaseModel):
     final_score: float = Field(..., description="最终得分（0-100）")
     rating_level: int = Field(..., ge=1, le=5, description="等级（1-5）")
     rating_label: str = Field(..., description="等级标签")
-    
+
+    # ⚠️ 算分告警（新增）。
+    #    这些指标**没有参与算分**（缺数据 / 缺目标值 / rubric 未配置 /
+    #    达成率未命中区间）—— 权重已重新归一，所以不影响其他指标，
+    #    但运维必须能看到「这个分数不完整」，否则无从追溯。
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="算分告警：未参与算分的指标及原因",
+    )
+
     # 时间戳
     calculated_at: datetime = Field(default_factory=datetime.now)
     calculation_duration_ms: Optional[float] = Field(None, description="计算耗时（毫秒）")

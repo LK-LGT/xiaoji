@@ -107,9 +107,24 @@ def score_record(
 
     规则：
     1. 权重合计必须 = 100，否则抛 ScoringError（决策③读入校验的运行时兜底）
-    2. 每个指标必须能算出达成率，否则该指标记 0 分并记 warning
-    3. 缺指标值的指标不参与，权重按实际参与项重新归一 —— 避免"缺数据=扣分"
-    4. 总分 = Σ(归一化权重 × 等级分)
+    2. **算不出分数的指标一律不参与**，权重按实际参与项重新归一
+       —— 避免"缺数据/缺配置 = 扣分"（决策③的核心原则）
+    3. 总分 = Σ(归一化权重 × 等级分)
+
+    什么算"算不出分数"（指标不参与，权重重新归一）：
+        a. 该指标没有 `MetricValue` 数据
+        b. 该指标没有目标值（`target` 为 NULL 或 0）→ 算不出达成率
+        c. 该指标的 rubric 条目缺失（`levels` 为空）→ 定不了级
+        d. 达成率未命中任何等级区间 → rubric 有缝隙（配置问题）
+
+    ⚠️ 这四类在旧实现里分成了两拨：
+       a 是"不参与"（不扣分），而 b/c/d 是"参与但记 0 分"（**扣分**）。
+       结果是：同一个指标**彻底没数据反而一分不扣**，
+       只是目标值缺失 / rubric 配错就被静默扣掉整块权重。
+       语义上说不通 —— 配置瑕疵不该伪装成业务低绩效。
+
+       现在统一为"不参与"，并把原因写进 `warnings`（**必须落库可见**，
+       否则运维看到分数却不知道有指标没参与成功）。
     """
     level_scores = level_scores or DEFAULT_LEVEL_SCORE
 
@@ -136,7 +151,9 @@ def score_record(
     by_code = {i.code: i for i in inputs}
 
     # 第一轮：算出每个指标的达成率与等级，识别缺失项
-    resolved: list[tuple[MetricSpec, float, dict[str, Any] | None, MetricInput | None]] = []
+    # ⚠️ 能进 `resolved` 的指标一定**已定级**（level 非 None）——
+    #    算不出分数的指标在第一轮就 `continue` 掉了，不参与算分。
+    resolved: list[tuple[MetricSpec, float, dict[str, Any], MetricInput | None]] = []
     warnings: list[str] = []
 
     for spec in specs:
@@ -144,15 +161,19 @@ def score_record(
         if mv is None:
             warnings.append(f"指标 {spec.code} 缺少数据，未参与算分")
             continue
+        if not spec.levels:
+            warnings.append(f"指标 {spec.code} 缺少等级区间（rubric 未配置），未参与算分")
+            continue
         ratio = _ratio(mv.value, mv.target)
         if ratio is None:
-            warnings.append(f"指标 {spec.code} 缺少目标值，无法计算达成率，按 0 计")
-            resolved.append((spec, 0.0, None, mv))
+            warnings.append(f"指标 {spec.code} 缺少目标值，无法计算达成率，未参与算分")
             continue
         level = _match_level(ratio, spec.levels)
         if level is None:
-            warnings.append(f"指标 {spec.code} 达成率 {ratio:.4f} 未命中任何等级区间")
-            resolved.append((spec, 0.0, None, mv))
+            warnings.append(
+                f"指标 {spec.code} 达成率 {ratio:.4f} 未命中任何等级区间"
+                f"（等级区间有缝隙），未参与算分"
+            )
             continue
         resolved.append((spec, ratio, level, mv))
 
@@ -169,17 +190,14 @@ def score_record(
 
     for spec, ratio, level, mv in resolved:
         norm_weight = spec.weight / participating_weight
-        if level is None:
-            level_score = 0.0
-            level_label = None
-            level_desc = None
-        else:
-            lvl = str(level.get("level", ""))
-            level_score = (
-                float(level["score"]) if level.get("score") is not None else level_scores.get(lvl, 0.0)
-            )
-            level_label = lvl
-            level_desc = level.get("desc")
+        # ⚠️ 这里不再有 `level is None` 分支 —— 能进 `resolved` 的指标
+        #    一定已经定到级（见第一轮的三处 `continue`）。
+        lvl = str(level.get("level", ""))
+        level_score = (
+            float(level["score"]) if level.get("score") is not None else level_scores.get(lvl, 0.0)
+        )
+        level_label = lvl
+        level_desc = level.get("desc")
 
         contribution = norm_weight * level_score
         total += contribution
@@ -213,6 +231,10 @@ def score_record(
             "total_weight": total_weight,
             "participating_weight": participating_weight,
             "level_scores": level_scores,
+            # ⚠️ warnings 必须**落库**。
+            #    旧实现算出了 warnings 却没人消费 —— 运维看到分数
+            #    完全不知道有指标因为缺数据/缺目标值/rubric 配错而没参与。
+            "warnings": warnings,
         },
         warnings=warnings,
     )
