@@ -1,10 +1,34 @@
 """【板块4】规则引擎 - 核心实现
 
+.. deprecated::
+    **本模块已废弃，请勿用于算分。**
+
+    算分的唯一真值是 ``services/scoring.py`` + ``services/review_service.py``：
+    权重/等级区间来自冻结快照，目标值来自 ``MetricValue``，
+    达成率 = value / target，等级由 Rubric 区间查表，分数由程序计算。
+
+    本模块与权威口径的差异（为什么废弃）：
+      1. **等级体系不同**：本模块是 1~5 五档 + 硬编码等级区间；
+         权威口径是 A/B/C/D 四档 + ``Rubric.levels_json`` 可配区间。
+      2. **缺数据处理不同**：本模块不重新归一权重；权威口径会重新归一
+         （缺数据 ≠ 扣分）。
+      3. **权重口径不同**：本模块期望权重合计 = 1.0 并自动归一；
+         权威口径要求合计 = 100，否则 ``ScoringError`` 阻断。
+      4. **考勤进算分**：本模块按缺勤天数阶段递进扣分 —— 这与决策②
+         「考勤一律 reference_only，永不参与算分」直接冲突。
+      5. **目标值模型不同**：本模块用 ``baseline`` 概念；权威口径用
+         ``target``（``MetricValue.target``）。
+
+    保留原因：``services/attendance_stats.py`` 仍引用本模块的
+    ``ScoreCalculator.calculate_attendance_adjustment`` 作为口径对齐基准，
+    ``app/tests/test_attendance_sync.py`` 依赖该对照。
+    **考勤扣分建议仍属参考型输出，不得自动写入分数。**
+
 包含：
-  1. RulesEngine - 规则引擎主类
-  2. MetricNormalizer - 指标规范化器
-  3. ScoreCalculator - 评分计算器
-  4. RatingMapper - 等级映射器
+  1. RulesEngine - 规则引擎主类（已废弃）
+  2. MetricNormalizer - 指标规范化器（已废弃）
+  3. ScoreCalculator - 评分计算器（仅考勤扣分口径对齐仍被引用）
+  4. RatingMapper - 等级映射器（已废弃）
 """
 
 from typing import Dict, List, Optional, Tuple

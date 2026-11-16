@@ -317,6 +317,15 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
+try:
+    from .routes.v1 import rules_engine as rules_engine_routes
+    app.include_router(rules_engine_routes.router)
+    print("[APP] Rules engine router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register rules engine router: {e}")
+    import traceback
+    traceback.print_exc()
+
 # 直接在 main.py 中也注册一份（确保生效）
 try:
     from .schemas_self_review import SelfReviewSubmitRequest, SelfReviewSubmitResponse

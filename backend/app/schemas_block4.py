@@ -174,16 +174,24 @@ class CalculationDetail(BaseModel):
 
 
 class RulesEngineRequest(BaseModel):
-    """规则引擎请求"""
-    
-    record_id: str = Field(..., description="评估记录 ID")
-    
-    # 可选的调整项数据
-    absent_days: Optional[int] = Field(0, description="缺勤天数")
-    praise_count: Optional[int] = Field(0, description="表彰次数")
-    complaint_count: Optional[int] = Field(0, description="投诉次数")
-    violation_count: Optional[int] = Field(0, description="违规次数")
-    
+    """规则引擎请求。
+
+    注意：
+        - ``record_id`` **可选** —— 记录 ID 已在 URL 路径上，body 里再带一份
+          是冗余的；保留字段只为兼容旧调用方。
+        - ``absent_days`` / ``praise_count`` / ``complaint_count`` /
+          ``violation_count`` 仍被接受（契约兼容），但**不参与算分**
+          （决策②：考勤一律 reference_only）。仅回显，不入分。
+    """
+
+    record_id: Optional[str] = Field(None, description="评估记录 ID（可选，URL 已带）")
+
+    # 调整项数据 —— 只回显，不参与算分（决策②）
+    absent_days: Optional[int] = Field(0, description="缺勤天数（不参与算分）")
+    praise_count: Optional[int] = Field(0, description="表彰次数（不参与算分）")
+    complaint_count: Optional[int] = Field(0, description="投诉次数（不参与算分）")
+    violation_count: Optional[int] = Field(0, description="违规次数（不参与算分）")
+
     # 可选的强制参数
     force_execute: Optional[bool] = Field(False, description="强制执行（即使状态不对）")
     

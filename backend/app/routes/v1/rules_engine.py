@@ -1,36 +1,150 @@
 """【板块4】规则引擎 - API 路由
 
-包含一个核心接口：
+单一接口：
   POST /v1/assessment/records/{record_id}/execute-rules-engine - 执行规则引擎
+
+**口径归属（重要）**
+-----------------------------------
+本端点**不再自带算分逻辑**。算分的唯一真值是
+``services/scoring.py`` + ``services/review_service.py``：
+
+- 权重 / 等级区间来自**冻结快照**（决策③）
+- 目标值来自 ``MetricValue``
+- 达成率 = value / target，等级由 Rubric 区间查表
+- 分数由程序计算，模型永不产生数字（原则③）
+
+历史上的 ``services/rules_engine.py``（1~5 级、硬编码等级区间、考勤进算分）
+已废弃，本端点不再调用它。详见 ``services/rules_engine.py`` 顶部说明。
+
+**考勤不参与算分（决策②）**
+-----------------------------------
+``absent_days`` / ``praise_count`` / ``complaint_count`` / ``violation_count``
+仍被接受（契约兼容），但**只回显、不参与计算**。
+``MetricValue`` 表里本来就没有考勤数据，考勤只在
+``reference_only`` 的证据视图里出现，因此物理上无法影响分数。
 """
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy.orm import Session
-from datetime import datetime
-import logging
 
-from ...core.security import get_current_user
-from ...core.db import get_db
-from ...domain.models import (
-    Employee,
-    AssessmentRecord,
-    AssessmentTask,
-    ConfigSnapshot,
-)
 from ... import exceptions
+from ...core.db import get_db
+from ...dependencies import get_current_user
+from ...domain.enums import RecordStatus
+from ...domain.models import AssessmentRecord, AssessmentTask, Employee
 from ...schemas_block4 import (
+    CalculationDetail,
+    NormalizedMetricDetail,
+    RulesEngineErrorResponse,
     RulesEngineRequest,
     RulesEngineResponse,
-    RulesEngineErrorResponse,
-    CalculationDetail,
 )
-from ...services.rules_engine import RulesEngine
+from ...services import review_service
+from ...services.access_control import build_access_context, can_access_employee
+from ...services.scoring import ScoringError
 
 logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/v1/assessment/records", tags=["rules_engine"])
 
-# 全局规则引擎实例
-rules_engine = RulesEngine()
+#: 可算分的状态。Score 是幂等重算，状态本身不阻断计算。
+_FORCEABLE_STATES = frozenset(
+    {
+        RecordStatus.SELF_REVIEW_OPEN.value,
+        RecordStatus.SELF_REVIEW_SUBMITTED.value,
+        RecordStatus.MANAGER_SCORING.value,
+        RecordStatus.DEPT_REVIEW.value,
+        RecordStatus.CALIBRATED.value,
+        RecordStatus.HR_REVIEW.value,
+        RecordStatus.ARCHIVED.value,
+        RecordStatus.RETURNED.value,
+    }
+)
+
+#: 等级标签（A/B/C/D 体系）→ 1~5 整数档位（响应契约用）
+_LEVEL_TO_INT = {"A": 5, "B": 4, "C": 3, "D": 2}
+
+
+# ─────────────────────────────────────────────────────────────
+# 适配层：scoring.ScoreResult → schemas_block4.CalculationDetail
+# ─────────────────────────────────────────────────────────────
+
+
+def _level_int(level: str | None) -> int:
+    """A/B/C/D 等级 → 1~5 档位（响应契约兼容）。
+
+    未知等级保守落在 3（"达标"），不虚报高分。
+    """
+    if not level:
+        return 3
+    return _LEVEL_TO_INT.get(str(level).upper(), 3)
+
+
+def _level_label(level: str | None) -> str:
+    """等级标签。A/B/C/D 直接用；未知退化为「达标」。"""
+    if not level:
+        return "达标"
+    text = str(level).upper()
+    if text in _LEVEL_TO_INT:
+        return text
+    return "达标"
+
+
+def _build_calculation_detail(
+    record_id: str,
+    result,
+    duration_ms: float,
+) -> CalculationDetail:
+    """把权威算分结果装进板块4 的计算详情契约。"""
+    normalized_metrics: list[NormalizedMetricDetail] = []
+
+    for pm in result.per_metric:
+        normalized_metrics.append(
+            NormalizedMetricDetail(
+                metric_code=pm["metric_code"],
+                original_value=float(pm["value"] or 0.0),
+                original_unit=pm.get("unit") or "",
+                normalized_score=float(pm.get("level_score") or 0.0),
+                normalization_rule=(
+                    f"达成率 {pm.get('ratio')} 落在等级 {pm.get('level')} 区间，"
+                    f"等级分 {pm.get('level_score')}"
+                ),
+            )
+        )
+
+    weighted_score = round(
+        sum(float(pm.get("contribution") or 0.0) for pm in result.per_metric), 2
+    )
+
+    # 第一个有等级的指标决定整档评级
+    primary_level = None
+    for pm in result.per_metric:
+        if pm.get("level"):
+            primary_level = pm["level"]
+            break
+
+    return CalculationDetail(
+        record_id=record_id,
+        normalized_metrics=normalized_metrics,
+        metric_weights={
+            pm["metric_code"]: float(pm.get("normalized_weight") or 0.0)
+            for pm in result.per_metric
+        },
+        weighted_score=weighted_score,
+        # 决策②：考勤/奖惩一律不参与算分，恒为 0
+        attendance_adjustment=0.0,
+        reward_adjustment=0.0,
+        total_adjustment=0.0,
+        final_score=float(result.total),
+        rating_level=_level_int(primary_level),
+        rating_label=_level_label(primary_level),
+        calculation_duration_ms=round(duration_ms, 2),
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -49,7 +163,10 @@ rules_engine = RulesEngine()
         422: {"model": RulesEngineErrorResponse, "description": "参数验证失败"},
     },
     summary="【板块4】执行规则引擎",
-    description="根据指标数据和配置的规则，自动计算员工最终评分",
+    description=(
+        "按冻结快照口径计算员工评分并落库到 Score 表。"
+        "算分唯一真值来源为 services/scoring.py；考勤不参与算分（决策②）。"
+    ),
 )
 async def execute_rules_engine(
     record_id: str = Path(..., description="评估记录 ID"),
@@ -57,282 +174,118 @@ async def execute_rules_engine(
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """执行规则引擎计算员工最终评分。
+
+    流程：
+      1. 鉴权 + 数据范围校验（HR/Admin 全公司；主管按管理范围）
+      2. 取考核记录 → 任务 → 冻结快照
+      3. 状态检查（``force_execute`` 可越过）
+      4. 委托 ``review_service.compute_score`` 算分
+      5. ``review_service.persist_score`` 落库到 ``Score``
     """
-    执行规则引擎计算员工最终评分
-    
-    【业务流程】
-    
-    【步骤 1】权限和身份检查
-    ├─ Token 有效性
-    └─ 用户身份是 HR 或管理员
-    
-    【步骤 2】数据查询和验证
-    ├─ AssessmentRecord（评估记录）
-    ├─ AssessmentTask（考核任务）
-    ├─ ConfigSnapshot（规则配置）
-    └─ MetricValue（指标值）
-    
-    【步骤 3】状态检查
-    ├─ Record.status 必须为 "scored"（已评分）
-    ├─ 员工自评已完成
-    └─ 主管评分已完成
-    
-    【步骤 4】数据验证
-    ├─ 指标完整性检查
-    ├─ 规范化规则有效性
-    ├─ 权重配置有效性
-    └─ 等级映射有效性
-    
-    【步骤 5】规则引擎计算
-    ├─ 加载规则配置
-    ├─ 读取指标数据
-    ├─ 调用 RulesEngine.execute()
-    └─ 获取计算结果
-    
-    【步骤 6】结果保存
-    ├─ 更新 record.final_score
-    ├─ 更新 record.rating
-    ├─ 保存计算详情
-    └─ 更新 record.status = "finalized"
-    
-    【步骤 7】异常处理
-    ├─ PermissionDenied：非 HR/Admin
-    ├─ DataValidationError：数据不合法
-    ├─ BusinessLogicError：超过截止时间
-    └─ ConflictError：状态不对
-    
-    【步骤 8】事务提交
-    └─ db.commit()
-    """
-    
+    started = datetime.now()
+
     try:
-        logger.info(f"[规则引擎] 开始执行 user={current_user.id}, record_id={record_id}")
-        
-        # ───────────────────────────────────────────
-        # 步骤 1：权限检查
-        # ───────────────────────────────────────────
-        
         if not current_user:
             raise exceptions.NotAuthenticated("Token 无效或已过期")
-        
-        # 只有 HR 和管理员可以执行规则引擎
-        if current_user.role not in ["hr", "admin"]:
+
+        # ── 数据查询 ──
+        record = db.query(AssessmentRecord).filter_by(id=record_id).first()
+        if not record:
+            raise exceptions.RecordNotFound("AssessmentRecord", record_id)
+
+        task = db.query(AssessmentTask).filter_by(id=record.task_id).first()
+        if not task:
+            raise exceptions.RecordNotFound("AssessmentTask", record.task_id)
+
+        # ── 权限与数据范围 ──
+        context = build_access_context(db, current_user)
+        target_employee = db.get(Employee, record.employee_id)
+        if target_employee is None:
+            raise exceptions.RecordNotFound("Employee", record.employee_id)
+        if not can_access_employee(context, target_employee, db):
             raise exceptions.PermissionDenied(
                 user_id=current_user.id,
                 action="execute_rules_engine",
                 resource="AssessmentRecord",
-                reason="仅 HR 和管理员可以执行规则引擎"
             )
-        
-        # ───────────────────────────────────────────
-        # 步骤 2：数据查询
-        # ───────────────────────────────────────────
-        
-        record = db.query(AssessmentRecord).filter_by(id=record_id).first()
-        
-        if not record:
-            raise exceptions.ResourceNotFoundError(
-                resource="AssessmentRecord",
-                resource_id=record_id
+
+        # ── 状态检查 ──
+        force = bool(request.force_execute) if request else False
+        if record.status not in _FORCEABLE_STATES and not force:
+            raise exceptions.InvalidStateTransition(
+                entity_type="AssessmentRecord",
+                current_state=record.status,
+                attempted_action="执行规则引擎（使用 force_execute=true 可强制执行）",
             )
-        
-        task = db.query(AssessmentTask).filter_by(id=record.task_id).first()
-        
-        if not task:
-            raise exceptions.ResourceNotFoundError(
-                resource="AssessmentTask",
-                resource_id=record.task_id
-            )
-        
-        snapshot = db.query(ConfigSnapshot).filter_by(id=task.snapshot_id).first()
-        
-        if not snapshot:
-            raise exceptions.ResourceNotFoundError(
-                resource="ConfigSnapshot",
-                resource_id=task.snapshot_id
-            )
-        
-        # ───────────────────────────────────────────
-        # 步骤 3：状态检查
-        # ───────────────────────────────────────────
-        
-        # 必须已评分
-        if record.status != "scored" and not request.force_execute:
-            raise exceptions.ConflictError(
-                message=f"记录状态不对，期望 scored，实际 {record.status}。"
-                        f"使用 force_execute=true 强制执行"
-            )
-        
-        # ───────────────────────────────────────────
-        # 步骤 4：数据验证
-        # ───────────────────────────────────────────
-        
-        import json
-        
-        # 解析规则配置
+
+        # ── 算分（唯一真值：scoring + 冻结快照 + MetricValue）──
         try:
-            metrics_config = json.loads(snapshot.metrics_json)
-            weights_config = json.loads(snapshot.weights_json)
-            rubric_config = json.loads(snapshot.rubric_json)
-        except json.JSONDecodeError as e:
-            raise exceptions.DataValidationError(
-                message=f"规则配置 JSON 格式错误: {e}",
-                field="config_snapshot"
-            )
-        
-        # 从 MetricValue 表读取指标值
-        from ....domain.models import MetricValue
-        
-        metric_values = db.query(MetricValue).filter_by(
-            record_id=record_id,
-            source="manager"  # 只读取主管的指标值
-        ).all()
-        
-        if not metric_values:
-            raise exceptions.BusinessLogicError(
-                message="没有找到任何指标值，无法执行规则引擎"
-            )
-        
-        # 构建指标数据字典
-        metrics_data = {}
-        for mv in metric_values:
-            metrics_data[mv.metric_code] = {
-                "value": mv.value,
-                "unit": mv.unit
-            }
-        
-        logger.info(f"指标值: {metrics_data}")
-        
-        # 构建规范化规则
-        normalization_rules = {}
-        for metric_info in metrics_config:
-            code = metric_info.get("code")
-            normalization_rules[code] = {
-                "type": metric_info.get("normalization", {}).get("type", "direct"),
-                "baseline": metric_info.get("normalization", {}).get("baseline", 100),
-                "max": metric_info.get("normalization", {}).get("max"),
-                "min": metric_info.get("normalization", {}).get("min")
-            }
-        
-        # 构建权重字典
-        weights = {}
-        for metric_code, weight in weights_config.items():
-            weights[metric_code] = float(weight)
-        
-        # 验证权重总和接近 1.0
-        total_weight = sum(weights.values())
-        if abs(total_weight - 1.0) > 0.1:
-            logger.warning(f"权重总和不为 1.0: {total_weight}")
-        
-        # 构建等级范围
-        rating_ranges = {}
-        for level_str, score_range in rubric_config.items():
-            try:
-                level = int(level_str)
-                if isinstance(score_range, (list, tuple)) and len(score_range) == 2:
-                    rating_ranges[level] = (float(score_range[0]), float(score_range[1]))
-                elif isinstance(score_range, dict):
-                    rating_ranges[level] = (
-                        float(score_range.get("min", 0)),
-                        float(score_range.get("max", 100))
-                    )
-            except (ValueError, TypeError) as e:
-                logger.warning(f"等级配置解析失败: {e}")
-        
-        if not rating_ranges:
-            # 使用默认等级范围
-            rating_ranges = {
-                1: (0, 60),
-                2: (61, 72),
-                3: (73, 84),
-                4: (85, 92),
-                5: (93, 100)
-            }
-        
-        # ───────────────────────────────────────────
-        # 步骤 5：执行规则引擎
-        # ───────────────────────────────────────────
-        
-        logger.info("调用 RulesEngine.execute()")
-        
-        calculation_detail = rules_engine.execute(
-            record_id=record_id,
-            metrics=metrics_data,
-            normalization_rules=normalization_rules,
-            weights=weights,
-            rating_ranges=rating_ranges,
-            absent_days=request.absent_days or 0,
-            praise_count=request.praise_count or 0,
-            complaint_count=request.complaint_count or 0,
-            violation_count=request.violation_count or 0
-        )
-        
-        logger.info(
-            f"规则引擎执行完成: "
-            f"final_score={calculation_detail.final_score}, "
-            f"rating={calculation_detail.rating_level}"
-        )
-        
-        # ───────────────────────────────────────────
-        # 步骤 6：保存结果
-        # ───────────────────────────────────────────
-        
-        # 更新 AssessmentRecord
-        record.status = "finalized"
-        record.final_score = calculation_detail.final_score
-        record.rating = calculation_detail.rating_label
-        record.confirmed_rating = float(calculation_detail.rating_level)
-        
-        # 保存计算详情（转换为 JSON）
-        calculation_detail_json = calculation_detail.dict()
-        import json
-        record.calculation_detail = json.dumps(calculation_detail_json, default=str)
-        
-        db.add(record)
+            result = review_service.compute_score(db, record_id=record_id)
+        except ScoringError as exc:
+            # 配置类错误必须阻断，不能降级出假分（决策③）
+            raise exceptions.ConfigurationError(detail=str(exc)) from exc
+        except review_service.NotFound as exc:
+            raise exceptions.RecordNotFound("AssessmentRecord", record_id) from exc
+        except review_service.InvalidState as exc:
+            raise exceptions.InvalidStateTransition(
+                entity_type="AssessmentRecord",
+                current_state=record.status,
+                attempted_action=str(exc),
+            ) from exc
+
+        # ── 落库（Score 表是唯一真值表）──
+        review_service.persist_score(db, record_id=record_id, result=result)
+
+        # 注意：**不推进 record.status**。
+        # 状态机由业务流程（自评 → 主管评分 → 部门复核 → …）推进，
+        # 算分只是「算出一个数并落库」，与权威流程 `review_service.confirm_draft`
+        # 的做法一致。历史实现在这里写 `final_score` / `rating` /
+        # `calculation_detail` —— 那三个列在 `AssessmentRecord` 上根本不存在。
+
+        duration_ms = (datetime.now() - started).total_seconds() * 1000
+        detail = _build_calculation_detail(record_id, result, duration_ms)
+
         db.flush()
-        
-        # ───────────────────────────────────────────
-        # 步骤 7：事务提交
-        # ───────────────────────────────────────────
-        
-        db.commit()
-        db.refresh(record)
-        
-        logger.info(f"[规则引擎] 执行成功 record_id={record_id}")
-        
-        # ───────────────────────────────────────────
-        # 步骤 8：返回响应
-        # ───────────────────────────────────────────
-        
+
+        logger.info(
+            "[规则引擎] 执行成功 record_id=%s total=%s", record_id, result.total
+        )
+
         return RulesEngineResponse(
             record_id=record.id,
             status="success",
-            final_score=calculation_detail.final_score,
-            rating_level=calculation_detail.rating_level,
-            rating_label=calculation_detail.rating_label,
-            calculation_detail=calculation_detail,
-            message=f"规则引擎执行成功，最终得分 {calculation_detail.final_score}（{calculation_detail.rating_label}）"
+            final_score=detail.final_score,
+            rating_level=detail.rating_level,
+            rating_label=detail.rating_label,
+            calculation_detail=detail,
+            message=(
+                f"规则引擎执行成功，最终得分 {detail.final_score}"
+                f"（{detail.rating_label}）"
+            ),
         )
-    
-    except exceptions.AppException as e:
-        logger.warning(f"[规则引擎] 业务异常: {e}")
+
+    except exceptions.BaseAppError as e:
+        logger.warning("[规则引擎] 业务异常: %s", e)
         raise HTTPException(
             status_code=e.status_code,
             detail={
                 "record_id": record_id,
                 "error_code": e.code,
                 "error_message": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-        )
+                "timestamp": datetime.now().isoformat(),
+            },
+        ) from e
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"[规则引擎] 系统异常: {e}", exc_info=True)
+        logger.error("[规则引擎] 系统异常: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
                 "record_id": record_id,
                 "error_code": "SYSTEM_ERROR",
                 "error_message": "系统内部错误",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
             }
-        )
+        ) from e
