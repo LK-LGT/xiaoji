@@ -121,8 +121,54 @@ def test_trigger_sync_returns_batch_id(client_and_db, monkeypatch):
     assert "batchId" in payload["data"]
 
 
+def test_trigger_sync_accepts_idempotency_key(client_and_db, monkeypatch):
+    """触发同步必须能接受 idempotency_key（回归：路由传了该参数但服务层没接）。
+
+    ⚠️ 上面的 ``test_trigger_sync_returns_batch_id`` 用 ``**kwargs``
+    假函数替换了 ``start_async_sync``，真实函数签名从未被校验，
+    所以「路由传了 ``idempotency_key``、服务层没这个参数」这个
+    TypeError 被漏掉了 —— 手动触发同步接口实际上 100% 500。
+
+    这里直接调用**真实**的 ``start_async_sync`` 来校验签名契约。
+    """
+    from backend.app.services import feishu_sync_tasks
+
+    # 替换后台执行线程，避免真实调用飞书；只验证参数能传进去。
+    monkeypatch.setattr(feishu_sync_tasks, "_execute_batch", lambda *a, **k: None)
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    batch, created = feishu_sync_tasks.start_async_sync(
+        session,
+        mode="full",
+        trigger_type="manual",
+        actor_id="admin",
+        idempotency_key="manual:admin:full:regression",
+    )
+    assert created is True
+    assert batch.idempotency_key == "manual:admin:full:regression"
+
+    # 同一幂等键再次触发应复用批次，不重复执行。
+    again, created_again = feishu_sync_tasks.start_async_sync(
+        session,
+        mode="full",
+        trigger_type="manual",
+        actor_id="admin",
+        idempotency_key="manual:admin:full:regression",
+    )
+    assert created_again is False
+    assert again.id == batch.id
+    session.close()
+    engine.dispose()
+
+
 def test_get_sync_status_endpoint(client_and_db):
-    """状态接口应返回链路状态。"""
     client, _db, headers, _emp = client_and_db
     response = client.get("/v1/feishu/sync-organization/status", headers=headers)
     assert response.status_code == 200

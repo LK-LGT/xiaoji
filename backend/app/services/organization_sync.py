@@ -26,12 +26,13 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from ..domain.models import (
@@ -60,6 +61,10 @@ MAX_RETRY_COUNT = 5
 # 自动重试的退避基数（秒）。第 n 次重试等待 RETRY_BACKOFF_SECONDS[n-1]。
 RETRY_BACKOFF_SECONDS = (30, 120, 600, 1800, 3600)
 
+# 批次终态提交遇到写锁冲突时的重试次数与退避基数（秒）。
+_FINAL_COMMIT_RETRIES = 5
+_FINAL_COMMIT_BACKOFF_SECONDS = 0.5
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -82,6 +87,7 @@ class OrganizationSyncService:
         mode: str = "full",
         triggered_by: str | None = None,
         trigger_type: str = "manual",
+        session_factory: Any = None,
     ) -> None:
         self.db = db
         self.feishu_client = feishu_client
@@ -89,6 +95,8 @@ class OrganizationSyncService:
         self.triggered_by = triggered_by
         self.trigger_type = trigger_type
         self.identity_service = FeishuIdentityService(db)
+        # 批次终态兜底提交用的独立会话工厂（测试可注入）。
+        self._session_factory = session_factory
         # 本次拉取到的员工（供 _sync_employees / _reconcile 使用）。
         self._current_employees: list[dict[str, Any]] = []
         # 本次拉取失败的部门；非空表示快照不完整。
@@ -96,11 +104,109 @@ class OrganizationSyncService:
         # 本次快照是否完整。
         self._snapshot_complete = False
 
+    @staticmethod
+    def _default_session_factory() -> Any:
+        """默认的独立会话工厂：走全局 sessionmaker。"""
+        from ..core.db import get_sessionmaker
+
+        return get_sessionmaker()
+
+    # ─────────────────────────────────────────────────────────────
+    # 事务边界
+    # ─────────────────────────────────────────────────────────────
+
+    def _savepoint(self) -> Any:
+        """开启一个 SAVEPOINT 子事务。
+
+        为什么需要它（真实库 92 条 FK 报错的根因）：
+        部门写入用 ``flush()``（不提交），员工写入在**同一个事务**里。
+        某条员工插入失败时若直接 ``rollback()``，会把**尚未提交的部门插入
+        一并撤销** —— 于是后续员工的 ``department_id`` 外键目标消失，
+        「1 条失败」被放大成「全员失败」。
+
+        SAVEPOINT 让每条记录的写入落在自己的子事务里：
+        单条失败只回滚该 savepoint，外层事务里已写入的数据全部保留。
+        """
+        return self.db.begin_nested()
+
+    def _rollback_savepoint(self, savepoint: Any) -> None:
+        """回滚到指定 SAVEPOINT —— 只撤销这一条记录的写入。"""
+        if savepoint is None:
+            return
+        try:
+            savepoint.rollback()
+        except Exception:  # pragma: no cover - savepoint 已失效时兜底
+            logger.warning("SAVEPOINT 回滚失败，继续处理后续记录", exc_info=True)
+
+    def _commit_final(self, batch: OrganizationSyncBatch) -> None:
+        """提交批次终态，带锁冲突重试。
+
+        为什么必须重试（实测踩坑）：
+        批次终态写在 ``finally`` 块里。若这里的 commit 因 SQLite 写锁
+        冲突失败，异常会**覆盖**正常返回流程，批次的 ``status`` 写不进
+        库 —— 批次永远停在 ``running``，前端一直转圈。
+
+        所以：commit 失败先回滚再重试；重试仍失败则用**独立会话**
+        直连落库，确保批次一定落到终态。
+        """
+        for attempt in range(_FINAL_COMMIT_RETRIES):
+            try:
+                self.db.commit()
+                return
+            except OperationalError as exc:
+                # 仅对「锁冲突」重试；其它数据库错误直接抛。
+                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    logger.error("批次终态提交失败（非锁冲突）: %s", self._safe_error(exc))
+                    raise
+                logger.warning(
+                    "批次终态提交遇到写锁冲突，第 %s 次重试: %s",
+                    attempt + 1,
+                    self._safe_error(exc),
+                )
+                try:
+                    self.db.rollback()
+                except Exception:  # pragma: no cover - 回滚失败兜底
+                    pass
+                time.sleep(_FINAL_COMMIT_BACKOFF_SECONDS * (attempt + 1))
+
+        # 重试用尽：用独立会话直连落库，保证批次不会永远停在 running。
+        logger.error("批次终态提交重试耗尽，改用独立会话落库: batch_id=%s", batch.id)
+        self._commit_final_in_new_session(batch)
+
+    def _commit_final_in_new_session(self, batch: OrganizationSyncBatch) -> None:
+        """用独立数据库会话把批次终态写进去（兜底路径）。"""
+        try:
+            factory = self._session_factory or self._default_session_factory()
+            fresh = factory()
+            try:
+                row = fresh.get(OrganizationSyncBatch, batch.id)
+                if row is None:
+                    return
+                row.status = batch.status
+                row.error_message = batch.error_message
+                row.error_category = batch.error_category
+                row.phase = "finished"
+                row.phase_detail = None
+                row.departments_synced = batch.departments_synced
+                row.departments_skipped = batch.departments_skipped
+                row.departments_failed = batch.departments_failed
+                row.employees_synced = batch.employees_synced
+                row.employees_skipped = batch.employees_skipped
+                row.employees_failed = batch.employees_failed
+                row.finished_at = batch.finished_at
+                row.duration_ms = batch.duration_ms
+                row.reconciliation_json = batch.reconciliation_json
+                fresh.commit()
+            finally:
+                fresh.close()
+        except Exception:  # pragma: no cover - 兜底路径，失败只记录
+            logger.exception("兜底提交批次终态失败: batch_id=%s", batch.id)
+
     # ─────────────────────────────────────────────────────────────
     # 主流程
     # ─────────────────────────────────────────────────────────────
 
-    def sync_all(self) -> dict[str, Any]:
+    def sync_all(self, batch: OrganizationSyncBatch | None = None) -> dict[str, Any]:
         """执行同步，返回批次统计与对账结果。
 
         增量模式下的语义：
@@ -110,18 +216,29 @@ class OrganizationSyncService:
         - 部门：游标记录已同步到的部门 ID，续传时跳过已处理的部门；
         - 员工：按部门逐个拉取，游标记录已同步到的部门 ID；
         - 删除判定：只有全量且快照完整时才允许把「远端缺失」解释为离职。
+
+        ``batch`` 参数：复用调用方已建好的批次行。
+        ⚠️ 以前这里总是**新建**一个批次，于是「路由建的那条」与
+        「实际执行的那条」是两条不同的记录 —— 前者永远停在 running，
+        前端一直转圈，且「已有任务在运行」会把后续触发全部挡住。
         """
-        batch = OrganizationSyncBatch(
-            batch_no=f"ORG-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10]}",
-            status="running",
-            mode=self.mode,
-            trigger_type=self.trigger_type,
-            triggered_by=self.triggered_by,
-            phase="running",
-            phase_detail="正在初始化同步",
-        )
-        self.db.add(batch)
-        self.db.commit()
+        if batch is None:
+            batch = OrganizationSyncBatch(
+                batch_no=f"ORG-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10]}",
+                status="running",
+                mode=self.mode,
+                trigger_type=self.trigger_type,
+                triggered_by=self.triggered_by,
+                phase="running",
+                phase_detail="正在初始化同步",
+            )
+            self.db.add(batch)
+            self.db.commit()
+        else:
+            # 复用既有批次：接管它，把状态推进到 running。
+            batch.status = "running"
+            batch.phase = "running"
+            batch.phase_detail = "正在初始化同步"
         self.db.refresh(batch)
         started = _now()
 
@@ -201,7 +318,7 @@ class OrganizationSyncService:
                     "error_category": batch.error_category,
                 },
             )
-            self.db.commit()
+            self._commit_final(batch)
 
         result: dict[str, Any] = {
             "batch_id": batch.id,
@@ -430,16 +547,27 @@ class OrganizationSyncService:
                 stats["departments_failed"] += 1
                 self._record_error(batch, "department", None, "部门缺少 department_id")
                 continue
+            savepoint = None
             try:
+                savepoint = self._savepoint()
                 changed = self._upsert_department(batch, item, identity_map or {})
                 if changed:
                     stats["departments_synced"] += 1
                 else:
                     stats["departments_skipped"] += 1
+                savepoint.commit()
             except Exception as exc:
-                self.db.rollback()
+                # 只回滚这一条部门，不能连带撤销外层事务里已写入的数据。
+                self._rollback_savepoint(savepoint)
                 stats["departments_failed"] += 1
-                self._record_error(batch, "department", dept_id, self._safe_error(exc), item)
+                self._record_error(
+                    batch,
+                    "department",
+                    dept_id,
+                    self._safe_error(exc),
+                    item,
+                    commit=False,
+                )
 
         # 只有完整目录视图才能判定“飞书中已删除”。
         # 增量模式不能误删；快照不完整（有部门拉取失败）时同样不能删。
@@ -551,7 +679,9 @@ class OrganizationSyncService:
                 stats["employees_failed"] += 1
                 self._record_error(batch, "employee", None, "员工缺少 user_id")
                 continue
+            savepoint = None
             try:
+                savepoint = self._savepoint()
                 changed = self._upsert_employee(batch, item, defer_manager=True)
                 if changed:
                     stats["employees_synced"] += 1
@@ -561,29 +691,50 @@ class OrganizationSyncService:
                     str(item.get("leader_user_id")) if item.get("leader_user_id") else None
                 )
                 pending.append((user_id, manager_id))
+                savepoint.commit()
             except Exception as exc:
                 # 单条失败不能阻断批次，也不应回滚其他已成功的数据。
-                # 回滚仅撤销当前这条记录，其余已成功数据保留。
-                self.db.rollback()
+                # 只回滚当前这条记录的 SAVEPOINT —— 部门写入和已成功的
+                # 员工都保留在外层事务里（修复前 rollback 会把它们一并撤销，
+                # 导致后续员工全部 FOREIGN KEY 失败）。
+                self._rollback_savepoint(savepoint)
                 stats["employees_failed"] += 1
-                self._record_error(batch, "employee", user_id, self._safe_error(exc), item)
+                self._record_error(
+                    batch,
+                    "employee",
+                    user_id,
+                    self._safe_error(exc),
+                    item,
+                    commit=False,
+                )
 
         # 第二轮：回填 manager_id（此时所有员工均已落库）。
         # manager_id 的变化不额外计数，避免同一员工被统计两次。
         for user_id, manager_id in pending:
             if not manager_id:
                 continue
+            savepoint = None
             try:
+                savepoint = self._savepoint()
                 employee = self.db.get(Employee, user_id)
                 if employee is None:
+                    savepoint.commit()
                     continue
                 if employee.manager_id != manager_id:
                     employee.manager_id = manager_id
                     self.db.flush()
+                savepoint.commit()
             except Exception as exc:
-                self.db.rollback()
+                self._rollback_savepoint(savepoint)
                 stats["employees_failed"] += 1
-                self._record_error(batch, "employee", user_id, self._safe_error(exc), None)
+                self._record_error(
+                    batch,
+                    "employee",
+                    user_id,
+                    self._safe_error(exc),
+                    None,
+                    commit=False,
+                )
 
         # 第三轮：处理「远端已不存在」的员工（离职/删除）。
         # 只在**完整快照**下才允许执行 —— 否则某个部门接口抖动
@@ -950,10 +1101,34 @@ class OrganizationSyncService:
             error.status = "retrying"
             error.retry_count += 1
             self.db.commit()
+            savepoint = None
             try:
+                # 每条重试独立 SAVEPOINT：单条失败只回滚这条，
+                # 不影响其它已重试成功的记录（与主同步流程同一原则）。
+                savepoint = self._savepoint()
                 if error.resource_type == "employee" and error.resource_id:
-                    user = self.feishu_client.fetch_employee(error.resource_id)
-                    payload = user or (error.payload_json or {})
+                    # 优先取飞书最新数据。
+                    #
+                    # 回落规则：**只有**在「该用户已不可取」这类不可重试的
+                    # 失败（404 / 员工已删除）时，才回落到失败记录里保存的
+                    # payload —— 补偿重试不能因为一次拉取失败就彻底放弃，
+                    # 否则历史失败记录永远清不掉。
+                    #
+                    # 限流 / 网络抖动等**可重试**失败必须继续向上抛，
+                    # 让退避逻辑接管；否则会被误判成「数据有问题」而进死信。
+                    payload: dict[str, Any] = {}
+                    try:
+                        fetched = self.feishu_client.fetch_employee(error.resource_id)
+                    except FeishuError as fetch_exc:
+                        if fetch_exc.retryable:
+                            raise
+                        logger.warning(
+                            "重试时拉取飞书员工失败，回落使用已保存 payload, user_id=%s, 原因=%s",
+                            error.resource_id,
+                            self._safe_error(fetch_exc),
+                        )
+                        fetched = None
+                    payload = fetched or (error.payload_json or {})
                     self._retry_employee(payload, error)
                 elif error.resource_type == "department" and error.resource_id:
                     # 部门详情接口按实际飞书版本补充；失败仍保留待补偿记录。
@@ -961,10 +1136,12 @@ class OrganizationSyncService:
                     self._retry_department(payload, error)
                 else:
                     raise ValueError("不支持自动补偿的资源类型")
+                savepoint.commit()
                 error.status = "resolved"
                 error.resolved_at = _now()
                 resolved += 1
             except Exception as exc:
+                self._rollback_savepoint(savepoint)
                 safe_message = self._safe_error(exc)
                 error.message = safe_message
                 error.error_category = classify_feishu_error(exc)
@@ -1011,7 +1188,10 @@ class OrganizationSyncService:
         batch = self.db.get(OrganizationSyncBatch, error.batch_id)
         if batch is None:
             raise ValueError("原同步批次不存在")
-        self._upsert_employee(batch, payload)
+        # 重试路径同样要延迟写 manager_id：上级员工可能还没落库，
+        # 直接写会触发 employee.id 自引用外键失败。
+        # manager_id 的回填由调用方在全部重试完成后统一补。
+        self._upsert_employee(batch, payload, defer_manager=True)
 
     def _retry_department(self, payload: dict[str, Any], error: OrganizationSyncItemError) -> None:
         batch = self.db.get(OrganizationSyncBatch, error.batch_id)
@@ -1030,12 +1210,18 @@ class OrganizationSyncService:
         resource_id: str | None,
         message: str,
         payload: dict[str, Any] | None = None,
+        *,
+        commit: bool = True,
     ) -> None:
         """记录单条失败，并按错误分级决定是否允许自动重试。
 
         分级决定后续行为：
         - ``retryable``：进入自动重试队列，按退避时间重试；
         - 其它分级：等待人工处理（``pending``），不自动重试。
+
+        ``commit=False`` 用于 SAVEPOINT 场景：失败记录必须留在**外层事务**里
+        一起提交。若在这里单独 commit，会把外层事务（尚未提交的部门写入）
+        提前提交掉，破坏批次的事务边界。
         """
         category = classify_item_failure(message)
         auto_retryable = is_auto_retryable(category)
@@ -1057,7 +1243,8 @@ class OrganizationSyncService:
                 payload_json=self._sanitize_payload(payload),
             )
         )
-        self.db.commit()
+        if commit:
+            self.db.commit()
 
     def _audit(
         self,

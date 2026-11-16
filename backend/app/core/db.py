@@ -14,6 +14,10 @@ from .config import settings
 _engine = None
 _SessionLocal = None
 
+# SQLite 写锁等待超时（毫秒）。
+# 后台同步线程与 HTTP 请求并发访问时，写方需要等待读事务释放。
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+
 
 def _ensure_dir() -> None:
     url = settings.database_url
@@ -36,6 +40,14 @@ def get_engine():
             def _set_sqlite_pragma(dbapi_conn, _record):
                 cur = dbapi_conn.cursor()
                 cur.execute("PRAGMA foreign_keys=ON")
+                # ⚠️ busy_timeout：SQLite 默认遇到锁立刻抛
+                #    `OperationalError: database is locked`。
+                #    后台同步线程与 HTTP 读请求并发时，写提交会因
+                #    一次读事务而失败 —— 批次状态写不进去，永久停在 running。
+                #    设置超时后写方会等待锁释放，而不是直接失败。
+                cur.execute("PRAGMA busy_timeout=%d" % SQLITE_BUSY_TIMEOUT_MS)
+                # WAL：读写不互相阻塞，显著降低并发写冲突。
+                cur.execute("PRAGMA journal_mode=WAL")
                 cur.close()
     return _engine
 

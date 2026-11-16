@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -197,7 +198,11 @@ def _execute_batch(batch_id: str, *, mode: str, trigger_type: str, actor_id: str
                 trigger_type=trigger_type,
             )
             service.recover_stale_batches()
-            result = service.sync_all()
+            # ⚠️ 必须把既有的批次行传进去。
+            #    以前 sync_all() 会自己再建一条批次，于是「路由建的那条」
+            #    永远停在 running —— 前端转圈不结束，且后续触发全部被
+            #    「已有任务在运行」挡住。
+            result = service.sync_all(batch=batch)
             logger.info(
                 "飞书组织同步完成, batch_id=%s status=%s",
                 result.get("batch_id"),
@@ -218,21 +223,38 @@ def _execute_batch(batch_id: str, *, mode: str, trigger_type: str, actor_id: str
 
 
 def _mark_batch_failed(db: Session, batch_id: str, message: str) -> None:
-    """把批次标记为失败。"""
-    try:
-        batch = db.get(OrganizationSyncBatch, batch_id)
-        if batch is None:
+    """把批次标记为失败。
+
+    批次终态写不进去 → 批次永远停在 running → 前端一直转圈，
+    且下次同步会被「已有任务在运行」挡住。所以这里必须重试到写成功。
+    """
+    for attempt in range(5):
+        try:
+            batch = db.get(OrganizationSyncBatch, batch_id)
+            if batch is None:
+                return
+            if batch.status in ("ok", "partial_failed", "failed"):
+                return
+            batch.status = "failed"
+            batch.error_message = message[:1000]
+            batch.phase = "finished"
+            batch.phase_detail = None
+            batch.finished_at = _now()
+            db.commit()
             return
-        if batch.status in ("ok", "partial_failed", "failed"):
+        except Exception as exc:  # pragma: no cover - 兜底
+            db.rollback()
+            text = str(exc).lower()
+            if "locked" in text or "busy" in text:
+                logger.warning(
+                    "标记批次失败遇到写锁冲突，第 %s 次重试: batch_id=%s",
+                    attempt + 1,
+                    batch_id,
+                )
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            logger.warning("标记批次失败异常: batch_id=%s error=%s", batch_id, exc)
             return
-        batch.status = "failed"
-        batch.error_message = message[:1000]
-        batch.phase = "finished"
-        batch.phase_detail = None
-        batch.finished_at = _now()
-        db.commit()
-    except Exception:  # pragma: no cover - 兜底
-        db.rollback()
 
 
 def start_async_sync(
@@ -241,6 +263,7 @@ def start_async_sync(
     mode: str = "full",
     trigger_type: str = "manual",
     actor_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> tuple[OrganizationSyncBatch, bool]:
     """创建批次并在后台线程执行。
 
@@ -255,7 +278,11 @@ def start_async_sync(
         raise SyncNotConfiguredError()
 
     batch, created = create_batch(
-        db, mode=mode, trigger_type=trigger_type, actor_id=actor_id
+        db,
+        mode=mode,
+        trigger_type=trigger_type,
+        actor_id=actor_id,
+        idempotency_key=idempotency_key,
     )
     if not created:
         return batch, False
