@@ -16,6 +16,7 @@ from backend.app.domain.models import (
     Base,
     Department,
     Employee,
+    OrganizationSyncAlert,
     OrganizationSyncBatch,
     SystemAdmin,
 )
@@ -404,3 +405,161 @@ def test_admin_login_exposes_feishu_sync_permission(client_and_db):
     assert response.status_code == 200
     data = response.json()["data"]
     assert "system:feishu-sync:manage" in data["permissions"]
+
+
+# ─────────────────────────────────────────────────────────────
+# 告警 API
+# ─────────────────────────────────────────────────────────────
+
+
+def test_list_alerts_returns_empty_list(client_and_db):
+    """没有告警时返回空列表。"""
+    client, _db, headers, _emp = client_and_db
+    response = client.get("/v1/feishu/sync-organization/alerts", headers=headers)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["total"] == 0
+    assert data["records"] == []
+
+
+def test_list_alerts_returns_camel_case_records(client_and_db):
+    """告警列表应使用 camelCase 契约。"""
+    client, db, headers, _emp = client_and_db
+    db.add(
+        OrganizationSyncAlert(
+            alert_type="batch_failed",
+            severity="error",
+            status="open",
+            title="同步失败",
+            message="boom",
+            dedup_key="k1",
+            notified_status="pending",
+        )
+    )
+    db.commit()
+
+    response = client.get("/v1/feishu/sync-organization/alerts", headers=headers)
+    assert response.status_code == 200
+    item = response.json()["data"]["records"][0]
+    assert item["alertType"] == "batch_failed"
+    assert item["severity"] == "error"
+    assert item["status"] == "open"
+    assert item["dedupKey"] == "k1"
+    assert "createdAt" in item
+
+
+def test_list_alerts_supports_filter(client_and_db):
+    """告警列表应支持按状态/严重级别过滤。"""
+    client, db, headers, _emp = client_and_db
+    db.add(
+        OrganizationSyncAlert(
+            alert_type="batch_failed",
+            severity="error",
+            status="open",
+            title="a",
+            message="m",
+            dedup_key="k1",
+            notified_status="pending",
+        )
+    )
+    db.add(
+        OrganizationSyncAlert(
+            alert_type="sync_recovered",
+            severity="info",
+            status="resolved",
+            title="b",
+            message="m",
+            dedup_key="k2",
+            notified_status="pending",
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        "/v1/feishu/sync-organization/alerts",
+        params={"status": "open"},
+        headers=headers,
+    )
+    data = response.json()["data"]
+    assert data["total"] == 1
+    assert data["records"][0]["alertType"] == "batch_failed"
+
+
+def test_acknowledge_alert_marks_acknowledged(client_and_db):
+    """认领告警应更新状态并记录认领人。"""
+    client, db, headers, _emp = client_and_db
+    alert = OrganizationSyncAlert(
+        alert_type="batch_failed",
+        severity="error",
+        status="open",
+        title="a",
+        message="m",
+        dedup_key="k1",
+        notified_status="pending",
+    )
+    db.add(alert)
+    db.commit()
+    alert_id = alert.id
+
+    response = client.post(
+        f"/v1/feishu/sync-organization/alerts/{alert_id}/acknowledge",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "acknowledged"
+    assert data["acknowledgedBy"] == "ADMIN001"
+
+
+def test_acknowledge_unknown_alert_returns_404(client_and_db):
+    """告警不存在时返回 404。"""
+    client, _db, headers, _emp = client_and_db
+    response = client.post(
+        "/v1/feishu/sync-organization/alerts/nope/acknowledge",
+        headers=headers,
+    )
+    assert response.status_code == 404
+
+
+def test_alerts_require_admin(client_and_db):
+    """普通员工不得查看告警。"""
+    client, _db, _headers, emp_headers = client_and_db
+    response = client.get(
+        "/v1/feishu/sync-organization/alerts", headers=emp_headers
+    )
+    assert response.status_code == 403
+
+
+def test_scheduler_endpoint_returns_status(client_and_db):
+    """调度器状态接口应返回运行态。"""
+    client, _db, headers, _emp = client_and_db
+    response = client.get("/v1/feishu/sync-organization/scheduler", headers=headers)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert "enabled" in data
+    assert "running" in data
+    assert "intervalSeconds" in data
+
+
+def test_sync_status_includes_scheduler_and_alerts(client_and_db):
+    """同步总状态应带上调度器运行态与告警统计。"""
+    client, db, headers, _emp = client_and_db
+    db.add(
+        OrganizationSyncAlert(
+            alert_type="batch_failed",
+            severity="error",
+            status="open",
+            title="a",
+            message="m",
+            dedup_key="k1",
+            notified_status="pending",
+        )
+    )
+    db.commit()
+
+    response = client.get("/v1/feishu/sync-organization/status", headers=headers)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert "scheduler" in data
+    assert data["alerts"]["openCount"] == 1
+    assert data["alerts"]["openErrorCount"] == 1

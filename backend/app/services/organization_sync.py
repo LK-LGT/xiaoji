@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 import uuid
@@ -52,6 +53,7 @@ from .feishu_sync_errors import (
     classify_item_failure,
     is_auto_retryable,
 )
+from .sync_cursor import RESOURCE_DEPARTMENT, RESOURCE_EMPLOYEE, CursorManager
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,49 @@ _FINAL_COMMIT_BACKOFF_SECONDS = 0.5
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _resolve_employment_status(status: dict[str, Any] | None) -> str:
+    """把飞书的 ``status`` 对象翻译成本地的在职状态。
+
+    飞书员工状态有 5 个布尔位，语义各不相同：
+
+    ==================== ================ ==========================
+    字段                  含义             本地状态
+    ==================== ================ ==========================
+    ``is_exited``        离职（含主动     ``exited``
+                         退出后自动离职）
+    ``is_resigned``      主动离职          同 ``exited``
+    ``is_frozen``        冻结（停用）      ``inactive``
+    ``is_activated``     已激活            否则 ``inactive``
+    ``is_unjoin``        未加入企业        ``inactive``
+    ==================== ================ ==========================
+
+    ⚠️ **为什么必须区分 ``is_resigned`` 和 ``is_frozen``**：
+    两者都会让员工无法登录，但**含义完全不同** ——
+    - ``is_resigned``（离职）→ 账号**永久禁用**，需要走复职流程；
+    - ``is_frozen``（冻结）→ 只是临时停用，**解冻后应能自动恢复**。
+
+    如果把冻结一律当成离职，解冻后这个员工就永远登录不了了 ——
+    而飞书那边他明明还是在职的。这属于「本地状态比事实源更严」，
+    会造成大量误伤。
+
+    ⚠️ 原来的实现只看 ``is_exited`` / ``is_activated``，
+    忽略了 ``is_resigned`` 与 ``is_frozen``：
+    - 主动离职但 ``is_exited`` 还没翻的窗口期 → 员工**仍可登录**；
+    - 冻结的员工 → 状态仍是 ``active``，**照样能登录**。
+
+    两条都是实打实的安全漏洞。
+
+    实现说明
+    --------
+    判定规则已抽到 ``app.services.offboarding_policy.OffboardingPolicy``，
+    便于业务确认口径后**只改配置不改代码**。本函数的默认行为
+    与抽取前**完全一致**（``is_unjoin`` 仍按 ``inactive`` 处理）。
+    """
+    from .offboarding_policy import OffboardingPolicy
+
+    return OffboardingPolicy.from_settings().decide(status).status
 
 
 def _retry_backoff_seconds(attempt: int) -> int:
@@ -95,12 +140,20 @@ class OrganizationSyncService:
         self.triggered_by = triggered_by
         self.trigger_type = trigger_type
         self.identity_service = FeishuIdentityService(db)
+        # 游标管理器（R17 / 需求2）—— 让增量同步真的能续传。
+        self.cursors = CursorManager(db)
         # 批次终态兜底提交用的独立会话工厂（测试可注入）。
         self._session_factory = session_factory
         # 本次拉取到的员工（供 _sync_employees / _reconcile 使用）。
         self._current_employees: list[dict[str, Any]] = []
         # 本次拉取失败的部门；非空表示快照不完整。
         self._failed_departments: list[str] = []
+        # 本次「拉取阶段」失败的部门（员工列表拉不到）。
+        # ⚠️ 与 `_failed_departments` 的区别：
+        #    前者是「拉取阶段失败」（部门接口拿不到这个部门的员工），
+        #    后者是「写入阶段失败」（员工拿到了但写库失败）。
+        #    两者都会让快照不完整，但统计口径不同。
+        self._failed_fetch_departments: list[str] = []
         # 本次快照是否完整。
         self._snapshot_complete = False
 
@@ -254,17 +307,49 @@ class OrganizationSyncService:
         reconciliation: dict[str, Any] | None = None
 
         try:
+            # ── 拉取部门（带分页游标续传）────────────────────────────
             self._set_phase(batch, "正在拉取部门树")
-            departments = self.feishu_client.fetch_departments()
+            dept_state = self.cursors.read(RESOURCE_DEPARTMENT)
+            # ⚠️ 只有**上次拉取中断**（还残留着 page_token）才续传。
+            #    正常跑完一轮时 page_token 已被清空 —— 带着它续传会
+            #    拿一个已失效的 token 去请求 → 400。
+            resume_token = dept_state.page_token if self.mode == "incremental" else None
+
+            departments = self._fetch_departments_with_cursor(batch, resume_token)
             self._set_phase(batch, f"已拉取 {len(departments)} 个部门，正在拉取员工")
+
+            # 按游标切分：已处理过的部门跳过，只处理增量部分。
+            to_process, skipped = self.cursors.departments_to_process(
+                departments, mode=self.mode
+            )
+            stats["departments_skipped"] += len(skipped)
 
             # 部门接口的 leader_user_id 实际返回 open_id，
             # 必须先建立 open_id -> user_id 映射才能与 Employee.id 对齐。
-            self._current_employees = self._fetch_employees_for_departments(departments)
+            # ⚠️ 员工拉取也要覆盖**全部**部门 —— 增量模式下即使部门本身
+            #    已处理过，其下员工也可能刚发生变化。
+            self._current_employees = self._fetch_employees_for_departments(
+                departments, batch=batch
+            )
+
+            # ⚠️ 拉取阶段失败的部门要计入统计 + 落错误记录。
+            #    否则批次会显示「ok」、对账看起来干净，
+            #    但这些部门的员工其实一个都没同步 ——
+            #    运维完全看不出「少了半个部门」。
+            for failed_dept_id in self._failed_fetch_departments:
+                stats["departments_failed"] += 1
+                self._record_error(
+                    batch,
+                    "department",
+                    failed_dept_id,
+                    f"部门员工列表拉取失败：{failed_dept_id}",
+                    commit=False,
+                )
+
             identity_map = self._build_identity_map(self._current_employees)
 
             self._set_phase(batch, "正在写入部门")
-            self._sync_departments(batch, departments, stats, identity_map)
+            self._sync_departments(batch, to_process, stats, identity_map)
 
             # 先同步部门，确保员工外键目标存在。
             self._set_phase(batch, "正在写入员工")
@@ -280,7 +365,17 @@ class OrganizationSyncService:
             )
 
             # 推进游标：只在对应资源处理成功后推进，失败保留旧位置以便续传。
-            self._advance_cursors(batch, departments, snapshot_complete)
+            # ⚠️ **有失败时不推进** —— 推进了就等于把失败的数据跳过，
+            #    下次增量同步不会再碰它们，缺口就永久留下了。
+            if not stats["employees_failed"] and not stats["departments_failed"]:
+                self._advance_cursors(batch, departments, snapshot_complete)
+            else:
+                logger.warning(
+                    "本批次存在失败记录，游标不推进（保留断点以便下次续传）, "
+                    "departments_failed=%s employees_failed=%s",
+                    stats["departments_failed"],
+                    stats["employees_failed"],
+                )
         except Exception as exc:
             # 只记录脱敏后的消息：原始异常可能包含 App Secret / Access Token，
             # logger.exception 会把完整 traceback（含异常消息）写入日志。
@@ -334,6 +429,48 @@ class OrganizationSyncService:
     # ─────────────────────────────────────────────────────────────
     # 游标与增量
     # ─────────────────────────────────────────────────────────────
+
+    def _fetch_departments_with_cursor(
+        self,
+        batch: OrganizationSyncBatch,
+        resume_token: str | None,
+    ) -> list[dict[str, Any]]:
+        """拉取部门树，并在**每翻一页**时持久化分页游标。
+
+        ⚠️ 为什么每页都要存：
+        一个批次可能处理上千个部门 / 几万员工，中途失败（网络抖动、
+        数据库锁、进程重启）时，如果只在最后存游标，
+        下次就得**从头重拉**所有已成功的页。
+
+        每页持久化后，中断最多损失**一页**的工作量。
+
+        ⚠️ 兼容性：若客户端不支持 ``on_page_token`` 回调
+        （旧版客户端 / 测试替身），退化为一次性拉取，行为不变。
+        """
+        supports_cursor = "on_page_token" in inspect.signature(
+            self.feishu_client.fetch_departments
+        ).parameters
+        if not supports_cursor:
+            return self.feishu_client.fetch_departments()
+
+        def _persist(token: str) -> None:
+            # page_token 为空 = 已拉完最后一页 → 清空游标，
+            # 下次从头开始（而非拿失效 token 去续传）。
+            self.cursors.save_page_token(
+                RESOURCE_DEPARTMENT, token or None, batch_id=batch.id
+            )
+            # 每页提交一次 —— 中断时进度已经落库。
+            # ⚠️ 这里 commit 只提交**游标**的变更；业务数据还在
+            #    各自独立的 savepoint 里，最后统一提交。
+            try:
+                self.db.commit()
+            except Exception as exc:  # pragma: no cover
+                self.db.rollback()
+                logger.warning("持久化部门分页游标失败: %s", self._safe_error(exc))
+
+        return self.feishu_client.fetch_departments(
+            start_page_token=resume_token, on_page_token=_persist
+        )
 
     def _get_cursor(self, resource_type: str) -> OrganizationSyncCursor | None:
         """读取指定资源的同步游标。"""
@@ -402,6 +539,9 @@ class OrganizationSyncService:
           因此续传单位是部门）；
         - ``snapshot_complete`` 只有在全量且快照完整时才置 True。
           它是「远端缺失 = 离职/删除」这一判定的唯一前提。
+
+        ⚠️ **只有处理成功才推进**。批次里有失败时游标不推进 ——
+        下次从旧位置重来，失败的数据不会被跳过。
         """
         last_dept_id = ""
         for dept in departments:
@@ -411,21 +551,19 @@ class OrganizationSyncService:
 
         complete = bool(snapshot_complete and self.mode == "full")
         try:
-            self._save_cursor(
-                "department",
-                cursor_value=last_dept_id or None,
-                checkpoint_value=last_dept_id or None,
-                snapshot_complete=complete,
+            self.cursors.advance_checkpoint(
+                RESOURCE_DEPARTMENT,
+                last_dept_id or None,
                 batch_id=batch.id,
-            )
-            self._save_cursor(
-                "employee",
-                cursor_value=last_dept_id or None,
-                checkpoint_value=last_dept_id or None,
                 snapshot_complete=complete,
-                batch_id=batch.id,
             )
-            self.db.commit()
+            self.cursors.advance_checkpoint(
+                RESOURCE_EMPLOYEE,
+                last_dept_id or None,
+                batch_id=batch.id,
+                snapshot_complete=complete,
+            )
+            self.cursors.commit()
         except Exception as exc:  # pragma: no cover - 游标写入失败不应影响主流程
             self.db.rollback()
             logger.warning("推进同步游标失败: %s", self._safe_error(exc))
@@ -433,6 +571,8 @@ class OrganizationSyncService:
     def _fetch_employees_for_departments(
         self,
         departments: list[dict[str, Any]],
+        *,
+        batch: OrganizationSyncBatch | None = None,
     ) -> list[dict[str, Any]]:
         """按部门拉取员工，返回去重后的员工列表。
 
@@ -442,6 +582,10 @@ class OrganizationSyncService:
         兼容性：若客户端未实现 ``fetch_employees_in_department``
         （例如测试替身或旧版客户端），退回到一次性 ``fetch_employees``，
         此时无法按部门定位失败来源，快照按完整处理。
+
+        ⚠️ 分页续传：单个部门的员工可能跨很多页。每翻一页都会持久化
+        ``员工:部门ID`` 形式的分页游标，中断后从断点继续，
+        不必重拉该部门已成功的页。
         """
         if not hasattr(self.feishu_client, "fetch_employees_in_department"):
             employees = self.feishu_client.fetch_employees(departments=departments)
@@ -457,12 +601,21 @@ class OrganizationSyncService:
             if not dept_id:
                 continue
             try:
-                dept_employees = self.feishu_client.fetch_employees_in_department(dept_id)
+                dept_employees = self._fetch_employees_for_one_department(
+                    dept_id, batch=batch
+                )
             except FeishuError as exc:
                 failed_departments.append(dept_id)
                 logger.warning(
                     "飞书部门员工拉取失败, department_id=%s, 原因=%s", dept_id, exc.message
                 )
+                # ⚠️ 这条失败**必须**计入统计并落错误记录。
+                #    否则：批次状态是「ok」、对账看起来干净，
+                #    但这个部门的员工其实一个都没同步 ——
+                #    运维完全看不出「少了半个部门」。
+                #    （这条路径是「拉取阶段」失败，与
+                #    `_sync_departments` 里的「写入阶段」失败互补。）
+                self._failed_fetch_departments.append(dept_id)
                 continue
             for emp in dept_employees:
                 key = str(emp.get("user_id") or emp.get("open_id") or "")
@@ -481,6 +634,49 @@ class OrganizationSyncService:
         # 快照不完整：禁止本批次判定离职/删除。
         self._snapshot_complete = not failed_departments
         return list(employees.values())
+
+    def _fetch_employees_for_one_department(
+        self,
+        dept_id: str,
+        *,
+        batch: OrganizationSyncBatch | None = None,
+    ) -> list[dict[str, Any]]:
+        """拉取单个部门的员工，带分页游标续传。
+
+        游标键是 ``员工:<部门ID>`` —— 每个部门独立记录分页进度，
+        这样一个部门失败不会影响其它部门的续传位置。
+        """
+        resource = f"{RESOURCE_EMPLOYEE}:{dept_id}"
+        supports_cursor = "on_page_token" in inspect.signature(
+            self.feishu_client.fetch_employees_in_department
+        ).parameters
+        if not supports_cursor:
+            return self.feishu_client.fetch_employees_in_department(dept_id)
+
+        state = self.cursors.read(resource)
+        resume_token = state.page_token if self.mode == "incremental" else None
+
+        def _persist(token: str) -> None:
+            self.cursors.save_page_token(
+                resource, token or None, batch_id=batch.id if batch else None
+            )
+            try:
+                self.db.commit()
+            except Exception as exc:  # pragma: no cover
+                self.db.rollback()
+                logger.warning("持久化员工分页游标失败: %s", self._safe_error(exc))
+
+        try:
+            users = self.feishu_client.fetch_employees_in_department(
+                dept_id, start_page_token=resume_token, on_page_token=_persist
+            )
+        except FeishuError:
+            # ⚠️ 失败时**保留**分页游标（不推进）——
+            #    下次从这一页重来，而不是跳过整批员工。
+            raise
+        # 该部门拉完了 → 清掉它的分页游标（下次从头拉这个部门）。
+        self.cursors.save_page_token(resource, None, batch_id=batch.id if batch else None)
+        return users
 
     def _snapshot_is_complete(self) -> bool:
         """本次拉取是否构成完整快照。
@@ -814,9 +1010,7 @@ class OrganizationSyncService:
         status = item.get("status") or {}
         if item.get("invalid"):
             raise ValueError("模拟员工数据校验失败")
-        employment_status = "exited" if status.get("is_exited") else (
-            "inactive" if not status.get("is_activated", True) else "active"
-        )
+        employment_status = _resolve_employment_status(status)
         department_ids = [
             str(value) for value in (item.get("department_ids") or []) if value
         ]
@@ -847,6 +1041,10 @@ class OrganizationSyncService:
             any(getattr(employee, key) != value for key, value in new_values.items())
             or manager_changed
         )
+        # ⚠️ 先记住**旧**的在职状态 —— 下面的账号启停逻辑要靠它区分
+        #    「离职后复职」（不自动恢复）与「冻结后解冻」（自动恢复）。
+        #    在赋值之后再读 employee.employment_status 就只剩新值了。
+        previous_employment_status = employee.employment_status
         for key, value in new_values.items():
             setattr(employee, key, value)
 
@@ -855,9 +1053,25 @@ class OrganizationSyncService:
                 changed = True
                 employee.token_version += 1
             employee.account_status = "disabled"
-        elif employment_status == "active" and employee.account_status == "disabled":
-            # 离职后复职仍需人工确认绑定，不自动恢复本地账号。
+        elif employment_status == "inactive":
+            # 冻结 / 未激活 —— 账号禁用，但**保留可恢复的语义**。
+            # ⚠️ 与离职的区别：离职是永久的（要人工复职），
+            #    冻结是临时的（解冻后应自动恢复登录）。
+            #    token_version 递增 → 已签发的 token 立即失效，
+            #    冻结期间无法继续用旧 token 访问。
+            if employee.account_status != "disabled":
+                changed = True
+                employee.token_version += 1
             employee.account_status = "disabled"
+        elif employment_status == "active" and employee.account_status == "disabled":
+            # 解冻 / 复职 → **自动恢复**账号。
+            # ⚠️ 离职后复职仍需人工确认绑定，不自动恢复本地账号。
+            #    靠**旧**状态区分：旧状态是 exited → 人工处理；
+            #    旧状态是 inactive（冻结）→ 自动恢复。
+            if previous_employment_status != "exited":
+                changed = True
+                employee.token_version += 1
+                employee.account_status = "enabled"
 
         self.db.flush()
         self._sync_employee_departments(employee.id, department_ids)

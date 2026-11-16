@@ -234,7 +234,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, ArrowRight, Close, Download, Lock, Refresh, Search, View } from '@element-plus/icons-vue'
@@ -269,7 +269,46 @@ const tableRows = ref<FinalConfirmRow[]>([])
 const resultPackages = ref<ProjectResultPackage[]>([])
 const selectedRowsByMonth = reactive(new Map<string, FinalConfirmRow[]>())
 const selectedRows = computed(() => [...selectedRowsByMonth.values()].flat())
-const monthTables = ref<Array<{ clearSelection?: () => void }>>([])
+const monthTables = ref<Array<ElTableLike>>([])
+/**
+ * `el-table` 实例的最小结构。
+ *
+ * `store.updateColumns()` 是 Element Plus 的**公开 store 方法**，
+ * 用来在列注册完成后重算 `states.columns`。
+ */
+interface ElTableLike {
+  clearSelection?: () => void
+  store?: {
+    updateColumns?: () => void
+  }
+}
+
+/**
+ * 强制重算 `el-table` 的列集合。
+ *
+ * ⚠️ 这是对 Element Plus 2.14.2 的**必要补丁**（见 docs/14-R6闭环验证勘察记录.md
+ *    BUG-R6-24）。
+ *
+ * 背景：`<el-table-column>` 在 `onMounted` 里 `insertColumn`，而
+ * `insertColumn` 里更新 `states.columns` 的那句被 `if (instance.$ready)` 守着。
+ * Vue 的挂载顺序是**子组件先于父组件**，所以列注册时 `$ready` 还是 `false`
+ * → `updateColumns()` 没跑 → `states.columns` 永远是空数组 →
+ * **表头和单元格一个都不渲染**（只留几个空 `<tr>`），数据在但界面全白。
+ *
+ * Element Plus 自己在 `useKeyRender` 里挂了 MutationObserver，靠
+ * hidden-columns 的 DOM 变动触发 `updateOrderFns` → `updateColumnOrder`
+ * → `updateColumns()`。但 `updateColumnOrder` 开头有
+ * `if (column.getColumnIndex?.() === column.no) return;` 的早退分支，
+ * 在本项目的 DOM 结构下这个早退命中，`updateColumns()` 就永远不会被调用。
+ *
+ * 显式调一次 `updateColumns()` 即可把 `states.columns` 填好，随后
+ * Vue 的响应式渲染就会把表头和单元格画出来。
+ */
+function syncTableColumns() {
+  monthTables.value.forEach((table) => {
+    table?.store?.updateColumns?.()
+  })
+}
 const pageNo = ref(1)
 const pageSize = ref(10)
 const total = ref(0)
@@ -311,11 +350,18 @@ function resetMonthView() {
 }
 
 function toggleMonth(key: string) {
-  expandedMonthKeys.has(key) ? expandedMonthKeys.delete(key) : expandedMonthKeys.add(key)
+  if (expandedMonthKeys.has(key)) {
+    expandedMonthKeys.delete(key)
+  } else {
+    expandedMonthKeys.add(key)
+    // 新展开的月份，其表格是刚挂载的 —— 同样要补一次列注册。
+    nextTick(syncTableColumns)
+  }
 }
 
 function expandAllMonths() {
   monthGroups.value.forEach((group) => expandedMonthKeys.add(group.key))
+  nextTick(syncTableColumns)
 }
 
 function collapseAllMonths() {
@@ -352,6 +398,10 @@ async function refresh(showMessage = true) {
     total.value = data.total
     clearSelection()
     resetMonthView()
+    // 列在 mount 时没能注册进 states.columns（见 syncTableColumns 注释），
+    // 数据到位后显式补一次，否则表格只有空行没有表头/单元格。
+    await nextTick()
+    syncTableColumns()
     if (showMessage) ElMessage.success('成果数据已刷新')
   } catch (error) {
     if (requestId !== refreshRequestId) return

@@ -318,17 +318,61 @@ class ProjectMonthPlanPackageDetail(BaseModel):
     plans: list[ProjectMonthPlan] = Field(default_factory=list)
 
 
-class ProjectResultPackage(BaseModel):
-    """项目组成果包"""
-    # 飞书部门/项目组 ID 是长十六进制字符串。
-    groupId: str
-    groupName: str
-    planMonth: str
-    totalResultCount: int = 0
-    approvedCount: int = 0
+class ProjectResultMemberProgress(BaseModel):
+    """项目组成员成果进度（前端 `ProjectResultMemberProgress`）。"""
+
+    ownerId: str = ""
+    employeeNo: Optional[str] = None
+    employeeName: str = ""
+    positionName: Optional[str] = None
+    resultStatus: str = ""
+    statusLabel: str = ""
+    confirmedResultCount: int = 0
+    expectedResultCount: int = 0
 
     class Config:
         from_attributes = True
+
+
+class ProjectResultPackage(BaseModel):
+    """项目组成果包。
+
+    ⚠️ BUG-R6-25 修复：此模型此前是 `{groupId, groupName, planMonth,
+    totalResultCount, approvedCount}` —— 与前端
+    `frontend/src/api/department.ts` 的 `ProjectResultPackage` **字段完全对不上**
+    （前端要 `totalMemberCount` / `completedMemberCount` / `status` /
+    `contentAvailable` / `pendingMembers`）。
+
+    后果不是"字段缺失显示空"那么简单：`ProjectResultPackageTable.vue` 里
+    `row.pendingMembers.length` 在 `pendingMembers` 为 `undefined` 时**直接抛
+    TypeError**，进而把整个 `ResultConfirm.vue` 的渲染打断 —— 页面看起来是
+    "查不到成果"，实际是**子组件渲染异常导致父组件整块渲染失败**。
+
+    现在后端与前端契约对齐（并由前端再做一层防御，见
+    `ProjectResultPackageTable.vue` 的 `normalizePackage`）。
+    """
+
+    # 飞书部门/项目组 ID 是长十六进制字符串。
+    groupId: str
+    groupName: str
+    departmentName: Optional[str] = None
+    planMonth: str
+    totalMemberCount: int = 0
+    completedMemberCount: int = 0
+    status: str = "COLLECTING"  # EMPTY / COLLECTING / OPEN
+    contentAvailable: bool = False
+    pendingMembers: list[ProjectResultMemberProgress] = Field(default_factory=list)
+    completedAt: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ProjectResultPackageDetail(BaseModel):
+    """项目组成果包详情（前端 `ProjectResultPackageDetail`）。"""
+
+    packageInfo: ProjectResultPackage
+    results: list[dict] = Field(default_factory=list)
 
 
 # ============================================
@@ -561,41 +605,213 @@ async def get_project_month_plan_package(
         )
 
 
+# ── 项目组成果包（真实数据实现）───────────────────────────────────────────
+#
+# BUG-R6-25 修复：此前这里是**硬编码 mock**，且返回的字段与前端契约完全对不上
+# （后端 `{totalResultCount, approvedCount}` vs 前端 `{totalMemberCount,
+# completedMemberCount, status, contentAvailable, pendingMembers}`）。
+# 前端 `ProjectResultPackageTable.vue` 里 `row.pendingMembers.length` 遇到
+# `undefined` 会抛 TypeError，把 `ResultConfirm.vue` 整页渲染打断 ——
+# 表现为"查不到任何成果"，实际是子组件渲染异常。
+#
+# 现在按**部门（项目组）**聚合真实成果：
+# - 成员 = 该部门下、该月份有月计划的员工
+# - 期望成果数 = 该员工月计划条目数
+# - 已确认成果数 = 该员工 status == confirmed 的成果数
+# - 全部成员都集齐且通过 → contentAvailable=True / status=OPEN
+
+
+def _result_status_label(result_status: str) -> str:
+    """成果状态 → 前端展示用的中文标签。"""
+    return {
+        "not_submitted": "未提交",
+        "draft": "草稿",
+        "submitted": "待审批",
+        "confirmed": "已通过",
+        "rejected": "已驳回",
+    }.get(result_status or "", result_status or "未提交")
+
+
+def _member_progress(
+    owner: Employee,
+    *,
+    expected: int,
+    confirmed: int,
+    submitted: int,
+    result_status: str,
+) -> ProjectResultMemberProgress:
+    """构造单个项目组成员的成果进度。"""
+    return ProjectResultMemberProgress(
+        ownerId=str(owner.id),
+        employeeNo=owner.login_account or "",
+        employeeName=owner.name or "",
+        positionName=owner.position or "",
+        resultStatus=result_status,
+        statusLabel=_result_status_label(result_status),
+        confirmedResultCount=confirmed,
+        expectedResultCount=expected,
+    )
+
+
+def _build_result_packages(
+    db: Session,
+    *,
+    plan_month: str,
+    org_id: Optional[str],
+    scope: Optional[plan_approval.ApprovalScope],
+) -> list[ProjectResultPackage]:
+    """按部门聚合真实成果，构造项目组成果包。
+
+    ⚠️ 可见范围：`scope` 为 None 表示不限制（内部调用）；
+    否则只聚合 `scope` 覆盖到的部门/直属下属所在部门。
+    """
+    from ..domain.result_models import Result
+    from ..domain.models import MonthPlan, MonthPlanItem
+
+    # 1) 该月份所有有月计划的员工
+    plans = (
+        db.query(MonthPlan)
+        .filter(MonthPlan.plan_month == plan_month)
+        .all()
+    )
+    if not plans:
+        return []
+
+    plan_by_owner: dict[str, MonthPlan] = {}
+    for plan in plans:
+        plan_by_owner.setdefault(str(plan.owner_id), plan)
+
+    # 2) 每个员工该月计划条目数（期望成果数）
+    plan_ids = [p.id for p in plans]
+    item_counts: dict[str, int] = {}
+    if plan_ids:
+        rows = (
+            db.query(MonthPlanItem.plan_id, MonthPlanItem.id)
+            .filter(MonthPlanItem.plan_id.in_(plan_ids))
+            .all()
+        )
+        owner_of_plan = {str(p.id): str(p.owner_id) for p in plans}
+        for plan_id, _item_id in rows:
+            owner_id = owner_of_plan.get(str(plan_id))
+            if owner_id is None:
+                continue
+            item_counts[owner_id] = item_counts.get(owner_id, 0) + 1
+
+    # 3) 成果统计
+    result_rows = (
+        db.query(Result)
+        .filter(Result.plan_type == "month", Result.plan_id.in_(plan_ids))
+        .all()
+    )
+    confirmed_by_owner: dict[str, int] = {}
+    submitted_by_owner: dict[str, int] = {}
+    latest_status_by_owner: dict[str, str] = {}
+    for r in result_rows:
+        owner_id = owner_of_plan.get(str(r.plan_id))
+        if owner_id is None:
+            continue
+        if r.status == "confirmed":
+            confirmed_by_owner[owner_id] = confirmed_by_owner.get(owner_id, 0) + 1
+        elif r.status == "submitted":
+            submitted_by_owner[owner_id] = submitted_by_owner.get(owner_id, 0) + 1
+        # 记录最"靠前"的未完成状态
+        priority = {"rejected": 0, "draft": 1, "submitted": 2}
+        current = latest_status_by_owner.get(owner_id)
+        if current is None or priority.get(r.status, 9) < priority.get(current, 9):
+            latest_status_by_owner[owner_id] = r.status
+
+    # 4) 按部门聚合
+    dept_members: dict[str, list[Employee]] = {}
+    for owner_id in plan_by_owner:
+        owner = db.get(Employee, owner_id)
+        if owner is None:
+            continue
+        dept_members.setdefault(str(owner.department_id or ""), []).append(owner)
+
+    packages: list[ProjectResultPackage] = []
+    for dept_id, members in dept_members.items():
+        if org_id and dept_id != str(org_id):
+            continue
+
+        # 可见范围过滤：只保留范围覆盖到的部门
+        if scope is not None and not scope.managed_department_ids:
+            # 没有管理范围时，只能看到直属下属所属的部门
+            allowed = {
+                str(db.get(Employee, eid).department_id)
+                for eid in scope.direct_report_ids
+                if db.get(Employee, eid) is not None
+            }
+            if dept_id not in allowed:
+                continue
+
+        dept = db.get(Department, dept_id) if dept_id else None
+        pending: list[ProjectResultMemberProgress] = []
+        completed_members = 0
+        for owner in members:
+            expected = item_counts.get(str(owner.id), 0)
+            confirmed = confirmed_by_owner.get(str(owner.id), 0)
+            submitted = submitted_by_owner.get(str(owner.id), 0)
+            status = latest_status_by_owner.get(str(owner.id), "not_submitted")
+            if expected == 0:
+                # 该成员本月没有计划条目 → 无成果可交，不计入"待完成"。
+                # （否则组永远集不齐，`contentAvailable` 永远是 false。）
+                completed_members += 1
+            elif confirmed >= expected:
+                completed_members += 1
+            else:
+                pending.append(
+                    _member_progress(
+                        owner,
+                        expected=expected,
+                        confirmed=confirmed,
+                        submitted=submitted,
+                        result_status=status,
+                    )
+                )
+
+        total_members = len(members)
+        if total_members == 0:
+            status = "EMPTY"
+        elif completed_members == total_members:
+            status = "OPEN"
+        else:
+            status = "COLLECTING"
+
+        packages.append(
+            ProjectResultPackage(
+                groupId=dept_id,
+                groupName=(dept.name if dept else "未归属部门"),
+                departmentName=(dept.name if dept else "未归属部门"),
+                planMonth=plan_month,
+                totalMemberCount=total_members,
+                completedMemberCount=completed_members,
+                status=status,
+                contentAvailable=status == "OPEN",
+                pendingMembers=pending,
+            )
+        )
+
+    packages.sort(key=lambda p: p.groupName)
+    return packages
+
+
 @router.get("/project-result-packages", response_model=list[ProjectResultPackage])
 async def list_project_result_packages(
     db: Session = Depends(get_db),
     plan_month: Optional[str] = Query(None, alias="planMonth"),
     org_id: Optional[str] = Query(None),
+    current_user: Employee = Depends(get_current_user),
 ):
-    """获取项目组成果包"""
+    """获取项目组成果包（按部门聚合真实成果）。
+
+    响应结构：ProjectResultPackage[]（裸数组，前端直接 .map()）
+    """
     plan_month = _normalize_plan_month(plan_month)
     try:
-        # 简化实现：返回模拟数据
-        packages = [
-            ProjectResultPackage(
-                groupId="1",
-                groupName="产品研发组",
-                planMonth=plan_month,
-                totalResultCount=8,
-                approvedCount=6,
-            ),
-            ProjectResultPackage(
-                groupId="2",
-                groupName="市场推广组",
-                planMonth=plan_month,
-                totalResultCount=5,
-                approvedCount=5,
-            ),
-            ProjectResultPackage(
-                groupId="3",
-                groupName="数据分析组",
-                planMonth=plan_month,
-                totalResultCount=3,
-                approvedCount=1,
-            ),
-        ]
-        
-        return packages
+        scope = _approval_scope(current_user, db)
+        return _build_result_packages(
+            db, plan_month=plan_month, org_id=org_id, scope=scope
+        )
     except Exception as e:
         logger.error(f"获取项目组成果包失败: {str(e)}")
         raise HTTPException(
@@ -1052,26 +1268,92 @@ async def get_department_employee_month_plan(
     }
 
 
-@router.get("/project-result-packages/{group_id}")
+@router.get("/project-result-packages/{group_id}", response_model=ProjectResultPackageDetail)
 async def get_project_result_package(
     group_id: str,
-    plan_month: Optional[str] = Query(None),
+    plan_month: Optional[str] = Query(None, alias="planMonth"),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取项目组成果包详情。
 
-    响应结构：ProjectResultPackage
+    响应结构：ProjectResultPackageDetail = { packageInfo, results }
+
+    ⚠️ BUG-R6-25 修复：此前返回的是 `{groupId, groupName, planMonth,
+    totalResultCount, approvedCount}` —— 既不是前端要的 `packageInfo` 包裹结构，
+    字段也全不匹配。前端 `ProjectResultPackageTable.vue` 打开抽屉时会直接
+    `detail.packageInfo.departmentName` → `Cannot read properties of undefined`。
     """
-    return {
-        "code": 0,
-        "data": {
-            "groupId": group_id,
-            "groupName": "",
-            "planMonth": plan_month or "",
-            "totalResultCount": 0,
-            "approvedCount": 0,
-        },
-    }
+    plan_month = _normalize_plan_month(plan_month)
+    try:
+        scope = _approval_scope(current_user, db)
+        packages = _build_result_packages(
+            db, plan_month=plan_month, org_id=group_id, scope=scope
+        )
+        package = next((p for p in packages if p.groupId == str(group_id)), None)
+        if package is None:
+            raise HTTPException(status_code=404, detail="项目组成果包不存在")
+
+        results = _package_result_items(db, group_id=str(group_id), plan_month=plan_month)
+        return {"code": 0, "data": {"packageInfo": package, "results": results}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取项目组成果包详情失败: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"获取项目组成果包详情失败: {str(e)}"
+        )
+
+
+def _package_result_items(
+    db: Session,
+    *,
+    group_id: str,
+    plan_month: str,
+) -> list[dict]:
+    """项目组内所有成员的成果条目（对齐前端 `ResultConfirmItem`）。"""
+    from ..domain.models import MonthPlan
+    from ..domain.result_models import Result
+    from ..services import result_submission
+
+    plans = (
+        db.query(MonthPlan)
+        .filter(MonthPlan.plan_month == plan_month)
+        .all()
+    )
+    owner_ids: list[str] = []
+    for plan in plans:
+        owner = db.get(Employee, str(plan.owner_id))
+        if owner is not None and str(owner.department_id or "") == group_id:
+            owner_ids.append(str(plan.owner_id))
+    if not owner_ids:
+        return []
+
+    results = (
+        db.query(Result)
+        .filter(
+            Result.plan_type == "month",
+            Result.owner_id.in_(owner_ids),
+            Result.plan_id.in_([p.id for p in plans]),
+        )
+        .order_by(Result.submitted_at.desc())
+        .all()
+    )
+    items: list[dict] = []
+    for r in results:
+        item = result_submission.serialize_result_suggestion(
+            db, r, evidence_base_url="/v1/department/result-confirms"
+        )
+        item["confirmStatus"] = (
+            "CONFIRMED"
+            if r.status == result_submission.RESULT_STATUS_CONFIRMED
+            else "REJECTED"
+            if r.status == result_submission.RESULT_STATUS_REJECTED
+            else "PENDING_CONFIRM"
+        )
+        items.append(item)
+    return items
 
 
 # ── 待办事项 ──────────────────────────────────────────────

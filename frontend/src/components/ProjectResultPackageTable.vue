@@ -2,7 +2,7 @@
   <div class="project-result-package-table">
     <el-table
       v-loading="loading"
-      :data="packages"
+      :data="normalizedPackages"
       row-key="groupId"
       :empty-text="emptyText"
     >
@@ -36,8 +36,7 @@
       <el-table-column label="待完成人员" min-width="245">
         <template #default="{ row }">
           <span v-if="row.contentAvailable" class="package-complete-text">全员成果已通过</span>
-          <span v-else-if="!row.pendingMembers.length" class="package-pending-empty">暂无成员</span>
-          <el-tooltip v-else :content="pendingMemberText(row)" placement="top" :show-after="250">
+          <span v-else-if="!row.pendingMembers.length" class="package-pending-empty">暂无成员</span>          <el-tooltip v-else :content="pendingMemberText(row)" placement="top" :show-after="250">
             <span class="package-pending-text">{{ pendingMemberPreview(row) }}</span>
           </el-tooltip>
         </template>
@@ -75,14 +74,14 @@
       <div v-else-if="detail" class="package-result-detail">
         <header class="package-detail-summary">
           <div>
-            <span>{{ detail.packageInfo.departmentName || '所属部门' }}</span>
-            <h2>{{ detail.packageInfo.groupName }}</h2>
-            <p>{{ detail.packageInfo.planMonth }} · 全组 {{ detail.packageInfo.totalMemberCount }} 人成果均已审批通过</p>
+            <span>{{ detailInfo.departmentName || '所属部门' }}</span>
+            <h2>{{ detailInfo.groupName }}</h2>
+            <p>{{ detailInfo.planMonth }} · 全组 {{ detailInfo.totalMemberCount }} 人成果均已审批通过</p>
           </div>
           <el-tag type="success" effect="plain">完整开放</el-tag>
         </header>
 
-        <el-table :data="detail.results" border empty-text="暂无成果记录">
+        <el-table :data="detailRows" border empty-text="暂无成果记录">
           <el-table-column type="index" label="#" width="55" />
           <el-table-column label="成员" width="130">
             <template #default="{ row }">
@@ -122,7 +121,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Download, Lock, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import {
@@ -134,7 +133,7 @@ import {
 import { errorMessage, type EvidenceFile } from '@/api/performance'
 import { saveBlob } from '@/utils/download'
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   packages: ProjectResultPackage[]
   loading?: boolean
   emptyText?: string
@@ -142,6 +141,58 @@ withDefaults(defineProps<{
   loading: false,
   emptyText: '当前范围暂无项目组',
 })
+
+/**
+ * 把后端返回的包**归一化**成模板可安全使用的结构。
+ *
+ * ⚠️ BUG-R6-25 防御层：后端 `/department/project-result-packages` 此前返回的
+ * 字段与前端契约完全对不上（`{totalResultCount, approvedCount}` vs
+ * `{totalMemberCount, completedMemberCount, status, contentAvailable,
+ * pendingMembers}`），导致模板里的 `row.pendingMembers.length` 抛 TypeError，
+ * **把整个 ResultConfirm 页面渲染打断**（表现为"查不到任何成果"）。
+ *
+ * 契约失配不应该让整个页面挂掉 —— 这里统一兜底：缺的字段补默认值，
+ * 数组字段强制为数组。
+ */
+function normalizePackage(raw: Partial<ProjectResultPackage> & { groupId: string }): ProjectResultPackage {
+  const pendingMembers = Array.isArray(raw.pendingMembers) ? raw.pendingMembers : []
+  const totalMemberCount = Number(raw.totalMemberCount ?? 0) || 0
+  const completedMemberCount = Number(raw.completedMemberCount ?? 0) || 0
+  const status = raw.status ?? (totalMemberCount === 0 ? 'EMPTY' : 'COLLECTING')
+  const contentAvailable = raw.contentAvailable ?? status === 'OPEN'
+  return {
+    groupId: String(raw.groupId ?? ''),
+    groupName: raw.groupName ?? '未命名项目组',
+    departmentName: raw.departmentName ?? '',
+    planMonth: raw.planMonth ?? '',
+    totalMemberCount,
+    completedMemberCount,
+    status,
+    contentAvailable,
+    pendingMembers,
+    completedAt: raw.completedAt,
+  }
+}
+
+/** 归一化后的包列表（模板一律用这个，不要直接用 props.packages）。 */
+const normalizedPackages = computed(() => (props.packages ?? []).map(normalizePackage))
+
+/**
+ * 详情抽屉里的包信息（归一化）。
+ *
+ * ⚠️ BUG-R6-25 防御层：后端此前返回的是**裸包**而不是 `{packageInfo, results}`
+ * 包裹结构，`detail.packageInfo.departmentName` 会直接抛
+ * `Cannot read properties of undefined`。
+ */
+const detailInfo = computed(() => normalizePackage(detail.value?.packageInfo ?? ({ groupId: '' } as never)))
+
+/** 详情抽屉里的成果行（`evidences` 强制为数组）。 */
+const detailRows = computed(() =>
+  (detail.value?.results ?? []).map((row) => ({
+    ...row,
+    evidences: Array.isArray(row.evidences) ? row.evidences : [],
+  })),
+)
 
 const detailVisible = ref(false)
 const detailLoading = ref(false)
@@ -199,15 +250,18 @@ function packageStatusType(row: ProjectResultPackage): 'success' | 'warning' | '
 }
 
 function pendingMemberText(row: ProjectResultPackage) {
-  return row.pendingMembers.map((member) => (
+  // ⚠️ BUG-R6-25 防御：pendingMembers 可能缺失（契约失配），不能直接 .map。
+  const members = Array.isArray(row.pendingMembers) ? row.pendingMembers : []
+  return members.map((member) => (
     `${member.employeeName}（${member.positionName || '项目组成员'}，${member.statusLabel}，${member.confirmedResultCount}/${member.expectedResultCount}项）`
   )).join('、')
 }
 
 function pendingMemberPreview(row: ProjectResultPackage) {
-  const names = row.pendingMembers.slice(0, 3)
+  const members = Array.isArray(row.pendingMembers) ? row.pendingMembers : []
+  const names = members.slice(0, 3)
     .map((member) => `${member.employeeName}（${member.positionName || '成员'} · ${member.statusLabel}）`).join('、')
-  return row.pendingMembers.length > 3 ? `${names} 等 ${row.pendingMembers.length} 人` : names
+  return members.length > 3 ? `${names} 等 ${members.length} 人` : names
 }
 
 function groupInitial(name: string) {

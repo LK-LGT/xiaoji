@@ -24,6 +24,7 @@ from ..domain.models import (
     Employee,
     FeishuIdentity,
     FeishuIdentityAudit,
+    OrganizationSyncAlert,
     OrganizationSyncAudit,
     OrganizationSyncBatch,
     OrganizationSyncCursor,
@@ -324,6 +325,103 @@ def get_latest_reconciliation(
             "reconciliation": row.reconciliation_json,
         },
     }
+
+
+def _serialize_alert(row: OrganizationSyncAlert) -> dict[str, Any]:
+    """告警序列化为 camelCase 契约。"""
+    return {
+        "id": row.id,
+        "alertType": row.alert_type,
+        "severity": row.severity,
+        "status": row.status,
+        "title": row.title,
+        "message": row.message,
+        "batchId": row.batch_id,
+        "dedupKey": row.dedup_key,
+        "suppressedUntil": row.suppressed_until.isoformat() if row.suppressed_until else None,
+        "detail": row.detail_json,
+        "notifiedStatus": row.notified_status,
+        "notifiedAt": row.notified_at.isoformat() if row.notified_at else None,
+        "notifyError": row.notify_error,
+        "acknowledgedBy": row.acknowledged_by,
+        "acknowledgedAt": row.acknowledged_at.isoformat() if row.acknowledged_at else None,
+        "resolvedAt": row.resolved_at.isoformat() if row.resolved_at else None,
+        "createdAt": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@router.get("/sync-organization/alerts")
+def list_sync_alerts(
+    status: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    alert_type: str | None = Query(default=None),
+    alertType: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+    pageSize: int | None = Query(default=None, ge=1, le=200),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """同步失败告警列表（供运维排查「最近哪里坏了」）。"""
+    _require_admin(db, current_user)
+    size = pageSize if pageSize is not None else page_size
+    atype = alertType if alertType is not None else alert_type
+    query = db.query(OrganizationSyncAlert)
+    if status:
+        query = query.filter(OrganizationSyncAlert.status == status)
+    if severity:
+        query = query.filter(OrganizationSyncAlert.severity == severity)
+    if atype:
+        query = query.filter(OrganizationSyncAlert.alert_type == atype)
+    total = query.count()
+    rows = (
+        query.order_by(OrganizationSyncAlert.created_at.desc())
+        .offset((page - 1) * size)
+        .limit(size)
+        .all()
+    )
+    return {
+        "code": 0,
+        "data": {
+            "records": [_serialize_alert(row) for row in rows],
+            "total": total,
+            "page": page,
+            "pageSize": size,
+        },
+    }
+
+
+@router.post("/sync-organization/alerts/{alert_id}/acknowledge")
+def acknowledge_sync_alert(
+    alert_id: str,
+    current_user=Depends(get_current_user),
+    db: Session=Depends(get_db),
+) -> dict[str, Any]:
+    """认领一条告警（标记为已处理，不再出现在未处理列表）。"""
+    _require_admin(db, current_user)
+    row = db.get(OrganizationSyncAlert, alert_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="告警不存在")
+    from ..services.sync_alert_service import STATUS_ACKNOWLEDGED, _now
+
+    row.status = STATUS_ACKNOWLEDGED
+    row.acknowledged_by = current_user.id
+    row.acknowledged_at = _now()
+    db.commit()
+    db.refresh(row)
+    return {"code": 0, "message": "告警已认领", "data": _serialize_alert(row)}
+
+
+@router.get("/sync-organization/scheduler")
+def get_sync_scheduler(
+    current_user=Depends(get_current_user),
+    db: Session=Depends(get_db),
+) -> dict[str, Any]:
+    """定时调度器运行态（是否在跑、下次执行时间、连续失败次数）。"""
+    _require_admin(db, current_user)
+    from ..services.feishu_scheduler import get_scheduler_status
+
+    return {"code": 0, "data": get_scheduler_status()}
 
 
 @router.get("/sync-organization/errors")

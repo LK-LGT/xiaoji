@@ -71,6 +71,38 @@ class Settings(BaseSettings):
     # 避免出现任何人都能改审批状态的未鉴权写入入口。
     feishu_approval_webhook_token: str = ""
 
+    # ─────────────────────────────────────────────────────────────
+    # 同步失败告警
+    #
+    # 告警本身**总是**入库（可在接口里查询），外部通知（飞书 IM）
+    # 是可选的 —— 没配置接收人就不发，不会报错。
+    # ─────────────────────────────────────────────────────────────
+    # 告警去重抑制窗口（秒）：同一 dedup_key 在此窗口内不重复告警。
+    feishu_sync_alert_suppress_seconds: int = 1800
+    # 连续多少轮定时同步失败后触发「调度器连续失败」告警。
+    feishu_sync_alert_consecutive_failures: int = 3
+    # 飞书 IM 告警接收人（open_id 或 chat_id）。留空则不发送外部通知。
+    feishu_sync_alert_receiver_id: str = ""
+    # 接收人 ID 类型：open_id / user_id / chat_id。
+    feishu_sync_alert_receiver_type: str = "chat_id"
+    # 单条失败记录的积压告警阈值：待处理失败记录达到该数量时告警。
+    feishu_sync_alert_error_backlog_threshold: int = 10
+
+    # ─────────────────────────────────────────────────────────────
+    # 离职员工状态判定口径（待业务确认）
+    #
+    # ⚠️ 以下三项的默认值是**当前代码的实际行为**，
+    #    不是业务已确认的结论。业务确认后只需改环境变量。
+    # ─────────────────────────────────────────────────────────────
+    # is_unjoin（未加入企业）是否按离职处理。
+    # False = 按 inactive（未入职，可自动恢复，当前默认）；
+    # True  = 按 exited（视为已离开，需人工复职）。
+    feishu_sync_unjoin_as_exited: bool = False
+    # 离职是否禁用账号（同时 token_version 递增，使已签发 token 失效）。
+    feishu_sync_exited_disables_account: bool = True
+    # 冻结/未激活是否禁用账号。
+    feishu_sync_inactive_disables_account: bool = True
+
     @model_validator(mode="after")
     def _validate_auth_secret(self):
         """启动即校验认证密钥，避免弱密钥静默上线。"""

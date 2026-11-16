@@ -229,7 +229,9 @@ class OrganizationSyncCursor(Base):
     __tablename__ = "organization_sync_cursor"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
-    resource_type: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    # ⚠️ 长度 128 —— 增量同步会写入「员工:<64位部门ID>」这种复合键
+    #    （按部门粒度记录分页续传位置）。32 装不下。
+    resource_type: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     cursor_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
     page_token: Mapped[str | None] = mapped_column(String(512), nullable=True)
     last_batch_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("organization_sync_batch.id"), nullable=True)
@@ -283,8 +285,55 @@ class OrganizationSyncAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
 
+class OrganizationSyncAlert(Base):
+    """同步失败告警。
+
+    与 ``organization_sync_audit`` 的区别：审计记录「做了什么」，
+    告警记录「哪里坏了、需要人处理」。
+
+    设计要点：
+
+    - **去重**：同一个 ``dedup_key`` 在 ``suppressed_until`` 之前不再产生
+      新告警，避免「每轮定时同步都失败」刷屏。
+    - **分级**：severity=error 需要立即处理；warning 可稍后处理。
+    - **可恢复**：``resolved_at`` 非空表示问题已解决（恢复时补一条 info 告警）。
+    """
+
+    __tablename__ = "organization_sync_alert"
+    __table_args__ = (
+        Index("ix_org_sync_alert_status_created", "status", "created_at"),
+        Index("ix_org_sync_alert_dedup", "dedup_key", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    # 告警类型：batch_failed / batch_partial_failed / item_error_backlog /
+    # scheduler_stopped / scheduler_consecutive_failures / sync_recovered。
+    alert_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # info / warning / error。
+    severity: Mapped[str] = mapped_column(String(16), default="error", nullable=False, index=True)
+    # open / acknowledged / resolved。
+    status: Mapped[str] = mapped_column(String(32), default="open", nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    batch_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("organization_sync_batch.id"), nullable=True, index=True
+    )
+    # 去重键：同一问题在抑制窗口内只告警一次。
+    dedup_key: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    # 抑制截止时间：在此之前同 dedup_key 不再产生新告警。
+    suppressed_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    detail_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # 通知投递状态：pending / sent / failed / disabled。
+    notified_status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notify_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
 class FeishuIdentityAudit(Base):
-    """身份映射变更审计，保留变更前后值。"""
 
     __tablename__ = "feishu_identity_audit"
 

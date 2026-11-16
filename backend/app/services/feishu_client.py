@@ -198,10 +198,36 @@ class FeishuClient:
 
         expires_in = max(60, int(data.get("expire", 7200)))
         self._access_token = str(data["tenant_access_token"])
+        # ⚠️ 刷新余量 300 秒 —— 避免 token 在请求途中过期。
+        #
+        # 原来的写法 ``max(30, expires_in - 300)`` 有个**隐蔽的错误**：
+        # 当 ``expires_in <= 330`` 时，``expires_in - 300`` 是负数，
+        # 被 ``max(30, ...)`` 兜成 30 秒 —— 也就是**声称**这个 token
+        # 还有 30 秒有效期，哪怕它 5 秒后就过期。
+        #
+        # 后果：token 明明快过期了，客户端却认为它有效 → 继续用 →
+        # 撞上 401 才被迫强制刷新 → 整条请求链路多一次往返。
+        #
+        # 正确做法：**取真实剩余时间与余量的较小值**：
+        #   实际有效期 = min(expires_in, max(30, expires_in - 300))
+        # 即：正常 token 提前 300s 过期；极短命的 token 也不会被
+        # 「延长」到超过它真实的寿命。
+        #
+        # 极端情况（expire <= 30）：token 根本撑不到一次请求，
+        # 此时本地有效期直接设为 0 → 每次请求都重新拉 token，
+        # 宁可多一次往返，也不能用一个必然过期的 token。
+        if expires_in <= 30:
+            effective_ttl = 0.0
+        else:
+            effective_ttl = float(min(expires_in, max(30, expires_in - 300)))
         self._token_expires_at = datetime.now(timezone.utc) + timedelta(
-            seconds=max(30, expires_in - 300)
+            seconds=effective_ttl
         )
-        logger.info("飞书 Access Token 已刷新，有效期秒数=%s", expires_in)
+        logger.info(
+            "飞书 Access Token 已刷新，有效期秒数=%s 本地有效期秒数=%s",
+            expires_in,
+            effective_ttl,
+        )
         return self._access_token
 
     @staticmethod
@@ -319,11 +345,29 @@ class FeishuClient:
 
         raise FeishuError("飞书接口请求失败", retryable=True)
 
-    def fetch_departments(self, page_size: int = 50) -> list[dict[str, Any]]:
-        """拉取完整部门树。"""
+    def fetch_departments(
+        self,
+        page_size: int = 50,
+        *,
+        start_page_token: str | None = None,
+        on_page_token: Callable[[str], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """拉取部门树。
+
+        ⚠️ 飞书通讯录 API **没有**「按更新时间拉取变更」的接口
+        （`GET /contact/v3/departments` 只支持 `page_token` 分页）。
+        所以这里的「游标」是**分页游标**：`page_token`。
+
+        Args:
+            start_page_token: 续传起点。上次同步中断时残留的
+                `page_token` —— 从这里接着拉，不从头开始。
+            on_page_token: 每翻一页回调一次（把当前 `page_token`
+                持久化到游标表）。**中断时能恢复到最后一页**，
+                不必重拉已成功的页。
+        """
         page_size = min(page_size, 50)
         departments: list[dict[str, Any]] = []
-        page_token: str | None = None
+        page_token: str | None = start_page_token or None
         while True:
             params: dict[str, Any] = {
                 "page_size": page_size,
@@ -337,9 +381,14 @@ class FeishuClient:
             )
             departments.extend(data.get("items", []))
             page_token = data.get("page_token")
+            if on_page_token is not None:
+                # ⚠️ 即使 page_token 为空也要回调 —— 那表示「已拉完」，
+                #    调用方据此把游标清空（避免下次拿一个过期的 token
+                #    去续传导致 400）。
+                on_page_token(page_token or "")
             if not page_token:
                 break
-        logger.info("飞书部门拉取完成，数量=%s", len(departments))
+        logger.info("飞书部门拉取完成，数量=%s", departments)
         return departments
 
     def fetch_employees(
@@ -379,12 +428,22 @@ class FeishuClient:
         return list(employees.values())
 
     def fetch_employees_in_department(
-        self, department_id: str, page_size: int = 50
+        self,
+        department_id: str,
+        page_size: int = 50,
+        *,
+        start_page_token: str | None = None,
+        on_page_token: Callable[[str], None] | None = None,
     ) -> list[dict[str, Any]]:
-        """拉取单个部门的直属员工。"""
+        """拉取单个部门的直属员工。
+
+        Args:
+            start_page_token: 续传起点 `page_token`。
+            on_page_token: 每页回调，用于持久化进度。
+        """
         page_size = min(page_size, 50)
         users: list[dict[str, Any]] = []
-        page_token: str | None = None
+        page_token: str | None = start_page_token or None
         while True:
             params: dict[str, Any] = {
                 "page_size": page_size,
@@ -397,6 +456,8 @@ class FeishuClient:
             data = self._request("GET", "/contact/v3/users", params=params)
             users.extend(data.get("items", []))
             page_token = data.get("page_token")
+            if on_page_token is not None:
+                on_page_token(page_token or "")
             if not page_token:
                 break
         return users

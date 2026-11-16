@@ -24,7 +24,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -210,16 +210,56 @@ def _execute_batch(batch_id: str, *, mode: str, trigger_type: str, actor_id: str
             )
         finally:
             client.close()
+        # ─────────────────────────────────────────────────────────
+        # 告警（旁路，失败绝不影响同步结果）
+        # ⚠️ 这里刻意放在 sync_all 之后、except 之外：
+        #    告警写库/发通知出问题，只能记日志，绝不能把成功的
+        #    同步变成「任务异常」。
+        # ─────────────────────────────────────────────────────────
+        _raise_alerts_for_batch(db, batch_id)
     except Exception as exc:
         safe_message = OrganizationSyncService._safe_error(exc)
         logger.error("飞书组织同步任务异常: %s", safe_message)
         _mark_batch_failed(db, batch_id, safe_message)
+        _raise_alerts_for_batch(db, batch_id)
     finally:
         if locked:
             release_job_lock(db, JOB_NAME, holder_id)
         db.close()
         with _task_lock:
             _running_tasks.discard(batch_id)
+
+
+def _raise_alerts_for_batch(db: Session, batch_id: str) -> None:
+    """批次终态后生成告警（批次失败 / 失败记录积压）。
+
+    ⚠️ 整个函数吞掉所有异常 —— 告警是旁路能力，
+    它的任何问题都不能影响同步主流程。
+    """
+    try:
+        from .sync_alert_service import (
+            alert_batch_outcome,
+            alert_error_backlog,
+            mark_notification,
+            notify_alert,
+        )
+
+        batch = db.get(OrganizationSyncBatch, batch_id)
+        if batch is None:
+            return
+
+        alerts = [alert_batch_outcome(db, batch)]
+        backlog = alert_error_backlog(db)
+        if backlog is not None:
+            alerts.append(backlog)
+
+        for alert in alerts:
+            if alert is None:
+                continue
+            success = notify_alert(alert)
+            mark_notification(db, alert, success=success)
+    except Exception:  # pragma: no cover - 告警旁路兜底
+        logger.warning("生成同步告警失败（不影响同步结果）", exc_info=True)
 
 
 def _mark_batch_failed(db: Session, batch_id: str, message: str) -> None:
@@ -363,4 +403,41 @@ def get_sync_status(db: Session) -> dict[str, Any]:
             }
             for cursor in cursors
         ],
+        "scheduler": _scheduler_status(),
+        "alerts": _alert_summary(db),
     }
+
+
+def _scheduler_status() -> dict[str, Any]:
+    """调度器运行态。
+
+    ⚠️ 用惰性导入避免循环依赖：
+    ``feishu_scheduler`` 会 import 本模块的 ``start_async_sync``。
+    """
+    try:
+        from .feishu_scheduler import get_scheduler_status
+
+        return get_scheduler_status()
+    except Exception:  # pragma: no cover - 兜底，状态接口不该因调度器异常而失败
+        return {"enabled": bool(settings.feishu_sync_enabled), "running": False}
+
+
+def _alert_summary(db: Session) -> dict[str, Any]:
+    """未处理告警统计。"""
+    try:
+        from ..domain.models import OrganizationSyncAlert
+
+        open_count = db.execute(
+            select(func.count(OrganizationSyncAlert.id)).where(
+                OrganizationSyncAlert.status.in_(("open", "acknowledged"))
+            )
+        ).scalar_one()
+        error_count = db.execute(
+            select(func.count(OrganizationSyncAlert.id)).where(
+                OrganizationSyncAlert.status == "open",
+                OrganizationSyncAlert.severity == "error",
+            )
+        ).scalar_one()
+        return {"openCount": int(open_count), "openErrorCount": int(error_count)}
+    except Exception:  # pragma: no cover - 兜底
+        return {"openCount": 0, "openErrorCount": 0}
