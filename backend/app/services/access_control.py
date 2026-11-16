@@ -120,24 +120,54 @@ def can_access_employee(
     context: AccessContext,
     target_employee: Employee,
     db: Session,
+    *,
+    require_active_target: bool = False,
 ) -> bool:
     """校验员工数据访问范围。
 
     部门负责人可访问其管理范围（所属部门及下级部门）内的员工；
     兼岗员工按任一所属部门命中管理范围即可访问。
+
+    参数 ``require_active_target``
+        默认 ``False`` —— **保持既有语义不变**（本函数有 7+ 个调用方：
+        计划审批 / 成果审批 / 考勤 / 考核记录 / 依赖注入 …，
+        改默认语义会波及一大片）。
+
+        置为 ``True`` 时追加一道**目标员工在职**闸门：
+        目标员工不是 ``active``（离职 / 停职）时，
+        **本人**与**部门负责人 / 主管**两条路径不放行，
+        但 **HR 仍然放行** —— HR 要给离职员工做结算算分，是真实业务需求。
+
+        ⚠️ 为什么需要这道闸门：
+        ``build_access_context`` 的 ``direct_report_ids`` 已经过滤了
+        ``employment_status == "active"``（离职后不再是直属下属），
+        但**部门树路径没过滤** —— 主管通常同时是部门 leader，
+        于是离职员工仍能通过部门树被访问、仍能被日常评分。
+        「已离职的人不该出现在日常考核里」这条常识，
+        在数据范围层没有被完整表达。
     """
-    if context.employee_id == target_employee.id:
-        return True
+    target_active = (target_employee.employment_status or "active") == "active"
+
+    if not require_active_target or target_active:
+        # ── 既有语义：本人 / HR / 直属下属 / 部门负责人管理范围 ──
+        if context.employee_id == target_employee.id:
+            return True
+        if "hr" in context.roles:
+            return True
+        if target_employee.id in context.direct_report_ids:
+            return True
+        if "department_leader" in context.roles:
+            target_departments = _employee_department_ids(
+                db, target_employee.id, target_employee.department_id
+            )
+            if target_departments & context.managed_department_ids:
+                return True
+        return False
+
+    # ── 目标已离职：只保留 HR（结算算分） ──
+    # 本人与主管/部门负责人不放行 —— 离职不该再参与日常评分。
     if "hr" in context.roles:
         return True
-    if target_employee.id in context.direct_report_ids:
-        return True
-    if "department_leader" in context.roles:
-        target_departments = _employee_department_ids(
-            db, target_employee.id, target_employee.department_id
-        )
-        if target_departments & context.managed_department_ids:
-            return True
     return False
 
 

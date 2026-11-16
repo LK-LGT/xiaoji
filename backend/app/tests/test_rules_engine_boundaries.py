@@ -656,3 +656,132 @@ def test_overall_rating_matches_total_across_boundaries(db, org, login):
         # 清理，避免下一轮迭代撞唯一约束
         db.query(MetricValue).filter_by(employee_id="E_A").delete()
         db.flush()
+
+
+# ---------------------------------------------------------------------------
+# K. 离职员工的算分权限（P2）
+# ---------------------------------------------------------------------------
+
+
+def _make_employee_exited(db, employee_id: str) -> None:
+    """把员工标记为离职（``organization_sync` 用的状态值之一）。"""
+    emp = db.get(Employee, employee_id)
+    emp.employment_status = "exited"
+    emp.account_status = "disabled"
+    db.flush()
+
+
+def test_exited_employee_cannot_be_scored_by_manager(db, org, login):
+    """**已离职员工不该再参与日常评分** —— 原主管被挡下（403）。
+
+    回归背景：``build_access_context`` 的 ``direct_report_ids`` 已经过滤了
+    ``employment_status == "active"``（离职后不再是直属下属），
+    但**部门树路径没过滤** —— 主管通常同时是部门 leader，
+    于是离职员工仍能通过部门树被访问、仍能被日常评分。
+    """
+    _make_task(db, "E_A")
+    _add_metric_values(db, "E_A", gmv=1_200_000.0, conversion=96.0)
+    _make_employee_exited(db, "E_A")
+
+    with login(org["lead"]) as c:
+        resp = c.post(ENDPOINT.format(record_id="R_1"), json={})
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["error_code"] == "PERMISSION_DENIED"
+
+
+def test_exited_employee_cannot_score_self(db, org, login):
+    """离职员工本人不能给自己算分。
+
+    离职了还让自己给自己打绩效，说不通。
+    """
+    _make_task(db, "E_A")
+    _add_metric_values(db, "E_A", gmv=1_200_000.0, conversion=96.0)
+    _make_employee_exited(db, "E_A")
+
+    with login(org["a"]) as c:
+        resp = c.post(ENDPOINT.format(record_id="R_1"), json={})
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["error_code"] == "PERMISSION_DENIED"
+
+
+def test_hr_can_still_score_exited_employee(db, org, login):
+    """**HR 仍然可以**给离职员工算分 —— 离职结算是真实业务需求。
+
+    ⚠️ 这是「本人 / 主管挡下、HR 放行」的关键对照 ——
+    一刀切堵死会打断 HR 的结算流程。
+    """
+    _make_task(db, "E_A")
+    _add_metric_values(db, "E_A", gmv=1_200_000.0, conversion=96.0)
+    _make_employee_exited(db, "E_A")
+
+    with login(org["hr"]) as c:
+        resp = c.post(ENDPOINT.format(record_id="R_1"), json={})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["final_score"] == pytest.approx(80.0)
+
+
+def test_active_employee_unaffected_by_exit_gate(db, org, login):
+    """在职员工**不受影响** —— 闸门只拦已离职的。"""
+    _make_task(db, "E_A")
+    _add_metric_values(db, "E_A", gmv=1_200_000.0, conversion=96.0)
+
+    with login(org["lead"]) as c:
+        resp = c.post(ENDPOINT.format(record_id="R_1"), json={})
+
+    assert resp.status_code == 200, resp.text
+
+
+def test_inactive_employee_also_blocked(db, org, login):
+    """``inactive``（停职）同样被挡下 —— 只有 ``active`` 算数。"""
+    _make_task(db, "E_A")
+    _add_metric_values(db, "E_A", gmv=1_200_000.0, conversion=96.0)
+    db.get(Employee, "E_A").employment_status = "inactive"
+    db.flush()
+
+    with login(org["lead"]) as c:
+        resp = c.post(ENDPOINT.format(record_id="R_1"), json={})
+
+    assert resp.status_code == 403, resp.text
+
+
+def test_shared_acl_default_behavior_unchanged(db, org):
+    """**共享 ACL 的默认语义不变** —— 只有显式 opt-in 才加闸门。
+
+    ⚠️ ``can_access_employee`` 有 7+ 个调用方（计划审批 / 成果审批 /
+    考勤 / 考核记录 / 依赖注入 …）。改默认语义会波及一大片，
+    所以闸门必须**显式 opt-in**。
+    """
+    from backend.app.services.access_control import (
+        build_access_context,
+        can_access_employee,
+    )
+
+    _make_task(db, "E_A")
+    _make_employee_exited(db, "E_A")
+
+    ctx = build_access_context(db, org["lead"])
+    target = db.get(Employee, "E_A")
+
+    # 默认（既有语义）：仍可访问
+    assert can_access_employee(ctx, target, db) is True
+    # opt-in：被挡下
+    assert can_access_employee(ctx, target, db, require_active_target=True) is False
+
+
+def test_shared_acl_opt_in_keeps_hr_access(db, org):
+    """opt-in 后 **HR 仍然放行**（离职结算）。"""
+    from backend.app.services.access_control import (
+        build_access_context,
+        can_access_employee,
+    )
+
+    _make_task(db, "E_A")
+    _make_employee_exited(db, "E_A")
+
+    ctx = build_access_context(db, org["hr"])
+    target = db.get(Employee, "E_A")
+
+    assert can_access_employee(ctx, target, db, require_active_target=True) is True

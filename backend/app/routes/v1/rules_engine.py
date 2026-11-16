@@ -233,7 +233,13 @@ async def execute_rules_engine(
         target_employee = db.get(Employee, record.employee_id)
         if target_employee is None:
             raise exceptions.RecordNotFound("Employee", record.employee_id)
-        if not can_access_employee(context, target_employee, db):
+        # ⚠️ require_active_target=True：已离职的员工不再参与**日常评分**。
+        #    本人与主管/部门负责人被挡下（离职了还给他打绩效、还让他自己
+        #    给自己算分都不合理），但 **HR 仍然放行** ——
+        #    离职结算是真实业务场景，HR 要能算这份分。
+        if not can_access_employee(
+            context, target_employee, db, require_active_target=True
+        ):
             raise exceptions.PermissionDenied(
                 user_id=current_user.id,
                 action="execute_rules_engine",
