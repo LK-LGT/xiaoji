@@ -277,18 +277,28 @@ def _build_reflow_dedup_key(
 def apply_feishu_approval_event(
     db: Session,
     *,
-    plan_type: str,
-    plan_id: str,
+    plan_type: str = "",
+    plan_id: str = "",
     feishu_status: str,
-    instance_id: str,
+    instance_id: str = "",
+    correlation_key: str = "",
+    approval_code: str = "",
     actor_feishu_id: str = "",
     comment: str | None = None,
 ) -> str:
     """把一个飞书审批状态应用到本系统计划。
 
+    计划的定位方式（按优先级）：
+
+    1. 事件**自带** ``plan_type`` / ``plan_id`` —— 直接用；
+    2. 否则按 ``instance_code`` 查**绑定表**（本系统发起的审批）；
+    3. 否则按 ``correlation_key`` 查绑定表（飞书侧发起的审批）。
+
+    后两条正是「持久绑定」的价值 —— 让**员工从飞书侧发起**的审批也能回流。
+
     Returns:
         `applied` —— 状态已流转
-        `skipped` —— 幂等命中 / 状态不匹配 / 非法迁移，未变更
+        `skipped` —— 幂等命中 / 状态不匹配 / 非法迁移 / 无法定位计划，未变更
 
     Raises:
         FeishuApprovalSyncError: 计划不存在。
@@ -299,7 +309,34 @@ def apply_feishu_approval_event(
         logger.info("忽略非终态审批事件：status=%s plan=%s", feishu_status, plan_id)
         return "skipped"
 
+    # ── 定位计划：事件自带 → 绑定表反查 ────────────────────────
+    binding = None
+    if not (plan_type and plan_id):
+        from . import feishu_binding
+
+        resolved_type, resolved_id, binding = feishu_binding.resolve_plan_by_instance(
+            db,
+            instance_code=instance_id,
+            correlation_key=correlation_key,
+            approval_code=approval_code,
+        )
+        if not resolved_id:
+            # 定位不到计划 —— 不能瞎猜，记日志忽略（不报错，避免飞书反复重试）
+            logger.warning(
+                "飞书审批事件无法定位计划，已忽略：instance=%s corr=%s",
+                instance_id or "-",
+                correlation_key or "-",
+            )
+            return "skipped"
+        plan_type, plan_id = resolved_type, resolved_id
+
     plan = plan_approval.fetch_plan(db, plan_type, plan_id)
+
+    # 绑定表：回填实例状态（便于管理端排查「这个计划现在飞书那边什么状态」）
+    if binding is not None:
+        from . import feishu_binding
+
+        feishu_binding.update_binding_status(db, binding, str(feishu_status).upper())
 
     # 已到终态就不重复流转（幂等的第二道保险）
     if plan.status in (PlanStatus.APPROVED.value, PlanStatus.REJECTED.value):
@@ -419,8 +456,8 @@ def _apply_status_to_plan(
 def sync_feishu_approval_instance(
     db: Session,
     *,
-    plan_type: str,
-    plan_id: str,
+    plan_type: str = "",
+    plan_id: str = "",
     instance_id: str,
     client: Any,
     actor_feishu_id: str = "",
@@ -429,6 +466,8 @@ def sync_feishu_approval_instance(
 
     用于「主动拉取」模式（定时任务 / 手工触发），
     与「webhook 推送」模式互补 —— webhook 漏推时可由此补偿。
+
+    ``plan_type`` / ``plan_id`` 可留空 —— 此时按 ``instance_id`` 走绑定表反查。
     """
     instance = client.fetch_approval_instance(instance_id)
     status = extract_instance_status(instance)
@@ -608,6 +647,89 @@ def notify_plan_submitted_safe(
             client=client,
             submitter_note=submitter_note,
         )
+    except Exception as exc:
+        logger.warning("计划提交通知失败（不影响提交）：%s", exc)
+        return False
+    finally:
+        if client is not None:
+            client.close()
+
+
+def bind_and_notify_plan_submitted_safe(
+    db: Session,
+    *,
+    owner_id: str,
+    plan_type: str,
+    plan_id: str,
+    plan_title: str,
+    submitter_note: str = "",
+) -> bool:
+    """计划提交后：**建立绑定** + 发带关联码的通知。
+
+    这是「飞书侧发起审批」这条通道的关键 ——
+    绑定行上的 ``correlation_key`` 会随通知发给员工，
+    员工在飞书审批表单里填入该码，回流时就能反查到本系统的计划。
+
+    绑定建立失败不影响提交（绑定表写不进去只是少一条通道，
+    不该让员工看到「提交失败」）。
+
+    Returns:
+        True 表示通知已发出。
+    """
+    from ..core.config import settings
+
+    if not settings.feishu_app_id or not settings.feishu_app_secret:
+        logger.debug("飞书未配置，跳过绑定与通知：plan=%s", plan_id)
+        return False
+
+    from . import feishu_binding
+    from .feishu_client import FeishuClient
+
+    # ── 1. 建立绑定（拿到关联码）──────────────────────────────
+    correlation_key = ""
+    try:
+        binding = feishu_binding.bind_plan_to_instance(
+            db,
+            plan_type=plan_type,
+            plan_id=plan_id,
+            bind_source=feishu_binding.BIND_SOURCE_LOCAL_SUBMIT,
+            created_by=owner_id,
+        )
+        correlation_key = binding.correlation_key or ""
+    except Exception as exc:
+        logger.warning("计划提交绑定失败（不影响提交）：%s", exc)
+        db.rollback()
+
+    client: FeishuClient | None = None
+    try:
+        client = FeishuClient(
+            app_id=settings.feishu_app_id,
+            app_secret=settings.feishu_app_secret,
+            tenant_id=settings.feishu_tenant_id,
+        )
+        owner = db.get(Employee, owner_id)
+        approvers = find_plan_approvers(db, owner_id)
+        if owner is None or not approvers:
+            logger.info("计划 %s 无审批人，跳过通知", plan_id)
+            return False
+
+        message = feishu_binding.build_correlation_message(
+            owner_name=owner.name,
+            plan_type=plan_type,
+            plan_title=plan_title,
+            correlation_key=correlation_key,
+            approver_name=approvers[0].name,
+        )
+        if submitter_note:
+            message = f"{message}\n备注：{submitter_note}"
+
+        sent = False
+        for approver in approvers:
+            if notify_approver_by_im(
+                db, approver_id=approver.id, message=message, client=client
+            ):
+                sent = True
+        return sent
     except Exception as exc:
         logger.warning("计划提交通知失败（不影响提交）：%s", exc)
         return False

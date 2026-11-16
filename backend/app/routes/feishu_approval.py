@@ -35,7 +35,7 @@ from ..core.config import settings
 from ..core.db import get_db
 from ..dependencies import get_current_user
 from ..domain.models import Employee
-from ..services import feishu_approval_sync, plan_approval
+from ..services import feishu_approval_sync, feishu_binding, plan_approval
 from ..services.feishu_client import FeishuClient
 
 logger = logging.getLogger(__name__)
@@ -89,17 +89,32 @@ class ApprovalEventRequest(BaseModel):
     user_id: str = Field(default="", description="发起人 user_id")
     open_id: str = Field(default="", description="发起人 open_id")
     comment: str = Field(default="", description="审批意见")
-    # 本系统计划标识
+    # 本系统计划标识（事件自带时可省略 —— 走绑定表反查）
     plan_type: str = Field(default="", description="计划类型 month/week/day")
     plan_id: str = Field(default="", description="计划 ID")
+    # 关联码（飞书侧发起时，员工在表单里填写的短码）
+    correlation_key: str = Field(default="", description="关联码，用于反查计划")
 
 
 class ReflowRequest(BaseModel):
-    """手工触发回流。"""
+    """手工触发回流。
+
+    ``plan_type`` / ``plan_id`` 可留空 —— 此时按 ``instance_id`` 走绑定表反查。
+    """
+
+    plan_type: str = Field(default="", pattern="^(month|week|day)?$")
+    plan_id: str = Field(default="")
+    instance_id: str = Field(..., min_length=1)
+
+
+class BindRequest(BaseModel):
+    """手工绑定计划与飞书审批实例。"""
 
     plan_type: str = Field(..., pattern="^(month|week|day)$")
     plan_id: str = Field(..., min_length=1)
-    instance_id: str = Field(..., min_length=1)
+    instance_code: str = Field(default="")
+    approval_code: str = Field(default="")
+    correlation_key: str = Field(default="")
 
 
 class NotifyRequest(BaseModel):
@@ -150,13 +165,16 @@ async def receive_approval_event(
     event = ApprovalEventRequest.model_validate(body)
     plan_type = event.plan_type.strip().lower()
     plan_id = event.plan_id.strip()
-
-    if not plan_type or not plan_id:
-        logger.warning("飞书审批 webhook 事件缺少 plan_type / plan_id，跳过")
-        return {"code": 0, "message": "事件缺少计划标识，已忽略"}
+    correlation_key = event.correlation_key.strip()
 
     status_value = event.instance_status.strip().upper()
     instance_id = event.instance_code.strip() or event.event_id.strip()
+
+    # 计划标识可以来自事件本身，也可以由绑定表反查（飞书侧发起的场景）。
+    # 三者都拿不到 → 无法定位计划，记日志忽略（不报错，避免飞书反复重试）。
+    if not (plan_type and plan_id) and not (instance_id or correlation_key):
+        logger.warning("飞书审批 webhook 事件缺少计划标识与绑定线索，跳过")
+        return {"code": 0, "message": "事件缺少计划标识，已忽略"}
 
     # ── 3. 回流 ────────────────────────────────────────────────
     try:
@@ -166,6 +184,8 @@ async def receive_approval_event(
             plan_id=plan_id,
             feishu_status=status_value,
             instance_id=instance_id,
+            correlation_key=correlation_key,
+            approval_code=event.approval_code.strip(),
             actor_feishu_id=event.user_id or event.open_id,
             comment=event.comment or None,
         )
@@ -309,3 +329,94 @@ def get_approval_sync_status(
             "webhookEnabled": bool(settings.feishu_approval_webhook_token),
         },
     }
+
+
+# ===========================================================================
+# 3. 绑定管理端点
+# ===========================================================================
+
+
+@router.get("/approval/bindings")
+def list_bindings(
+    plan_type: str | None = Query(default=None, pattern="^(month|week|day)?$"),
+    plan_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """列出计划 ↔ 飞书实例的绑定关系。"""
+    _require_admin(db, current_user)
+    rows = feishu_binding.list_bindings(
+        db, plan_type=plan_type or None, plan_id=plan_id, limit=limit
+    )
+    return {
+        "code": 0,
+        "data": {
+            "items": [feishu_binding.serialize_binding(r) for r in rows],
+            "total": len(rows),
+        },
+    }
+
+
+@router.post("/approval/bindings")
+def create_binding(
+    request: BindRequest,
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """手工绑定计划与飞书审批实例（幂等）。
+
+    用于补建历史绑定，或把「飞书侧发起的审批」人工关联到本系统计划。
+    """
+    _require_admin(db, current_user)
+
+    # 校验计划存在
+    try:
+        plan_approval.fetch_plan(db, request.plan_type, request.plan_id)
+    except plan_approval.PlanApprovalError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        row = feishu_binding.bind_plan_to_instance(
+            db,
+            plan_type=request.plan_type,
+            plan_id=request.plan_id,
+            instance_code=request.instance_code,
+            approval_code=request.approval_code,
+            correlation_key=(
+                feishu_binding.normalize_correlation_key(request.correlation_key)
+                if request.correlation_key
+                else ""
+            ),
+            bind_source=feishu_binding.BIND_SOURCE_MANUAL,
+            created_by=current_user.id,
+        )
+    except feishu_binding.FeishuBindingError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("绑定失败")
+        raise HTTPException(status_code=409, detail="绑定失败（可能与既有绑定冲突）") from exc
+
+    db.commit()
+    return {
+        "code": 0,
+        "message": "绑定成功",
+        "data": feishu_binding.serialize_binding(row),
+    }
+
+
+@router.get("/approval/bindings/by-plan/{plan_type}/{plan_id}")
+def get_plan_binding(
+    plan_type: str,
+    plan_id: str,
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """查某个计划的绑定关系（含关联码）。"""
+    _require_admin(db, current_user)
+    row = feishu_binding.get_binding_by_plan(db, plan_type, plan_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="该计划尚无绑定")
+    return {"code": 0, "data": feishu_binding.serialize_binding(row)}

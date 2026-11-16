@@ -35,20 +35,19 @@ from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Date,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from .models import Base, Employee, _now, _uuid
-
+from .models import Base, _now, _uuid
 
 # ---------------------------------------------------------------------------
 # 计划域：版本快照与审批流水
@@ -120,6 +119,68 @@ class PlanApproval(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
 
+class PlanFeishuBinding(Base):
+    """计划 ↔ 飞书审批实例的**持久绑定**。
+
+    解决的问题
+    ----------
+    A8 的审批回流原本依赖 webhook 事件**自带** ``plan_type`` / ``plan_id``。
+    但**员工从飞书侧发起审批**时，事件里只有飞书实例信息，没有本系统的计划 ID ——
+    那条链就接不上。
+
+    本表提供两种关联方式：
+
+    1. **主动绑定**（本系统发起 → 飞书审批）
+       本系统提交计划时创建飞书审批实例，立刻把
+       ``(plan_type, plan_id) ↔ instance_code`` 写进本表。
+       回流时按 ``instance_code`` 直接查到计划。
+
+    2. **关联键匹配**（飞书侧发起 → 本系统回流）
+       本系统在计划上生成一个 ``correlation_key``（短码），
+       随审批表单一起发给员工；员工在飞书表单里填上这个码，
+       回流时就能按码反查计划。``correlation_key`` 存在本表，
+       同一个码全局唯一。
+
+    关联优先级：``instance_code`` 精确匹配 > ``correlation_key`` 匹配 > 均无（记日志忽略）。
+    """
+
+    __tablename__ = "plan_feishu_binding"
+    __table_args__ = (
+        # 一个计划只能绑一个生效的飞书实例
+        UniqueConstraint("plan_type", "plan_id", name="uq_plan_feishu_binding_plan"),
+        # 同一飞书实例不能绑多个计划
+        UniqueConstraint("instance_code", name="uq_plan_feishu_binding_instance"),
+        # 按关联键反查（飞书侧发起的场景走这条）
+        UniqueConstraint("correlation_key", name="uq_plan_feishu_binding_corr"),
+        Index("ix_plan_feishu_binding_plan", "plan_type", "plan_id"),
+        Index("ix_plan_feishu_binding_instance", "instance_code"),
+        Index("ix_plan_feishu_binding_corr", "correlation_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+
+    # 多态关联到三张计划表（不建物理外键，与 plan_approval 保持同一模式）
+    plan_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    plan_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    # 飞书审批实例 code（主动绑定时写入）
+    instance_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 飞书审批定义 code（哪个审批模板）
+    approval_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 关联键：飞书侧发起时用来反查计划
+    correlation_key: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # 绑定来源：local_submit（本地提交时绑定）/ feishu_match（按关联键反查后回填）
+    #            / manual（人工绑定）
+    bind_source: Mapped[str] = mapped_column(String(32), default="local_submit", nullable=False)
+    # 绑定的飞书审批实例状态（最后一次同步到的状态）
+    instance_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+
 # ---------------------------------------------------------------------------
 # 争议域
 # ---------------------------------------------------------------------------
@@ -178,10 +239,10 @@ class DisputeCase(Base):
         DateTime, default=_now, onupdate=_now, nullable=False
     )
 
-    reviewers: Mapped[list["DisputeReviewer"]] = relationship(
+    reviewers: Mapped[list[DisputeReviewer]] = relationship(
         back_populates="case", cascade="all, delete-orphan"
     )
-    opinions: Mapped[list["DisputeOpinionRecord"]] = relationship(
+    opinions: Mapped[list[DisputeOpinionRecord]] = relationship(
         back_populates="case", cascade="all, delete-orphan"
     )
 
@@ -298,7 +359,7 @@ class AiConversation(Base):
         DateTime, default=_now, onupdate=_now, nullable=False
     )
 
-    messages: Mapped[list["AiMessage"]] = relationship(
+    messages: Mapped[list[AiMessage]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan"
     )
 

@@ -254,8 +254,8 @@ async def submit_employee_week_plan(
     if versionNo is not None:
         _run(planning.assert_version, plan, versionNo)
     plan = _run(planning.submit_week_plan, db, current_user.id, plan_id)
-    # 飞书 IM 通知审批人（旁路动作，失败不影响提交）
-    feishu_approval_sync.notify_plan_submitted_safe(
+    # 飞书绑定 + IM 通知审批人（旁路动作，失败不影响提交）
+    feishu_approval_sync.bind_and_notify_plan_submitted_safe(
         db,
         owner_id=current_user.id,
         plan_type="week",
