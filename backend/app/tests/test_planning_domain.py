@@ -442,7 +442,11 @@ def test_day_plan_draft_create_and_read(client, db):
     assert data["planDate"] == "2026-11-14"
     assert data["content"] == "今天要做的事"
     assert data["status"] == PlanStatus.DRAFT.value
-    assert data["calendarRule"]["ruleType"] == "WORKDAY"
+    # 2026-11-14 是周六 —— 没有显式配置时按默认规则推导为「周末」
+    # （A5 之前这里是硬编码的 "WORKDAY"，与真实日历不符）
+    assert data["calendarRule"]["ruleType"] == "WEEKEND"
+    assert data["calendarRule"]["forceReport"] is False
+    assert data["calendarRule"]["explicit"] is False
 
     plan = db.execute(select(DayPlan)).scalar_one()
     assert plan.owner_id == "E_A"

@@ -367,11 +367,27 @@ def serialize_day_plan_detail(
     org_name: str,
     week_plan_item_options: Sequence[dict],
     legacy_month_plan_item: dict | None,
+    calendar_rule: dict | None = None,
 ) -> dict:
     """`EmployeeDayPlanDetailResp`。
 
     `plan` 为 None 表示当天还没有计划（新建场景）。
+    `calendar_rule` 由调用方用 `services.workday_rule.resolve_rule` 求出；
+    为 None 时退回「默认工作日」口径。
     """
+    if calendar_rule is None:
+        calendar_rule = {
+            "date": plan_date.isoformat(),
+            "ruleType": "WORKDAY",
+            "forceReport": False,
+            "explicit": False,
+            "missingRequired": False,
+        }
+    else:
+        calendar_rule = {**calendar_rule}
+        calendar_rule["date"] = plan_date.isoformat()
+        # 当天确实有计划 → 不存在「应填未填」
+        calendar_rule["missingRequired"] = False
     return {
         "id": plan.id if plan is not None else 0,
         "planDate": plan_date.isoformat(),
@@ -391,13 +407,7 @@ def serialize_day_plan_detail(
         "departmentComment": plan.department_comment if plan is not None else None,
         "departmentReviewedAt": _iso(plan.department_reviewed_at) if plan is not None else None,
         "approvalDueAt": _iso(plan.approval_due_at) if plan is not None else None,
-        "calendarRule": {
-            "date": plan_date.isoformat(),
-            "ruleType": "WORKDAY",
-            "forceReport": False,
-            "explicit": False,
-            "missingRequired": False,
-        },
+        "calendarRule": calendar_rule,
         "weekPlanItemOptions": list(week_plan_item_options),
         "legacyMonthPlanItem": legacy_month_plan_item,
     }

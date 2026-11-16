@@ -7,11 +7,17 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from datetime import date, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+
 from ..core.db import get_db
+from ..dependencies import get_current_user
+from ..domain.models import DayPlan, Employee
+from ..services import workday_rule
 from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
@@ -22,6 +28,40 @@ router = APIRouter(prefix="/v1/employee", tags=["employee"])
 def _ok(data: Any) -> dict:
     """统一响应信封：前端 http.ts 会自动拆包出 data。"""
     return {"code": 0, "data": data}
+
+
+def _normalize_month(month: str | None) -> str:
+    """归一化月份为 `YYYY-MM`；非法或缺省时取当前月。"""
+    text = str(month or "").strip()[:7]
+    if len(text) == 7:
+        try:
+            year, mon = int(text[:4]), int(text[5:7])
+        except ValueError:
+            pass
+        else:
+            if 1 <= mon <= 12:
+                return f"{year:04d}-{mon:02d}"
+    today = date.today()
+    return f"{today.year:04d}-{today.month:02d}"
+
+
+def _month_bounds(month: str) -> tuple[date, date]:
+    """`YYYY-MM` → 该月首尾日期（含首尾）。"""
+    year, mon = int(month[:4]), int(month[5:7])
+    start = date(year, mon, 1)
+    if mon == 12:
+        end = date(year, 12, 31)
+    else:
+        end = date(year, mon + 1, 1) - timedelta(days=1)
+    return start, end
+
+
+def _department_name(employee: Employee) -> str:
+    """员工所在部门名称（取不到时返回空串）。"""
+    dept = getattr(employee, "department", None)
+    if dept is None:
+        return ""
+    return getattr(dept, "name", "") or ""
 
 
 # ---------------------------------------------------------------------------
@@ -53,26 +93,59 @@ async def download_employee_export_task(
 
 @router.get("/dashboard")
 async def get_employee_dashboard(
-    month: Optional[str] = Query(None),
+    month: str | None = Query(None),
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取员工工作台仪表盘。
 
     响应结构：EmployeeDashboardResp
+
+    ⚠️ ``workdayCalendar`` / ``missingRequiredDayPlanCount`` 由
+    ``services.workday_rule`` 真实计算：按「工作日规则」表解析当月每一天的
+    日历口径，标出「强制填报但没有日计划」的缺报日。
     """
+    month_text = _normalize_month(month)
+    start, end = _month_bounds(month_text)
+
+    # 当月日历：个人规则 > 全局规则 > 默认推导
+    calendar = workday_rule.build_calendar(db, start, end, current_user.id)
+
+    # 已有的日计划日期（用于判断缺报）
+    plan_stmt = select(DayPlan.plan_date).where(
+        DayPlan.owner_id == current_user.id,
+        DayPlan.plan_date >= start,
+        DayPlan.plan_date <= end,
+    )
+    existing_dates = set(db.execute(plan_stmt).scalars().all())
+
+    # 标注「应填未填」
+    missing_required_count = 0
+    day_plan_calendar: list[dict[str, Any]] = []
+    for item in calendar:
+        day = date.fromisoformat(item["date"])
+        has_plan = day in existing_dates
+        if item["forceReport"] and not has_plan:
+            item["missingRequired"] = True
+            missing_required_count += 1
+        else:
+            item["missingRequired"] = False
+        if has_plan:
+            day_plan_calendar.append({"date": item["date"], "status": "draft"})
+
     return _ok(
         {
-            "currentMonth": month or "",
-            "orgName": "",
+            "currentMonth": month_text,
+            "orgName": _department_name(current_user),
             "monthPlans": [],
-            "dayPlanCalendar": [],
-            "workdayCalendar": [],
+            "dayPlanCalendar": day_plan_calendar,
+            "workdayCalendar": calendar,
             "summary": {
                 "monthPlanCount": 0,
                 "submittedResultCount": 0,
                 "averageCompletionRate": 0,
                 "openAppealCount": 0,
-                "missingRequiredDayPlanCount": 0,
+                "missingRequiredDayPlanCount": missing_required_count,
             },
         }
     )
@@ -87,7 +160,7 @@ async def get_employee_dashboard(
 
 @router.get("/performance-evidence")
 async def get_employee_performance_evidence(
-    period_type: Optional[str] = Query(None),
+    period_type: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取员工绩效证据列表。

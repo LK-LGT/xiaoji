@@ -1,12 +1,12 @@
 """系统管理 API 路由 - 审计日志、员工管理、部门管理等。"""
 
 from datetime import datetime, timedelta
-from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
+from ...services import workday_rule
 from ..shared import JsonBody
 
 router = APIRouter(prefix="/v1/system", tags=["system"])
@@ -33,7 +33,7 @@ async def get_system_dashboard(db: Session = Depends(get_db)) -> dict:
         employee_count = 156   # 启用员工数
         role_count = 8         # 启用角色数
         audit_count = 342      # 近90天审计记录
-        
+
         # 配置风险数据
         risks = [
             {
@@ -58,7 +58,7 @@ async def get_system_dashboard(db: Session = Depends(get_db)) -> dict:
                 "route": "/system/orgs",
             },
         ]
-        
+
         # 最近审计记录（取前 10 条）
         recent_audits = [
             {
@@ -122,7 +122,7 @@ async def get_system_dashboard(db: Session = Depends(get_db)) -> dict:
                 "result": "SUCCESS",
             },
         ]
-        
+
         return {
             "code": 0,
             "data": {
@@ -209,20 +209,20 @@ async def get_system_options(db: Session = Depends(get_db)) -> dict:
                 "children": [],
             },
         ]
-        
+
         leaders = [
             {"id": 1, "label": "张三 - 研发部负责人", "secondary": "研发部", "status": 1},
             {"id": 2, "label": "李四 - 市场部负责人", "secondary": "市场部", "status": 1},
             {"id": 3, "label": "王五 - 财务部负责人", "secondary": "财务部", "status": 1},
         ]
-        
+
         roles = [
             {"id": 1, "name": "管理员", "code": "ADMIN", "status": 1},
             {"id": 2, "name": "部门主管", "code": "MANAGER", "status": 1},
             {"id": 3, "name": "员工", "code": "EMPLOYEE", "status": 1},
             {"id": 4, "name": "总监", "code": "DIRECTOR", "status": 1},
         ]
-        
+
         return {
             "code": 0,
             "data": {
@@ -383,44 +383,70 @@ async def get_permissions(db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/workday-rules")
-async def get_workday_rules(db: Session = Depends(get_db)) -> dict:
-    """获取工作日规则"""
+async def get_workday_rules(
+    month: str | None = Query(None, description="月份 YYYY-MM"),
+    ruleType: str | None = Query(None, description="规则类型"),
+    status: int | None = Query(None, description="启用状态 1/0"),
+    employeeId: str | None = Query(None, description="员工 ID（个人规则）"),
+    scope: str = Query("global", description="global | employee | all"),
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> dict:
+    """获取工作日规则列表。
+
+    响应结构：``PageResult<WorkdayRule>``
+    （``{records, total, pageNo, pageSize}``）
+
+    每个「日期 + 类型 + 归属」只返回**版本号最大的当前生效版本**。
+    """
+    try:
+        rows = workday_rule.list_rules(
+            db,
+            month=month,
+            rule_type=ruleType,
+            status=status,
+            employee_id=employeeId,
+            scope=scope,
+        )
+    except workday_rule.WorkdayRuleError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+
+    total = len(rows)
+    offset = (pageNo - 1) * pageSize
+    page = rows[offset : offset + pageSize]
     return {
         "code": 0,
         "data": {
-            "records": [
-                {"id": 1, "ruleDate": "2024-01-01", "ruleType": "HOLIDAY", "description": "元旦", "status": 1},
-            ],
-            "total": 1,
-            "pageNo": 1,
-            "pageSize": 20,
+            "records": [workday_rule.serialize_rule(row) for row in page],
+            "total": total,
+            "pageNo": pageNo,
+            "pageSize": pageSize,
         },
     }
 
 
 @router.post("/workday-rules/{rule_id}/status")
 async def change_workday_rule_status(
-    rule_id: int,
+    rule_id: str,
     data: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
-    """变更工作日规则状态。
+    """变更工作日规则状态（启用 / 停用）。
 
     请求体：{ status: number }
-    响应结构：WorkdayRule
+    响应结构：``WorkdayRule``
+
+    ⚠️ 这是**开关**而非内容调整 —— 不生成新版本，历史版本不受影响。
     """
     status = int(data.get("status", 0))
-    return {
-        "code": 0,
-        "data": {
-            "id": rule_id,
-            "ruleDate": "",
-            "ruleType": "",
-            "forceReport": False,
-            "status": status,
-            "versionNo": 1,
-        },
-    }
+    try:
+        rule = workday_rule.change_status(db, str(rule_id), status)
+    except workday_rule.WorkdayRuleNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    except workday_rule.WorkdayRuleError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    return {"code": 0, "data": workday_rule.serialize_rule(rule)}
 
 
 @router.get("/week-plan-standard-supplements")
@@ -702,7 +728,7 @@ async def sync_knowledge(db: Session = Depends(get_db)) -> dict:
 async def preview_knowledge(
     appliesTo: str = Query(...),
     query: str = Query(...),
-    deptId: Optional[int] = Query(None),
+    deptId: int | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """预览知识库检索结果。
@@ -758,19 +784,19 @@ async def get_audit_options(db: Session = Depends(get_db)) -> dict:
 async def list_audits(
     page_no: int = Query(1, ge=1, alias="pageNo"),
     page_size: int = Query(20, ge=1, le=100, alias="pageSize"),
-    username: Optional[str] = Query(None),
-    target_type: Optional[str] = Query(None, alias="targetType"),
-    action: Optional[str] = Query(None),
-    result: Optional[str] = Query(None),
-    start: Optional[str] = Query(None),
-    end: Optional[str] = Query(None),
+    username: str | None = Query(None),
+    target_type: str | None = Query(None, alias="targetType"),
+    action: str | None = Query(None),
+    result: str | None = Query(None),
+    start: str | None = Query(None),
+    end: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取审计日志列表。"""
     page = max(1, page_no)
     limit = min(page_size, 100)
     offset = (page - 1) * limit
-    
+
     # 示例数据
     sample_records = [
         {
@@ -813,7 +839,7 @@ async def list_audits(
             "details": {"ip": "192.168.1.100", "browser": "Chrome"},
         },
     ]
-    
+
     # 应用筛选（简化版）
     records = sample_records
     if result:
@@ -824,10 +850,10 @@ async def list_audits(
         records = [r for r in records if r["action"] == action]
     if username:
         records = [r for r in records if username.lower() in r["username"].lower() or username.lower() in r["operatorName"].lower()]
-    
+
     total = len(records)
     paginated = records[offset : offset + limit]
-    
+
     return {
         "code": 0,
         "data": {
@@ -843,7 +869,7 @@ async def list_audits(
 async def export_audits(
     page_no: int = Query(1, ge=1, alias="pageNo"),
     page_size: int = Query(20, ge=1, le=100, alias="pageSize"),
-    username: Optional[str] = Query(None),
+    username: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """导出审计日志。"""
@@ -924,30 +950,79 @@ async def delete_role(role_id: int, db: Session = Depends(get_db)) -> dict:
 # ─────────────────────────────────────────────────────
 
 @router.post("/workday-rules")
-async def create_workday_rule(data: dict, db: Session = Depends(get_db)) -> dict:
-    """创建工作日规则"""
-    new_id = 100 + int(__import__('time').time() * 1000) % 1000
-    return {
-        "id": new_id,
-        "name": data.get("name", "新规则"),
-        "description": data.get("description", ""),
-        "status": 1,
-    }
+async def create_workday_rule(data: JsonBody, db: Session = Depends(get_db)) -> dict:
+    """创建工作日规则。
+
+    请求体：``{ruleDate, ruleType, forceReport, description, status, employeeId?}``
+    响应结构：``WorkdayRule``
+
+    - ``ruleType`` 为 ``LEAVE`` / ``BUSINESS_TRIP`` 时**必须**带 ``employeeId``。
+    - 同「日期 + 类型 + 归属」已存在规则时返回 409（请走编辑生成新版本）。
+    """
+    try:
+        rule = workday_rule.create_rule(
+            db,
+            rule_date=data.get("ruleDate"),
+            rule_type=data.get("ruleType", ""),
+            force_report=bool(data.get("forceReport", False)),
+            description=data.get("description", "") or "",
+            status=int(data.get("status", 1)),
+            employee_id=data.get("employeeId"),
+        )
+    except workday_rule.WorkdayRuleConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    except workday_rule.WorkdayRuleError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    return {"code": 0, "data": workday_rule.serialize_rule(rule)}
 
 
 @router.put("/workday-rules/{rule_id}")
-async def update_workday_rule(rule_id: int, data: dict, db: Session = Depends(get_db)) -> dict:
-    """更新工作日规则"""
-    return {
-        "id": rule_id,
-        "name": data.get("name", "更新的规则"),
-        "status": data.get("status", 1),
-    }
+async def update_workday_rule(
+    rule_id: str,
+    data: JsonBody,
+    db: Session = Depends(get_db),
+) -> dict:
+    """更新工作日规则 —— **生成新版本**，历史版本不会被覆盖。
+
+    请求体：``{ruleDate?, ruleType?, forceReport?, description?, status?, employeeId?}``
+    响应结构：``WorkdayRule``
+    """
+    try:
+        rule = workday_rule.update_rule(
+            db,
+            str(rule_id),
+            rule_date=data.get("ruleDate"),
+            rule_type=data.get("ruleType"),
+            force_report=data.get("forceReport"),
+            description=data.get("description"),
+            status=data.get("status"),
+            employee_id=data.get("employeeId"),
+        )
+    except workday_rule.WorkdayRuleNotFound as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    except workday_rule.WorkdayRuleConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    except workday_rule.WorkdayRuleError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    return {"code": 0, "data": workday_rule.serialize_rule(rule)}
 
 
 @router.delete("/workday-rules/{rule_id}")
-async def delete_workday_rule(rule_id: int, db: Session = Depends(get_db)) -> dict:
-    """删除工作日规则"""
+async def delete_workday_rule(rule_id: str, db: Session = Depends(get_db)) -> dict:
+    """删除工作日规则（连同该「日期 + 类型 + 归属」的全部历史版本）。"""
+    try:
+        workday_rule.delete_rule(db, str(rule_id))
+    except workday_rule.WorkdayRuleNotFound as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    except workday_rule.WorkdayRuleError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=exc.message) from exc
     return {"code": 0, "message": "规则已删除"}
 
 

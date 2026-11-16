@@ -198,7 +198,8 @@ export const getRolePermissions = (id: number) => http.get<unknown, number[]>(`/
 export const saveRolePermissions = (id: number, permissionIds: number[]) =>
   http.put(`/system/roles/${id}/permissions`, { permissionIds })
 
-export const getWorkdayRules = (params: Record<string, unknown>) => http.get<unknown, WorkdayRule[]>('/system/workday-rules', { params })
+export const getWorkdayRules = (params: Record<string, unknown>) =>
+  http.get<unknown, PageResult<WorkdayRule>>('/system/workday-rules', { params })
 export const createWorkdayRule = (data: Record<string, unknown>) => http.post<unknown, WorkdayRule>('/system/workday-rules', data)
 export const updateWorkdayRule = (id: number, data: Record<string, unknown>) => http.put<unknown, WorkdayRule>(`/system/workday-rules/${id}`, data)
 export const changeWorkdayStatus = (id: number, status: number) => http.post(`/system/workday-rules/${id}/status`, { status })

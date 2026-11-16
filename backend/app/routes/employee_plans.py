@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..dependencies import get_current_user
 from ..domain.models import Employee
-from ..services import planning
+from ..services import planning, workday_rule
 from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
@@ -255,7 +255,14 @@ async def get_employee_day_plan_detail(
     plan = _run(planning.get_day_plan_by_date, db, current_user.id, plan_date)
     options = _run(planning.day_plan_week_item_options, db, current_user.id, plan_date)
     dept_name = _run(planning.department_name_for, db, current_user)
-    return _ok(planning.serialize_day_plan_detail(plan, plan_date, dept_name, options, None))
+    calendar_rule = _run(
+        workday_rule.resolve_rule, db, plan_date, current_user.id
+    )
+    return _ok(
+        planning.serialize_day_plan_detail(
+            plan, plan_date, dept_name, options, None, calendar_rule
+        )
+    )
 
 
 @router.post("/day-plans/draft")
@@ -273,7 +280,14 @@ async def save_employee_day_plan_draft(
     plan = _run(planning.upsert_day_plan, db, current_user.id, payload)
     options = _run(planning.day_plan_week_item_options, db, current_user.id, plan.plan_date)
     dept_name = _run(planning.department_name_for, db, current_user)
-    return _ok(planning.serialize_day_plan_detail(plan, plan.plan_date, dept_name, options, None))
+    calendar_rule = _run(
+        workday_rule.resolve_rule, db, plan.plan_date, current_user.id
+    )
+    return _ok(
+        planning.serialize_day_plan_detail(
+            plan, plan.plan_date, dept_name, options, None, calendar_rule
+        )
+    )
 
 
 @router.post("/day-plans/submit")
