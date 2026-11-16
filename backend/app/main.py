@@ -102,6 +102,15 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    from .routes import feishu_approval as feishu_approval_routes
+    app.include_router(feishu_approval_routes.router)
+    print("[APP] Feishu approval router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register feishu approval router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     from .routes import import_data as import_data_routes
     app.include_router(import_data_routes.router)
     print("[APP] Import data router registered successfully")

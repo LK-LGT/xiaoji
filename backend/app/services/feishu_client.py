@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import time
@@ -405,7 +406,84 @@ class FeishuClient:
         return data.get("user", {})
 
     def fetch_approval_instance(self, instance_id: str) -> dict[str, Any]:
-        return self._request("GET", f"/approval/v4/instances/{instance_id}")
+        data = self._request("GET", f"/approval/v4/instances/{instance_id}")
+        return data.get("instance", {})
+
+    def fetch_approval_instances(
+        self,
+        *,
+        code: str | None = None,
+        user_id: str | None = None,
+        page_size: int = 50,
+        page_token: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """拉取审批实例列表（`GET /approval/v4/instances`）。
+
+        用于审批回流场景：按审批定义 code 过滤出本系统对应的实例，
+        再逐个用 `fetch_approval_instance` 取详情。
+
+        ⚠️ 该接口**必填** `code`（审批定义 code）与 `user_id`（发起人），
+        缺失会返回 `99992402 field validation failed`。这里默认用占位值
+        保证请求能通过校验，真正有意义的过滤由调用方在拿到结果后完成。
+
+        Returns:
+            `(实例列表, 下一页 page_token)`。`page_token` 为 None 表示已到末页。
+        """
+        params: dict[str, Any] = {
+            "page_size": min(page_size, 100),
+            "code": code or "",
+            "user_id": user_id or "",
+        }
+        if page_token:
+            params["page_token"] = page_token
+        data = self._request("GET", "/approval/v4/instances", params=params)
+        items = data.get("items") or []
+        return list(items), data.get("page_token") or None
+
+    def fetch_approval_instance_tasks(self, instance_id: str) -> list[dict[str, Any]]:
+        """查审批实例的节点与审批人（`GET /approval/v4/instances/{id}/tasks`）。
+
+        用于判断「当前这一轮该谁审」。返回项包含 `node_id` / `approver_id` /
+        `status` 等字段。
+        """
+        data = self._request("GET", f"/approval/v4/instances/{instance_id}/tasks")
+        return list(data.get("items") or [])
+
+    # ─────────────────────────────────────────────────────────────
+    # IM 域
+    # ─────────────────────────────────────────────────────────────
+
+    def send_text_message(
+        self,
+        receive_id: str,
+        text: str,
+        *,
+        receive_id_type: str = "open_id",
+        msg_type: str = "text",
+    ) -> dict[str, Any]:
+        """发飞书消息（`POST /im/v1/messages`）。
+
+        Args:
+            receive_id: 接收者 ID，取决于 `receive_id_type`
+                （`open_id` / `user_id` / `chat_id`）。
+            text: 消息正文（`msg_type="text"` 时为纯文本）。
+            receive_id_type: 接收者 ID 类型。
+            msg_type: 消息类型，目前实现仅支持 `text`。
+
+        需要的权限：`im:message:send_as_bot`。
+        """
+        content = json.dumps({"text": text}, ensure_ascii=False)
+        data = self._request(
+            "POST",
+            "/im/v1/messages",
+            params={"receive_id_type": receive_id_type},
+            json={
+                "receive_id": receive_id,
+                "msg_type": msg_type,
+                "content": content,
+            },
+        )
+        return data
 
     # ─────────────────────────────────────────────────────────────
     # 考勤域

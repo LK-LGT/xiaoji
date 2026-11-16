@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     # 定时组织架构同步
     feishu_sync_enabled: bool = False
     feishu_sync_interval_seconds: int = 3600
+    # 飞书审批 webhook 的 Verification Token。
+    # 未配置时 `/v1/feishu/approval/events` 返回 503（不放行），
+    # 避免出现任何人都能改审批状态的未鉴权写入入口。
+    feishu_approval_webhook_token: str = ""
 
     @model_validator(mode="after")
     def _validate_auth_secret(self):

@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..dependencies import get_current_user
 from ..domain.models import Employee
-from ..services import planning, workday_rule
+from ..services import feishu_approval_sync, planning, workday_rule
 from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
@@ -185,6 +185,14 @@ async def submit_employee_month_plan(
     响应结构：EmployeeMonthPlanSubmitResp
     """
     plan = _run(planning.submit_month_plan, db, current_user.id, plan_id)
+    # 飞书 IM 通知审批人（旁路动作，失败不影响提交）
+    feishu_approval_sync.notify_plan_submitted_safe(
+        db,
+        owner_id=current_user.id,
+        plan_type="month",
+        plan_id=plan.id,
+        plan_title=f"{plan.plan_month} 月计划",
+    )
     return _ok(
         {
             "id": plan.id,
