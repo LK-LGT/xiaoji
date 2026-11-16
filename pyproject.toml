@@ -14,10 +14,30 @@ extend-exclude = [
     "node_modules",
     "backend/backup",
     "backend/data",
+    # ⚠️ 临时探针/调试脚本（tmp_* / _probe_* / _verify_* 等）——
+    #    它们是**未跟踪的一次性文件**，随用随删。
+    #    排除它们，避免「有人正在调试时 CI 突然红了」——
+    #    门禁应该只对**要交付的代码**负责。
+    "tmp_*.py",
+    "_probe_*.py",
+    "_verify_*.py",
+    "_fix_*.py",
+    "_dbg_*.py",
+    "_r6_probe.py",
 ]
 
 [tool.ruff.lint]
-# 默认规则集：E（pycodestyle 错误）+ F（pyflakes）
+# 规则集：E（pycodestyle）+ F（pyflakes）+ W（whitespace）+ I（import 排序）
+#        + UP（pyupgrade）+ B（bugbear）
+#
+# ⚠️ R22：这套规则集**已在 CI 中启用**（见 .github/workflows/ci.yml 与
+#    backend/scripts/run_ci_locally.py）。
+#    历史背景：CI 之前只跑 `--select E9,F63,F7,F82`（仅致命错误），
+#    导致 1200+ 条存量违规无人问津 —— 包括两个真实的 `F821`
+#    （未定义名）与一处**上传文件类型校验缺失**（伪装文件放行）。
+#
+#    分批推进顺序（docs/11-待完善清单.md CI-3）：F → I → B → E/W/UP。
+#    已全部完成并清零。
 select = ["E", "F", "W", "I", "UP", "B"]
 ignore = [
     "E501",    # 行长度由 formatter 管
@@ -28,10 +48,21 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # 测试文件允许更宽松
 "backend/app/tests/*" = ["E402", "F401", "F811", "B017"]
-"backend/tests/*" = ["E402", "F401", "F811", "B017"]
 "agent-service/tests/*" = ["E402", "F401", "F811", "B017"]
 # 迁移脚本由 Alembic 管理
 "backend/migrations/*" = ["E402", "F401", "E501"]
+# ⚠️ 运维脚本：E402 是**刻意**的 —— 它们必须先把 backend/ 塞进 sys.path，
+#    才能 import `app.*`（否则 `ModuleNotFoundError`）。
+#    这不是「代码放错位置」，是脚本运行方式的固有限制。
+"backend/scripts/check_feishu.py" = ["E402"]
+"backend/scripts/verify_result_submission_e2e.py" = ["E402"]
+"backend/scripts/_verify_r6_snapshot_freeze.py" = ["E402"]
+# ⚠️ MAIN_PY_ADDITIONS.py 是**代码片段文件**，不是可运行模块：
+#    它的内容是「要粘进 main.py 末尾」的路由定义，
+#    因此 `@app.post(...)` 里的 app / schemas / models / Depends / Session
+#    等名字**只在 main.py 内部存在** → 83 个 F821 是必然的，不是 bug。
+#    同理它不该参与 import 排序（I001）与未使用导入判定。
+"MAIN_PY_ADDITIONS.py" = ["F821", "F401", "I001", "E402", "E401"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/app/tests"]

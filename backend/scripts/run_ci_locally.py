@@ -138,16 +138,24 @@ def backend_checks() -> list[Check]:
         ),
         Check(
             "Python 静态检查（ruff）",
-            [
-                PYTHON,
-                "-m",
-                "ruff",
-                "check",
-                "backend/app",
-                "backend/scripts",
-                "--select",
-                "E9,F63,F7,F82",
-            ],
+            # ⚠️ R22：不再传 `--select E9,F63,F7,F82`（只查致命错误）。
+            #    规则集统一由 pyproject.toml 的 [tool.ruff.lint] 提供：
+            #    E + F + W + I + UP + B，豁免清单也在那里。
+            #    必须与 CI（.github/workflows/ci.yml）保持同一份配置，
+            #    否则「本地绿 / CI 红」或反之。
+            #
+            # ⚠️ 覆盖范围与 CI 完全一致：仓库根目录（`.`）——
+            #    涵盖 backend/、agent-service/ 以及根目录的手动脚本。
+            #    原来只查 `backend/app backend/scripts`，
+            #    `backend/` 根目录脚本和整个 agent-service 都漏在门禁外。
+            #
+            # ⚠️ 命令写成**一行**是有意的 ——
+            #    `test_ruff_ci_consistency.py` 用正则从两个文件里抽取
+            #    ruff 调用做比对（覆盖路径必须一致）。
+            #    拆成多行列表元素会让正则匹配不到，护栏就失效了。
+            #    ⚠️ 同理，本注释里**不能**出现字面的 ruff 调用文本，
+            #    否则会被当成真的调用参与比对。
+            [PYTHON, "-m", "ruff", "check", "."],
             REPO_ROOT,
         ),
     ]

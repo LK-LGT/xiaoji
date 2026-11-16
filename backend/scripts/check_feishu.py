@@ -11,10 +11,10 @@ from pathlib import Path
 backend_path = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_path))
 
+import logging
+
 from app.core.config import settings
 from app.services.feishu_client import FeishuClient
-
-import logging
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)

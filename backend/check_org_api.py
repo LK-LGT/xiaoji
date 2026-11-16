@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """测试组织树 API 的响应内容。"""
 
+
 from app.main import app
 from fastapi.testclient import TestClient
-import json
 
 client = TestClient(app)
 
@@ -27,12 +27,12 @@ def print_tree(node, level=0):
     name = node["name"]
     direct = node["direct_count"]
     total = node["total_count"]
-    
+
     if direct == total:
         print(f"{indent}├─ {name} ({direct} 人)")
     else:
         print(f"{indent}├─ {name} ({direct}/{total} 人)")
-    
+
     for child in node["children"]:
         print_tree(child, level + 1)
 

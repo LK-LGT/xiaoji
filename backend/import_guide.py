@@ -1,5 +1,18 @@
 #!/usr/bin/env python
-"""CSV 批量导入使用示例。"""
+"""CSV 批量导入使用示例。
+
+⚠️ 说明（结构说明）：本文件原本把「使用说明」写成**模块级字符串字面量**，
+再把 import 放在它后面 —— 于是 ruff 报 ``E402``
+（module-import-not-at-top-of-file）。
+
+本轮把它并入**真正的模块 docstring**，import 提到文件顶部：
+docstring 之后紧跟 import 才是 Python 的规范写法，E402 自然消失。
+"""
+
+import csv
+from pathlib import Path
+
+import requests
 
 # ============================================================================
 # 使用说明
@@ -115,14 +128,10 @@ A: 可以调用 API 查询员工列表：
 # 快速测试脚本
 # ============================================================================
 
-import csv
-import io
-import requests
-from pathlib import Path
 
 def create_sample_csv():
     """创建示例 CSV 文件。"""
-    
+
     # 员工示例数据
     employees_data = [
         ["id", "name", "email", "department_id", "position", "manager_id", "employment_status"],
@@ -131,31 +140,31 @@ def create_sample_csv():
         ["emp_003", "王五", "wang@company.com", "dept_002", "技术总监", "emp_000", "active"],
         ["emp_004", "赵六", "zhao@company.com", "dept_002", "技术人员", "emp_003", "active"],
     ]
-    
+
     # 写入 CSV
     csv_path = Path("sample_employees.csv")
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerows(employees_data)
-    
+
     print(f"✅ 创建示例文件: {csv_path}")
     return csv_path
 
 def upload_csv(csv_path, api_url="http://localhost:8000"):
     """上传 CSV 文件。"""
-    
+
     with open(csv_path, 'rb') as f:
         files = {'file': f}
         response = requests.post(
             f"{api_url}/v1/import/employees-csv",
             files=files
         )
-    
+
     result = response.json()
-    print(f"\n📊 导入结果:")
+    print("\n📊 导入结果:")
     print(f"   状态码: {result.get('code')}")
     print(f"   消息: {result.get('message')}")
-    
+
     if "data" in result:
         data = result["data"]
         print(f"   总计: {data.get('total')}")
@@ -163,13 +172,13 @@ def upload_csv(csv_path, api_url="http://localhost:8000"):
         print(f"   更新: {data.get('updated')}")
         print(f"   错误: {data.get('errors')}")
         if data.get('error_details'):
-            print(f"   错误详情:")
+            print("   错误详情:")
             for err in data['error_details'][:5]:  # 显示前 5 个错误
                 print(f"     - {err}")
 
 if __name__ == "__main__":
     # 创建示例 CSV
     csv_path = create_sample_csv()
-    
+
     # 可选：上传到系统（需要先启动后端）
     # upload_csv(csv_path)

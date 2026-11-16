@@ -18,8 +18,26 @@ sys.path.insert(0, str(AGENT))
 # ⚠️ R12 —— 智能体服务现在**强制鉴权**（secret 未配置则拒绝启动）。
 #    secret 收敛到 `_test_secret` 一处 —— 各测试文件各自 setdefault
 #    会导致「谁先导入谁定 secret」，后导入的拿到不同值 → 莫名 401。
+#
+# ⚠️⚠️ **导入顺序是硬约束，别让 ruff 的 I001 自动排序改掉！**
+#
+#     ``app/main.py`` 在**模块导入时**读取环境变量并校验：
+#         _SERVICE_TOKEN = os.getenv("AGENT_SHARED_SECRET", "")   ← 导入即读
+#         _require_startup_secret()                              ← 导入即校验
+#
+#     而 ``tests/_test_secret.py`` 负责 ``os.environ.setdefault(...)``。
+#     所以**必须先导入 _test_secret，再导入 app.main**：
+#     顺序反了 → app.main 读到空 secret → 启动校验失败 / 鉴权 401 →
+#     响应里没有 fairness 字段 → 测试报 KeyError: 'fairness'（完全指不到根因）。
+#
+#     下面的 ``# isort: split`` 就是给 ruff I001 立的界碑：
+#     排序器不得跨越它重排这两个 import。
+# isort: split
+
 from tests._test_secret import AUTH_HEADERS as AUTH  # noqa: E402
 from tests._test_secret import TEST_SECRET  # noqa: E402,F401
+
+# isort: split
 
 from app.main import app  # noqa: E402
 

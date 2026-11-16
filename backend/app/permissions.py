@@ -7,12 +7,11 @@
 3. 权限错误明确区分：401(认证)、403(授权)、404(对象不存在)
 """
 
-from enum import Enum
 from dataclasses import dataclass
-from typing import Optional
+from enum import StrEnum
 
 
-class RoleEnum(str, Enum):
+class RoleEnum(StrEnum):
     """系统中的所有角色"""
     ADMIN = "admin"                      # 系统管理员
     DEPARTMENT_LEADER = "department"     # 部门负责人
@@ -49,7 +48,7 @@ class User:
     username: str
     roles: list[str]              # 用户的所有角色
     permissions: list[str]        # 用户的权限列表
-    dept_id: Optional[str] = None  # 部门ID
+    dept_id: str | None = None  # 部门ID
     is_admin: bool = False         # 是否是系统管理员
 
 
@@ -58,8 +57,8 @@ class Employee:
     """员工数据引用 —— 用于权限检查"""
     id: str
     dept_id: str
-    manager_id: Optional[str] = None  # 直属领导 ID
-    department_manager_id: Optional[str] = None  # 部门负责人 ID
+    manager_id: str | None = None  # 直属领导 ID
+    department_manager_id: str | None = None  # 部门负责人 ID
 
 
 @dataclass
@@ -79,7 +78,7 @@ class Plan:
 def can_user_view_employee(user: User, employee: Employee) -> bool:
     """
     用户是否可以查看员工数据
-    
+
     允许条件：
     1. 用户是管理员
     2. 用户是该员工本人
@@ -100,7 +99,7 @@ def can_user_view_employee(user: User, employee: Employee) -> bool:
 def can_user_edit_employee(user: User, employee: Employee) -> bool:
     """
     用户是否可以编辑员工信息
-    
+
     允许条件：
     1. 用户是管理员
     2. 用户是员工本人（仅限个人资料）
@@ -123,7 +122,7 @@ def can_user_manage_employees(user: User) -> bool:
 def can_user_view_plan(user: User, plan: Plan) -> bool:
     """
     用户是否可以查看计划
-    
+
     允许条件：
     1. 用户是管理员
     2. 用户是计划所有者
@@ -142,7 +141,7 @@ def can_user_view_plan(user: User, plan: Plan) -> bool:
 def can_user_edit_plan(user: User, plan: Plan) -> bool:
     """
     用户是否可以编辑计划
-    
+
     允许条件：
     1. 用户是计划所有者且计划还在草稿状态
     2. 用户是管理员
@@ -157,7 +156,7 @@ def can_user_edit_plan(user: User, plan: Plan) -> bool:
 def can_user_approve_plan(user: User, plan: Plan, approver_role: str) -> bool:
     """
     用户是否可以批准计划
-    
+
     approver_role: 审批人角色 ('manager', 'department_head', 'admin')
     """
     if user.is_admin:
@@ -172,7 +171,7 @@ def can_user_approve_plan(user: User, plan: Plan, approver_role: str) -> bool:
 def can_user_submit_result(user: User, employee_id: str, owner_id: str) -> bool:
     """
     用户是否可以提交成果
-    
+
     允许条件：
     1. 用户是成果所有者
     2. 用户是该员工的直属领导（代理提交）
@@ -190,7 +189,7 @@ def can_user_submit_result(user: User, employee_id: str, owner_id: str) -> bool:
 def can_user_confirm_result(user: User, employee_id: str) -> bool:
     """
     用户是否可以确认（批准）成果
-    
+
     允许条件：
     1. 用户是管理员
     2. 用户是该员工的直属领导
@@ -209,39 +208,39 @@ def can_user_confirm_result(user: User, employee_id: str) -> bool:
 # 断言函数 —— 用于 API 中的权限检查
 # ============================================================================
 
-def assert_user_can_view_employee(user: User, employee: Optional[Employee]) -> None:
+def assert_user_can_view_employee(user: User, employee: Employee | None) -> None:
     """断言：用户可以查看员工"""
     if not employee:
-        raise NotFoundError(f"Employee not found")
+        raise NotFoundError("Employee not found")
     if not can_user_view_employee(user, employee):
-        raise PermissionError(f"Cannot view this employee")
+        raise PermissionError("Cannot view this employee")
 
 
-def assert_user_can_edit_employee(user: User, employee: Optional[Employee]) -> None:
+def assert_user_can_edit_employee(user: User, employee: Employee | None) -> None:
     """断言：用户可以编辑员工"""
     if not employee:
-        raise NotFoundError(f"Employee not found")
+        raise NotFoundError("Employee not found")
     if not can_user_edit_employee(user, employee):
-        raise PermissionError(f"Cannot edit this employee")
+        raise PermissionError("Cannot edit this employee")
 
 
 def assert_user_can_manage_employees(user: User) -> None:
     """断言：用户可以管理员工"""
     if not can_user_manage_employees(user):
-        raise PermissionError(f"No permission to manage employees")
+        raise PermissionError("No permission to manage employees")
 
 
-def assert_user_can_view_plan(user: User, plan: Optional[Plan]) -> None:
+def assert_user_can_view_plan(user: User, plan: Plan | None) -> None:
     """断言：用户可以查看计划"""
     if not plan:
-        raise NotFoundError(f"Plan not found")
+        raise NotFoundError("Plan not found")
     if not can_user_view_plan(user, plan):
-        raise PermissionError(f"Cannot view this plan")
+        raise PermissionError("Cannot view this plan")
 
 
-def assert_user_can_edit_plan(user: User, plan: Optional[Plan]) -> None:
+def assert_user_can_edit_plan(user: User, plan: Plan | None) -> None:
     """断言：用户可以编辑计划"""
     if not plan:
-        raise NotFoundError(f"Plan not found")
+        raise NotFoundError("Plan not found")
     if not can_user_edit_plan(user, plan):
-        raise PermissionError(f"Cannot edit this plan")
+        raise PermissionError("Cannot edit this plan")

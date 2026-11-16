@@ -8,20 +8,21 @@
   5. CalculationDetail - 计算详情
 """
 
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 
-class NormalizationType(str, Enum):
+class NormalizationType(StrEnum):
     """规范化类型"""
     LINEAR = "linear"  # 线性规范化
     DIRECT = "direct"  # 直接使用百分比
     PIECEWISE = "piecewise"  # 分段规则
 
 
-class AdjustmentType(str, Enum):
+class AdjustmentType(StrEnum):
     """调整项类型"""
     ATTENDANCE = "attendance"  # 考勤调整
     REWARD = "reward"  # 奖惩调整
@@ -35,13 +36,13 @@ class AdjustmentType(str, Enum):
 
 class MetricNormalizationRule(BaseModel):
     """指标规范化规则"""
-    
+
     metric_code: str = Field(..., description="指标代码")
     normalization_type: NormalizationType = Field(..., description="规范化类型")
     baseline: float = Field(..., description="基准值")
-    max_value: Optional[float] = Field(None, description="最大值")
-    min_value: Optional[float] = Field(None, description="最小值")
-    
+    max_value: float | None = Field(None, description="最大值")
+    min_value: float | None = Field(None, description="最小值")
+
     class Config:
         schema_extra = {
             "example": {
@@ -61,7 +62,7 @@ class MetricNormalizationRule(BaseModel):
 
 class AttendanceAdjustment(BaseModel):
     """考勤调整规则"""
-    
+
     absent_days_1_3: int = Field(-2, description="缺勤 1-3 天的调整分数")
     absent_days_3_5: int = Field(-5, description="缺勤 3-5 天的调整分数")
     absent_days_5_plus: int = Field(-10, description="缺勤 5+ 天的调整分数")
@@ -69,7 +70,7 @@ class AttendanceAdjustment(BaseModel):
 
 class RewardAdjustment(BaseModel):
     """奖惩调整规则"""
-    
+
     praise: int = Field(5, description="公司表彰分数")
     complaint: int = Field(-3, description="客户投诉分数")
     violation: int = Field(-10, description="违规处罚分数")
@@ -77,9 +78,9 @@ class RewardAdjustment(BaseModel):
 
 class AdjustmentRule(BaseModel):
     """调整规则集合"""
-    
-    attendance: Optional[AttendanceAdjustment] = None
-    reward: Optional[RewardAdjustment] = None
+
+    attendance: AttendanceAdjustment | None = None
+    reward: RewardAdjustment | None = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -89,7 +90,7 @@ class AdjustmentRule(BaseModel):
 
 class RatingLevel(BaseModel):
     """单个等级定义"""
-    
+
     level: int = Field(..., ge=1, le=5, description="等级（1-5）")
     min_score: float = Field(..., description="最小分数（含）")
     max_score: float = Field(..., description="最大分数（含）")
@@ -99,9 +100,9 @@ class RatingLevel(BaseModel):
 
 class RatingMapping(BaseModel):
     """等级映射规则"""
-    
-    ratings: List[RatingLevel] = Field(..., description="等级列表")
-    
+
+    ratings: list[RatingLevel] = Field(..., description="等级列表")
+
     class Config:
         schema_extra = {
             "example": {
@@ -123,7 +124,7 @@ class RatingMapping(BaseModel):
 
 class NormalizedMetricDetail(BaseModel):
     """规范化后的指标详情"""
-    
+
     metric_code: str
     original_value: float
     original_unit: str
@@ -133,7 +134,7 @@ class NormalizedMetricDetail(BaseModel):
 
 class CalculationStep(BaseModel):
     """计算步骤"""
-    
+
     step_number: int = Field(..., description="步骤号")
     step_name: str = Field(..., description="步骤名称")
     input_value: float = Field(..., description="输入值")
@@ -143,21 +144,21 @@ class CalculationStep(BaseModel):
 
 class CalculationDetail(BaseModel):
     """完整计算详情"""
-    
+
     record_id: str = Field(..., description="评估记录 ID")
-    
+
     # 规范化步骤
-    normalized_metrics: List[NormalizedMetricDetail] = Field(..., description="规范化后的指标")
-    
+    normalized_metrics: list[NormalizedMetricDetail] = Field(..., description="规范化后的指标")
+
     # 加权计算
-    metric_weights: Dict[str, float] = Field(..., description="每个指标的权重")
+    metric_weights: dict[str, float] = Field(..., description="每个指标的权重")
     weighted_score: float = Field(..., description="加权得分")
-    
+
     # 调整项
     attendance_adjustment: float = Field(0, description="考勤调整")
     reward_adjustment: float = Field(0, description="奖惩调整")
     total_adjustment: float = Field(0, description="总调整")
-    
+
     # 最终结果
     final_score: float = Field(..., description="最终得分（0-100）")
     rating_level: int = Field(..., ge=1, le=5, description="等级（1-5）")
@@ -167,14 +168,14 @@ class CalculationDetail(BaseModel):
     #    这些指标**没有参与算分**（缺数据 / 缺目标值 / rubric 未配置 /
     #    达成率未命中区间）—— 权重已重新归一，所以不影响其他指标，
     #    但运维必须能看到「这个分数不完整」，否则无从追溯。
-    warnings: List[str] = Field(
+    warnings: list[str] = Field(
         default_factory=list,
         description="算分告警：未参与算分的指标及原因",
     )
 
     # 时间戳
     calculated_at: datetime = Field(default_factory=datetime.now)
-    calculation_duration_ms: Optional[float] = Field(None, description="计算耗时（毫秒）")
+    calculation_duration_ms: float | None = Field(None, description="计算耗时（毫秒）")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -193,17 +194,17 @@ class RulesEngineRequest(BaseModel):
           （决策②：考勤一律 reference_only）。仅回显，不入分。
     """
 
-    record_id: Optional[str] = Field(None, description="评估记录 ID（可选，URL 已带）")
+    record_id: str | None = Field(None, description="评估记录 ID（可选，URL 已带）")
 
     # 调整项数据 —— 只回显，不参与算分（决策②）
-    absent_days: Optional[int] = Field(0, description="缺勤天数（不参与算分）")
-    praise_count: Optional[int] = Field(0, description="表彰次数（不参与算分）")
-    complaint_count: Optional[int] = Field(0, description="投诉次数（不参与算分）")
-    violation_count: Optional[int] = Field(0, description="违规次数（不参与算分）")
+    absent_days: int | None = Field(0, description="缺勤天数（不参与算分）")
+    praise_count: int | None = Field(0, description="表彰次数（不参与算分）")
+    complaint_count: int | None = Field(0, description="投诉次数（不参与算分）")
+    violation_count: int | None = Field(0, description="违规次数（不参与算分）")
 
     # 可选的强制参数
-    force_execute: Optional[bool] = Field(False, description="强制执行（即使状态不对）")
-    
+    force_execute: bool | None = Field(False, description="强制执行（即使状态不对）")
+
     class Config:
         schema_extra = {
             "example": {
@@ -218,22 +219,22 @@ class RulesEngineRequest(BaseModel):
 
 class RulesEngineResponse(BaseModel):
     """规则引擎响应"""
-    
+
     record_id: str = Field(..., description="评估记录 ID")
     status: str = Field(..., description="执行状态")
-    
+
     # 计算结果
     final_score: float = Field(..., description="最终得分（0-100）")
     rating_level: int = Field(..., ge=1, le=5, description="等级（1-5）")
     rating_label: str = Field(..., description="等级标签")
-    
+
     # 详细信息
     calculation_detail: CalculationDetail = Field(..., description="完整计算详情")
-    
+
     # 时间戳
     executed_at: datetime = Field(default_factory=datetime.now)
     message: str = Field("规则引擎执行成功", description="状态消息")
-    
+
     class Config:
         schema_extra = {
             "example": {
@@ -262,13 +263,13 @@ class RulesEngineResponse(BaseModel):
 
 class RulesEngineErrorResponse(BaseModel):
     """规则引擎错误响应"""
-    
-    record_id: Optional[str] = Field(None, description="评估记录 ID")
+
+    record_id: str | None = Field(None, description="评估记录 ID")
     error_code: str = Field(..., description="错误代码")
     error_message: str = Field(..., description="错误消息")
-    details: Optional[Dict[str, Any]] = Field(None, description="详细信息")
+    details: dict[str, Any] | None = Field(None, description="详细信息")
     timestamp: datetime = Field(default_factory=datetime.now)
-    
+
     class Config:
         schema_extra = {
             "examples": {

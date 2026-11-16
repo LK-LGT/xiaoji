@@ -484,6 +484,19 @@ class GroundingService:
                 )
                 continue
 
+            # 验收项覆盖不完整（PARTIAL / UNPROVEN）时，不得判定为通过 ——
+            # 覆盖不全意味着还有关键事实没被核验，通过结论缺乏依据。
+            # ⚠️ 这条守卫原本写了但**没接上**（变量算了却没用，ruff F841），
+            #    等于「有覆盖缺口也能判通过」。本轮补上。
+            if status == DimensionStatus.PASS.value and has_unproven_coverage:
+                result.append(
+                    self._unknown(
+                        rule,
+                        "本次验收项覆盖不完整，存在未充分核验的内容，不能判定为通过。",
+                    )
+                )
+                continue
+
             result.append(
                 GroundedDimension(
                     rule_id=rule_id,

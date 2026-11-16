@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 """测试完整的绩效考核流程 API。"""
 
+import json
+from datetime import datetime, timedelta
+
 from app.main import app
 from fastapi.testclient import TestClient
-from datetime import datetime, timedelta
-import json
 
 client = TestClient(app)
 
@@ -34,7 +35,7 @@ print(f"响应: {json.dumps(resp_json, indent=2, ensure_ascii=False)[:300]}...")
 
 if response.status_code == 200:
     task_id = resp_json["data"]["task_id"]
-    
+
     # 查询任务的所有记录
     print("\n获取任务的所有记录:")
     response = client.get(f"/v1/performance/tasks/{task_id}/records?current_user_id=8d5c97gb")
@@ -46,47 +47,47 @@ if response.status_code == 200:
         print(f"  - {r['employee']['name']}: {r['status']}")
         if not record_id:
             record_id = r["record_id"]
-    
+
     # 2. 员工提交自评
     if record_id:
         print("\n[2] 员工提交自评")
         print("-" * 80)
-        
+
         self_review_payload = {
             "record_id": record_id,
             "performance_summary": "本月完成了 AI 技术部的所有核心开发任务，包括 LLM 集成和提示词优化。",
             "achievements": ["实现了新的 RAG 架构设计", "优化了模型响应时间"],
             "challenges": ["部分硬件资源限制"]
         }
-        
+
         response = client.post(
             "/v1/performance/self-reviews?current_user_id=2aaf32ea",
             json=self_review_payload
         )
         print(f"状态码: {response.status_code}")
         print(f"响应: {json.dumps(response.json(), indent=2, ensure_ascii=False)}")
-        
+
         # 3. 主管提交评分
         print("\n[3] 主管提交评分")
         print("-" * 80)
-        
+
         manager_review_payload = {
             "record_id": record_id,
             "rating": "A",
             "manager_comment": "李凯表现优秀，技术实力强，本月完成多项核心项目。"
         }
-        
+
         response = client.post(
             "/v1/performance/manager-reviews?current_user_id=g426c684",
             json=manager_review_payload
         )
         print(f"状态码: {response.status_code}")
         print(f"响应: {json.dumps(response.json(), indent=2, ensure_ascii=False)}")
-        
+
         # 4. 查询考核记录
         print("\n[4] 查询考核记录详情 (权限检查)")
         print("-" * 80)
-        
+
         response = client.get(f"/v1/performance/records/{record_id}?current_user_id=2aaf32ea")
         print(f"状态码: {response.status_code}")
         if response.status_code == 200:

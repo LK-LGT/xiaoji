@@ -1,5 +1,11 @@
 """Test import in isolation"""
-import sys
+
+# ⚠️ 本脚本**故意**把 import 夹在 print() 之间 ——
+#    目的正是演示「路由注册时 import 的时机」对路由表的影响。
+#    顺序本身就是被测对象，不能重排。
+#
+#    → 整个文件豁免 E402（module-import-not-at-top-of-file）。
+# ruff: noqa: E402
 
 print("=== Testing direct route instantiation ===")
 from fastapi import APIRouter

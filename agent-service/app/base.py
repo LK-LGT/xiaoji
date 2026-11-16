@@ -307,7 +307,7 @@ class BaseAgent(ABC):
         input_hash = hash_input(payload)
         last_error: str | None = None
 
-        for attempt in range(self.max_retries + 1):
+        for _attempt in range(self.max_retries + 1):
             raw, err = self.client.complete(
                 self.system_prompt(),
                 json.dumps(payload, ensure_ascii=False),

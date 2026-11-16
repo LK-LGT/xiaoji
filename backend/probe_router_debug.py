@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import APIRouter, FastAPI
 
 app = FastAPI()
 r = APIRouter()
@@ -16,7 +16,7 @@ for route in app.routes:
     if hasattr(route, 'path'):
         print(f"  {route.path}")
     elif hasattr(route, 'routes'):
-        print(f"  IncludedRouter with routes:")
+        print("  IncludedRouter with routes:")
         for sub in route.routes:
             if hasattr(sub, 'path'):
                 print(f"    {sub.path}")

@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """检查部门数据结构，建立组织树。"""
 
+
 from app.core.db import get_sessionmaker
-from app.domain.models import Employee, Department
-import json
+from app.domain.models import Department
 
 db = get_sessionmaker()()
 

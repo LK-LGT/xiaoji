@@ -17,7 +17,24 @@ AGENT = Path(__file__).resolve().parents[1] / "agent-service"
 sys.path.insert(0, str(AGENT))
 
 # ⚠️ secret 收敛到一处，避免「谁先导入谁定值」导致莫名 401。
+#
+# ⚠️⚠️ **导入顺序是硬约束，别让 ruff 的 I001 自动排序改掉！**
+#
+#     ``app/main.py`` 在**模块导入时**读取并校验环境变量：
+#         _SERVICE_TOKEN = os.getenv("AGENT_SHARED_SECRET", "")   ← 导入即读
+#         _require_startup_secret()                              ← 导入即校验
+#
+#     而 ``tests/_test_secret.py`` 负责 ``os.environ.setdefault(...)``。
+#     所以**必须先导入 _test_secret，再导入 app.main**。
+#     本文件按字母序**排在 test_draft_api.py 之前**，也就是说
+#     **本文件是第一个导入 app.main 的** —— 顺序反了就会把 secret 定错。
+#
+#     下面的 ``# isort: split`` 给 ruff I001 立界碑：排序器不得跨越它重排。
+# isort: split
+
 from tests._test_secret import AUTH_HEADERS as AUTH  # noqa: E402
+
+# isort: split
 
 from app.main import app  # noqa: E402
 

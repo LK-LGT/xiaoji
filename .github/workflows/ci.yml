@@ -110,9 +110,32 @@ jobs:
         run: python backend/scripts/check_schema_drift.py "${{ github.workspace }}/data/_ci_backend.db"
 
       - name: Python 静态检查（ruff）
-        # 只做基础规范检查（未定义名 / 语法错误级），不阻断业务迭代；
-        # 如需更严格，可在 pyproject.toml 里配置 ruff 规则集。
-        run: ruff check backend/app backend/scripts --select E9,F63,F7,F82 --output-format=github
+        # ⚠️ R22：规则集从 `--select E9,F63,F7,F82`（仅致命错误）
+        #    收紧为 pyproject.toml 里配置的完整规则集：
+        #    E（pycodestyle）+ F（pyflakes）+ W（whitespace）
+        #    + I（import 排序）+ UP（pyupgrade）+ B（bugbear）。
+        #
+        #    为什么收紧：窄规则集让 1200+ 条存量违规长期无人问津，
+        #    其中藏着两个真实的 `F821`（未定义名）和一处**上传文件
+        #    类型校验缺失**（伪装文件可直接放行）。
+        #    存量已按 F → I → B → E/W/UP 分批清零，现在可以硬门槛。
+        #
+        #    规则集与豁免清单统一在 pyproject.toml 的 [tool.ruff.lint]，
+        #    本地 `backend/scripts/run_ci_locally.py` 用同一份配置。
+        #
+        # ⚠️⚠️ **不传 `--select`** —— 一旦在这里写死规则集，
+        #    就会和 pyproject.toml 的 select 悄悄分叉（这正是 R22
+        #    要根治的老毛病）。这里**只给路径**，规则集由配置文件唯一决定。
+        #
+        # ⚠️ 覆盖范围也补齐了：原来只查 `backend/app backend/scripts`，
+        #    而 `backend/` 根目录的脚本（import_guide / probe_* 等）
+        #    和 `agent-service/` 整个服务都在**门禁之外** ——
+        #    同样是「代码在仓库里，但门禁管不到」。
+        #
+        #    `.` 也一并纳入 —— 仓库根目录还有几个手动脚本
+        #    （BLOCK1_* / diagnose / run_tests 等），
+        #    它们同样该被静态检查管住。
+        run: ruff check . --output-format=github
 
       - name: 上传测试报告
         if: always()
@@ -146,11 +169,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r agent-service/requirements.txt
-          pip install pytest httpx
+          pip install pytest httpx ruff
 
       - name: 运行测试
         working-directory: agent-service
         run: python -m pytest tests -q --tb=short -p no:cacheprovider
+
+      - name: Python 静态检查（ruff）
+        # ⚠️ R22：智能体服务此前**完全没有** ruff 门禁 ——
+        #    而它是独立部署的服务，代码质量没人守。
+        #
+        #    规则集同样由 pyproject.toml 唯一决定（这里不传 --select），
+        #    与后端作业保持一致 —— 避免出现两套规则集。
+        run: ruff check agent-service --output-format=github
 
   # ───────────────────────────────────────────────────────────
   # 前端：类型检查 + 单元测试 + 构建

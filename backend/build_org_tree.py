@@ -2,7 +2,7 @@
 """构建公司完整的组织树。"""
 
 from app.core.db import get_sessionmaker
-from app.domain.models import Employee, Department
+from app.domain.models import Department, Employee
 
 db = get_sessionmaker()()
 
@@ -22,15 +22,15 @@ def count_employees_recursive(dept_id):
     """递归统计部门及子部门的总人数。"""
     # 直属员工
     direct = db.query(Employee).filter(Employee.department_id == dept_id).count()
-    
+
     # 找子部门
     children = [d for d in all_depts if d.parent_id == dept_id]
-    
+
     # 递归加上子部门的人
     total = direct
     for child in children:
         total += count_employees_recursive(child.id)
-    
+
     return total
 
 # 找一级部门（parent_id=0 或不存在）
@@ -44,14 +44,14 @@ def print_tree(dept_id, level=0):
     dept = dept_map.get(dept_id)
     if not dept:
         return
-    
+
     # 员工数统计
     direct_count = db.query(Employee).filter(Employee.department_id == dept_id).count()
     total_count = count_employees_recursive(dept_id)
-    
+
     indent = "  " * level
     children = [d for d in all_depts if d.parent_id == dept_id]
-    
+
     # 格式化输出
     status = "●" if total_count > 0 else "○"
     if direct_count == total_count:
@@ -60,7 +60,7 @@ def print_tree(dept_id, level=0):
     else:
         # 有子部门的中间节点
         print(f"{indent}{status} {dept.name} ({direct_count} 人，含子部门 {total_count} 人) [{dept_id}]")
-    
+
     # 递归打印子部门
     for child in sorted(children, key=lambda x: x.name or ''):
         print_tree(child.id, level + 1)
@@ -88,7 +88,7 @@ for dept in all_depts:
     if total > 0:
         dept_info.append((dept.name, total, dept.id))
 
-for name, count, dept_id in sorted(dept_info, key=lambda x: x[1], reverse=True)[:15]:
+for name, count, _dept_id in sorted(dept_info, key=lambda x: x[1], reverse=True)[:15]:
     print(f"  {name}: {count} 人")
 
 db.close()

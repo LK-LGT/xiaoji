@@ -11,9 +11,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Iterable
+from enum import StrEnum
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,7 +27,7 @@ from ..domain.models import (
 )
 
 
-class PermissionAction(str, Enum):
+class PermissionAction(StrEnum):
     """权限标识。"""
 
     VIEW_OWN_SCORE = "view_own_score"
@@ -247,6 +247,18 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
                 PermissionAction.VIEW_AUDIT_LOG,
                 PermissionAction.MANAGE_EMPLOYEES,
                 PermissionAction.SYNC_ATTENDANCE,
+                # BUG-R6-31：算分配置（指标 / 权重集 / 等级区间）的归属者是
+                # **HR**，不是只有 system_admin。
+                #
+                # 决策③原文是「多维表格 HR 直改」—— 配置的**业务所有者**是 HR。
+                # 过去只给 system_admin，导致：
+                #   - weight_set / rubric 表永远是空的（没有任何产品入口能写）；
+                #   - 唯一的 admin 账号口令一旦变更，配置入口就**彻底锁死**，
+                #     整个算分链路再也无法通过产品路径启动。
+                #
+                # 现在 HR 也能管理算分配置；system_admin 仍然保留该权限
+                # （运维兜底），但不再是唯一入口。
+                PermissionAction.MANAGE_SYSTEM_CONFIG,
             }
         )
 
