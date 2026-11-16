@@ -18,12 +18,20 @@ extend-exclude = [
     #    它们是**未跟踪的一次性文件**，随用随删。
     #    排除它们，避免「有人正在调试时 CI 突然红了」——
     #    门禁应该只对**要交付的代码**负责。
+    #
+    # ⚠️ 这里只排「下划线开头」的一次性脚本。
+    #    `check_*.py` / `probe_*.py` **不排** —— 它们是被跟踪的正式交付物
+    #    （backend/check_*.py、backend/scripts/check_*.py），
+    #    其中 check_schema_drift.py 更是 CI 步骤之一，排掉等于门禁失守。
     "tmp_*.py",
     "_probe_*.py",
     "_verify_*.py",
     "_fix_*.py",
     "_dbg_*.py",
-    "_r6_probe.py",
+    "_r6_*.py",
+    "_acceptance_*.py",
+    "_check_*.py",
+    "_selfcheck_*.py",
 ]
 
 [tool.ruff.lint]
