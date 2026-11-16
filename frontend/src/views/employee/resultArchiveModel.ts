@@ -14,7 +14,8 @@ export interface MonthResultArchiveTask extends MonthPlanItemOption {
 export interface MonthResultArchive {
   key: string
   type: 'MONTH'
-  planId: number
+  /** BUG-R6-14：计划主键是字符串，不是数字。 */
+  planId: string
   planMonth: string
   title: string
   employeeName: string
@@ -33,7 +34,9 @@ export interface MonthResultArchive {
 }
 
 function newestVersion(left: MonthResultVersion, right: MonthResultVersion) {
-  return String(right.submittedAt || '').localeCompare(String(left.submittedAt || '')) || right.id - left.id
+  // BUG-R6-14：版本 ID 是字符串，不能做数值减法。
+  return String(right.submittedAt || '').localeCompare(String(left.submittedAt || ''))
+    || String(right.id).localeCompare(String(left.id))
 }
 
 function latestVersions(options: EmployeeResultSubmitOptionsResp) {
@@ -74,7 +77,8 @@ export function buildMonthResultArchives(options: EmployeeResultSubmitOptionsRes
   return options.monthPlanOptions.flatMap((plan) => {
     const tasks = options.monthPlanItemOptions
       .filter((item) => item.monthPlanId === plan.id)
-      .sort((left, right) => left.sortNo - right.sortNo || left.id - right.id)
+      // BUG-R6-14：条目 ID 是字符串，排序改用 sortNo + 字符串字典序。
+      .sort((left, right) => left.sortNo - right.sortNo || String(left.id).localeCompare(String(right.id)))
       .map<MonthResultArchiveTask>((item) => {
         const latestVersion = versions.get(`${plan.id}:${item.id}`)
         return {
@@ -122,14 +126,15 @@ export function buildMonthResultArchives(options: EmployeeResultSubmitOptionsRes
       tasks,
       searchText,
     }]
-  }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.planId - left.planId)
+  }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || String(right.planId).localeCompare(String(left.planId)))
 }
 
 export function resolveMonthArchivePlanId(
   options: EmployeeResultSubmitOptionsResp,
-  routeId: number,
+  routeId: string,
   scope?: unknown,
 ) {
+  // BUG-R6-14：路由 ID 是字符串主键。
   if (scope === 'plan' && options.monthPlanOptions.some((plan) => plan.id === routeId)) return routeId
   return options.resultVersions.find((version) => version.id === routeId)?.monthPlanId ?? null
 }

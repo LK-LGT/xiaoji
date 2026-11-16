@@ -516,7 +516,7 @@ def _serialize_conversation(conversation: Any) -> dict:
         "id": conversation.id,
         "sceneCode": conversation.scene_code,
         "bizType": conversation.biz_type,
-        "bizId": _as_int(conversation.biz_id) if conversation.biz_id else None,
+        "bizId": _as_id(conversation.biz_id) if conversation.biz_id else None,
         "title": conversation.title,
         "status": "ACTIVE" if conversation.status == "active" else "ENDED",
         "createdAt": conversation.created_at.isoformat() if conversation.created_at else "",
@@ -569,11 +569,13 @@ def _assert_owns_conversation(user: Employee, conversation: Any) -> None:
         raise HTTPException(status_code=403, detail="无权访问该 AI 会话")
 
 
-def _as_int(value: Any) -> int:
-    """字符串 ID → 数字 ID（前端契约用 number）。"""
+def _as_id(value: Any) -> str:
+    """主键 ID 原样透出（不要转 int）。
+
+    ⚠️ BUG-R6-14 同类修复：业务主键是**十六进制 / UUID 字符串**，
+    原实现 ``int(str(value))`` 失败后回退成 ``0``，
+    会话绑定的业务对象 ID 就丢了。
+    """
     if value is None:
-        return 0
-    try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return 0
+        return ""
+    return str(value)

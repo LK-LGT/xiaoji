@@ -13,6 +13,9 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -26,6 +29,32 @@ ROOT_SENTINEL = "0"
 @pytest.fixture(scope="module")
 def client() -> TestClient:
     return TestClient(app)
+
+
+def _upgrade_schema_to_head() -> None:
+    """用 Alembic 把当前 `DATABASE_URL` 指向的库升到 head。
+
+    ⚠️ 必须走 Alembic 而不是 `Base.metadata.create_all()`：
+    后者只建表、不写 `alembic_version`，会让 CI 后续的迁移检查
+    撞上 `table xxx already exists`。
+    """
+    import os
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[3]
+    env = {**os.environ}
+    env.setdefault("AUTO_CREATE_TABLES", "false")
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=str(repo_root / "backend"),
+        env=env,
+        capture_output=True,
+        text=True,
+        # Windows 默认 GBK 解码，Alembic 输出含非 ASCII → UnicodeDecodeError。
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.fixture(scope="module")
@@ -48,6 +77,20 @@ def auth_headers() -> dict:
 
     db = get_sessionmaker()()
     try:
+        # ⚠️ CI 的执行顺序是「先跑测试、后跑迁移」，且 `AUTO_CREATE_TABLES=false`，
+        #    所以在**全新**的 `_ci_local.db` 上跑测试时，`employee` 表根本还不存在
+        #    → 直接查会报 `no such table: employee`（23 个用例 setup ERROR）。
+        #
+        #    ⚠️ 这里**必须用 Alembic 建表，不能用 `Base.metadata.create_all()`**：
+        #    create_all 只建表、不写 `alembic_version`，
+        #    于是 CI 后续的「Alembic 升级到 head」会再 CREATE 一遍同样的表 →
+        #    `table department already exists` → 迁移检查整条挂掉。
+        try:
+            db.query(Employee).filter(Employee.id == "CI_ADMIN").first()
+        except Exception:
+            db.rollback()
+            _upgrade_schema_to_head()
+
         admin = db.query(Employee).filter(Employee.id == "CI_ADMIN").first()
         if admin is None:
             admin = Employee(
@@ -111,7 +154,7 @@ def test_hex_id_not_rejected(
     #
     # 404 / 403 属可接受：说明已经过了鉴权与参数校验层，
     # 只是该业务实体在当前库里不存在（CI 用空库，真实库也没有那个 ID）。
-    # 端点自己的 docstring 与本文件的 fixture docstring 也都这么写。
+    # 端点自己的 docstring 也这么写。
     assert response.status_code != 422, f"{method.upper()} {url} -> 422 {response.text}"
     assert response.status_code != 500, f"{method.upper()} {url} -> 500 {response.text}"
     assert response.status_code < 500, f"{method.upper()} {url} -> {response.status_code} {response.text}"

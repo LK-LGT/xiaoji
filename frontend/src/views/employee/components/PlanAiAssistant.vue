@@ -77,7 +77,7 @@ import { useCancelableAiRequest } from '@/composables/useCancelableAiRequest'
 import PlanAiConversationPanel from './PlanAiConversationPanel.vue'
 import PlanAiExampleInput from './PlanAiExampleInput.vue'
 
-const props = defineProps<{ mode: 'week' | 'day'; date: string; form: { items?: WeekPlanAiItem[]; relatedWeekPlanItemIds?: number[]; content?: string; remark?: string } }>()
+const props = defineProps<{ mode: 'week' | 'day'; date: string; form: { items?: WeekPlanAiItem[]; relatedWeekPlanItemIds?: string[]; content?: string; remark?: string } }>()
 const emit = defineEmits<{ apply: [WeekPlanAiItem[] | DayPlanAiForm]; 'version-created': [versionNo: number] }>()
 const context = ref<AiContextResponse>()
 const instruction = ref('')
@@ -181,7 +181,10 @@ function previewConversationResult(message: AiConversationMessage) {
     }
     dayDraft.value = {
       suggestionId: message.suggestionId || String(payload.suggestionId || ''),
-      relatedWeekPlanItemIds: Array.isArray(payload.relatedWeekPlanItemIds) ? payload.relatedWeekPlanItemIds.map(Number).filter(Number.isFinite) : [],
+      // BUG-R6-14：周计划条目主键是字符串 UUID，禁止 `Number(...)` 归一化。
+      relatedWeekPlanItemIds: Array.isArray(payload.relatedWeekPlanItemIds)
+        ? payload.relatedWeekPlanItemIds.map((item) => String(item).trim()).filter(Boolean)
+        : [],
       content: payload.content,
       remark: typeof payload.remark === 'string' ? payload.remark : '',
       warnings: stringArray(payload.warnings),
@@ -198,10 +201,14 @@ function previewConversationResult(message: AiConversationMessage) {
 function normalizeWeekItem(raw: unknown): WeekPlanAiItem | null {
   if (!raw || typeof raw !== 'object') return null
   const item = raw as Record<string, unknown>
-  const monthPlanItemId = Number(item.monthPlanItemId)
+  // BUG-R6-14：条目主键是字符串 UUID，禁止 `Number(...)` 归一化。
+  const rawMonthPlanItemId = item.monthPlanItemId
+  const monthPlanItemId = rawMonthPlanItemId === null || rawMonthPlanItemId === undefined
+    ? ''
+    : String(rawMonthPlanItemId).trim()
   return {
-    id: typeof item.id === 'number' ? item.id : undefined,
-    monthPlanItemId: Number.isFinite(monthPlanItemId) && monthPlanItemId > 0 ? monthPlanItemId : null,
+    id: item.id === null || item.id === undefined ? undefined : String(item.id),
+    monthPlanItemId: monthPlanItemId || null,
     content: String(item.content || ''),
     deliverable: String(item.deliverable || ''),
     quality: String(item.quality || ''),

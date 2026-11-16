@@ -56,7 +56,8 @@ export interface AiReviewResult {
 export interface AiReview {
   id: number
   bizType: AiReviewBizType
-  bizId: number
+  /** BUG-R6-14：业务对象 ID 为字符串主键（UUID/十六进制）。 */
+  bizId: string
   bizVersion?: string
   contentHash: string
   status: 'SUCCESS' | 'RULE_ONLY' | 'MODEL_FAILED'
@@ -94,13 +95,13 @@ export function getAiCapabilityApi(force = false) {
   return capabilityRequest
 }
 
-export function checkPlanAiReviewApi(bizType: Exclude<AiReviewBizType, 'RESULT'>, bizId: number, options?: AiRequestOptions) {
+export function checkPlanAiReviewApi(bizType: Exclude<AiReviewBizType, 'RESULT'>, bizId: string, options?: AiRequestOptions) {
   return http.post<undefined, AiReview>(`/ai/reviews/plans/${bizType}/${bizId}/check`, undefined, {
     ...reviewRequestConfig(options),
   })
 }
 
-export function ensurePlanAiReviewApi(bizType: Exclude<AiReviewBizType, 'RESULT'>, bizId: number) {
+export function ensurePlanAiReviewApi(bizType: Exclude<AiReviewBizType, 'RESULT'>, bizId: string) {
   return http.post<undefined, AiReview>(`/ai/reviews/plans/${bizType}/${bizId}/ensure`, undefined, {
     timeout: AI_OPERATION_TIMEOUT_MS,
   })
@@ -113,13 +114,13 @@ export function previewResultAiReviewApi(payload: FormData, options?: AiRequestO
   })
 }
 
-export function getLatestAiReviewApi(bizType: AiReviewBizType, bizId: number) {
+export function getLatestAiReviewApi(bizType: AiReviewBizType, bizId: string) {
   return http.get<unknown, AiReview | null>('/ai/reviews/latest', { params: { bizType, bizId } })
 }
 
-export function getLatestAiReviewsApi(bizType: AiReviewBizType, bizIds: number[]) {
-  return http.get<unknown, Record<number, AiReview>>('/ai/reviews/latest/batch', {
-    params: { bizType, bizIds: [...new Set(bizIds.filter((id) => Number.isInteger(id) && id > 0))].join(',') },
+export function getLatestAiReviewsApi(bizType: AiReviewBizType, bizIds: string[]) {
+  return http.get<unknown, Record<string, AiReview>>('/ai/reviews/latest/batch', {
+    params: { bizType, bizIds: [...new Set(bizIds.map((id) => String(id).trim()).filter(Boolean))].join(',') },
   })
 }
 

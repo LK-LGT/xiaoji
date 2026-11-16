@@ -12,8 +12,9 @@ export type MonthPlanResultVersion = Pick<
 
 export function resultVersionForTask(
   versions: readonly MonthPlanResultVersion[],
-  taskId: number,
+  taskId: string,
 ) {
+  // BUG-R6-14：任务 ID 是字符串主键。
   return versions.find((version) => version.monthPlanItemId === taskId)
 }
 

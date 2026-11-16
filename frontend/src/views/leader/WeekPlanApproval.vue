@@ -133,7 +133,8 @@ function formatDate(date: Date) {
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
 }
-onMounted(async () => { await loadRows(); const id = Number(route.query.id || 0); const row = rows.value.find((item) => item.id === id); if (row) await open(row) })
+onMounted(async () => { await loadRows(); // BUG-R6-14：周计划主键是字符串 UUID，禁止 `Number(...)`。
+const id = String(route.query.id ?? '').trim(); const row = rows.value.find((item) => String(item.id) === id); if (row) await open(row) })
 </script>
 <style scoped>
 .drawer-actions { display:flex; justify-content:flex-end; gap:12px; margin-top:20px; }

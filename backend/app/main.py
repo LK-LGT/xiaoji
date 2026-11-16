@@ -45,6 +45,21 @@ import json
 from sqlalchemy import and_
 from datetime import datetime
 
+# ─────────────────────────────────────────────────────────────
+# 日志配置
+#
+# 为什么必须有：模块里到处用 ``logging.getLogger(__name__)`` 记录
+# 关键事件（同步批次、锁冲突、事务边界），但默认 logging 配置下
+# root logger 没有 handler，这些日志**一条都不会输出** ——
+# 出问题时（批次卡在 running）完全无从查起。
+#
+# 这里显式配置，保证应用日志落到 stdout（容器/进程管理器可收集）。
+# ─────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+
 app = FastAPI(
     title="员工绩效管理 - 业务后端",
     version="0.1.0",

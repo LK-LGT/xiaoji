@@ -48,7 +48,7 @@ export interface EmployeeDashboardResp {
 }
 
 export interface EmployeeMonthPlanItem {
-  id: number
+  id: string
   taskType: 'REGULAR'
   performanceWeight: number
   estimatedValue: number
@@ -67,7 +67,7 @@ export interface EmployeeMonthPlanItem {
 }
 
 export interface EmployeeDeliverable {
-  id: number
+  id: string
   name: string
   fileType: string
   relatedTaskName: string
@@ -84,9 +84,9 @@ export interface EmployeeResultSummary {
 }
 
 export interface ConfirmRecord {
-  id: number
+  id: string
   bizType: string
-  bizId: number
+  bizId: string
   operatorName: string
   action: string
   comment: string
@@ -94,7 +94,7 @@ export interface ConfirmRecord {
 }
 
 export interface EmployeeMonthPlanDetailResp {
-  id: number
+  id: string
   planMonth: string
   employeeName: string
   departmentName: string
@@ -125,7 +125,7 @@ export interface EmployeeMonthPlanTemplatePreviewItem {
 }
 
 export interface EmployeeMonthPlanTemplatePreviewResp {
-  planId: number
+  planId: string
   planMonth: string
   employeeName?: string
   projectName?: string
@@ -137,7 +137,7 @@ export interface EmployeeMonthPlanTemplatePreviewResp {
 export interface SaveMonthPlanDraftReq {
   planMonth?: string
   items: Array<{
-    id?: number
+    id?: string
     taskName: string
     taskContent: string
     deliverable: string
@@ -153,35 +153,37 @@ export interface SaveMonthPlanDraftReq {
 }
 
 export interface EmployeeMonthPlanSubmitResp {
-  id: number
+  id: string
   status: EmployeePlanStatus
   submittedAt?: string
 }
 
 export interface EmployeeMonthPlanItemOption {
-  id: number
+  id: string
   taskName: string
 }
 
 export interface EmployeeWeekPlanItemOption {
-  id: number
+  id: string
   content: string
   deliverable?: string
   plannedFinishDate?: string
-  monthPlanItemId: number | null
+  monthPlanItemId: string | null
   monthPlanItemName?: string
 }
 
 export interface EmployeeLegacyMonthPlanItem {
-  id: number
+  id: string
   taskName: string
 }
 
 export interface EmployeeDayPlanDetailResp {
-  id: number
+  /** BUG-R6-14：日计划主键为字符串（UUID/十六进制）。 */
+  id: string
   planDate: string
   orgName: string
-  relatedWeekPlanItemIds: number[]
+  /** BUG-R6-14：关联的周计划条目主键为字符串（UUID/十六进制）。 */
+  relatedWeekPlanItemIds: string[]
   content: string
   remark: string
   status: EmployeePlanStatus
@@ -199,9 +201,11 @@ export interface EmployeeDayPlanDetailResp {
 }
 
 export interface SaveDayPlanDraftReq {
-  id?: number
+  /** BUG-R6-14：日计划主键为字符串（UUID/十六进制）。 */
+  id?: string
   planDate: string
-  relatedWeekPlanItemIds: number[]
+  /** BUG-R6-14：关联的周计划条目主键为字符串（UUID/十六进制）。 */
+  relatedWeekPlanItemIds: string[]
   content: string
   remark: string
   recordVersion?: boolean
@@ -212,14 +216,20 @@ export interface SaveDayPlanDraftReq {
 export interface SubmitDayPlanReq extends SaveDayPlanDraftReq {}
 
 export interface EmployeeDayPlanSubmitResp {
-  id: number
+  /** BUG-R6-14：日计划主键为字符串（UUID/十六进制）。 */
+  id: string
   status: EmployeePlanStatus
   submittedAt: string
 }
 
 export interface EmployeeResultSubmitOptionsResp {
+  /**
+   * BUG-R6-14：主键是**十六进制 / UUID 字符串**，
+   * 不是数字。早期 TS 声明为 `number` 属历史遗留，
+   * 任何 `Number(...)` 强转都会把主键塌成 `0`。
+   */
   monthPlanOptions: Array<{
-    id: number
+    id: string
     title: string
     planMonth: string
     employeeName: string
@@ -227,8 +237,8 @@ export interface EmployeeResultSubmitOptionsResp {
     positionName: string
   }>
   monthPlanItemOptions: Array<{
-    id: number
-    monthPlanId: number
+    id: string
+    monthPlanId: string
     taskName: string
     taskContent: string
     performanceWeight: number
@@ -239,12 +249,20 @@ export interface EmployeeResultSubmitOptionsResp {
     estimatedValue: number
     sortNo: number
   }>
+  /**
+   * 允许上传的**文件扩展名**（不含点，如 `pdf` / `docx` / `png`）。
+   * ⚠️ BUG-R6-19：后端此前返回的是 MIME（`application/pdf`），
+   *    前端却按扩展名比对 → 合法文件一律被判「类型不支持」，
+   *    拼出来的 `accept` 属性（`.application/pdf`）也完全无效。
+   */
   acceptedFileTypes: string[]
+  /** 允许上传的 MIME 类型（后端服务端校验用，前端一般不用）。 */
+  acceptedFileMimes?: string[]
   maxFileSizeMb: number
   resultVersions: Array<{
-    id: number
-    monthPlanId: number
-    monthPlanItemId?: number
+    id: string
+    monthPlanId: string
+    monthPlanItemId?: string
     versionNo: string
     status: EmployeeResultStatus
     submittedAt: string
@@ -261,8 +279,8 @@ export interface EmployeeResultSubmitOptionsResp {
 }
 
 export interface SubmitEmployeeResultReq {
-  monthPlanId: number
-  monthPlanItemId?: number
+  monthPlanId: string
+  monthPlanItemId?: string
   completionRate: number
   description?: string
   completionStatus: string
@@ -297,7 +315,8 @@ export interface EmployeePerformanceEvidenceResp {
 }
 
 export interface EmployeeResultEvidence {
-  id: number
+  /** BUG-R6-14：证据 ID 是字符串主键。 */
+  id: string
   fileName: string
   fileType: string
   fileSize: number
@@ -309,7 +328,7 @@ export interface EmployeeResultEvidence {
 }
 
 export interface EmployeeResultDetailResp {
-  id: number
+  id: string
   resultNo: string
   title: string
   resultDate: string
@@ -321,9 +340,9 @@ export interface EmployeeResultDetailResp {
   versionNo: string
   status: EmployeeResultStatus
   planType: string
-  planId?: number
+  planId?: string
   planTitle: string
-  monthPlanItemId?: number
+  monthPlanItemId?: string
   planItemName: string
   submittedAt: string
   suggestionStatus: string
@@ -338,7 +357,7 @@ export interface EmployeeResultDetailResp {
 }
 
 export interface EmployeeAppealItem {
-  id: number
+  id: string
   appealNo: string
   title: string
   reason: string
@@ -353,21 +372,21 @@ export interface EmployeeAppealListResp {
 }
 
 export interface EmployeeAppealOption {
-  resultId: number
+  resultId: string
   label: string
   status: EmployeeResultStatus
   deadline: string
 }
 
 export interface CreateEmployeeAppealReq {
-  relatedResultId?: number
+  relatedResultId?: string
   title: string
   reason: string
 }
 
 export interface CreateEmployeePlanAdjustmentReq {
   planType: 'MONTH'
-  planId: number
+  planId: string
   adjustmentType: 'PAUSE' | 'CANCEL'
   reason: string
   impactText?: string
@@ -384,15 +403,15 @@ export async function getEmployeeDashboardApi(month: string) {
   return http.get<unknown, EmployeeDashboardResp>('/employee/dashboard', { params: { month } })
 }
 
-export async function getEmployeeMonthPlanDetailApi(id: number) {
+export async function getEmployeeMonthPlanDetailApi(id: string) {
   return http.get<unknown, EmployeeMonthPlanDetailResp>(`/employee/month-plans/${id}`)
 }
 
-export async function getEmployeeMonthPlanTemplatePreviewApi(id: number) {
+export async function getEmployeeMonthPlanTemplatePreviewApi(id: string) {
   return http.get<unknown, EmployeeMonthPlanTemplatePreviewResp>(`/employee/month-plans/${id}/template-preview`)
 }
 
-export async function downloadEmployeeMonthPlanTemplateApi(id: number) {
+export async function downloadEmployeeMonthPlanTemplateApi(id: string) {
   return http.get<unknown, Blob>(`/employee/month-plans/${id}/template-download`, { responseType: 'blob' })
 }
 
@@ -400,23 +419,23 @@ export async function createEmployeeMonthPlanDraftApi(payload: SaveMonthPlanDraf
   return http.post<SaveMonthPlanDraftReq, EmployeeMonthPlanDetailResp>('/employee/month-plans/draft', payload)
 }
 
-export async function saveEmployeeMonthPlanDraftApi(id: number, payload: SaveMonthPlanDraftReq) {
+export async function saveEmployeeMonthPlanDraftApi(id: string, payload: SaveMonthPlanDraftReq) {
   return http.post<SaveMonthPlanDraftReq, EmployeeMonthPlanDetailResp>(`/employee/month-plans/${id}/draft`, payload)
 }
 
-export async function clearEmployeeMonthPlanDraftApi(id: number) {
+export async function clearEmployeeMonthPlanDraftApi(id: string) {
   return http.post<undefined, EmployeeMonthPlanDraftClearResp>(`/employee/month-plans/${id}/draft/clear`)
 }
 
-export async function submitEmployeeMonthPlanApi(id: number) {
+export async function submitEmployeeMonthPlanApi(id: string) {
   return http.post<undefined, EmployeeMonthPlanSubmitResp>(`/employee/month-plans/${id}/submit`)
 }
 
-export async function withdrawEmployeeMonthPlanApi(id: number) {
+export async function withdrawEmployeeMonthPlanApi(id: string) {
   return http.post<undefined, EmployeeMonthPlanSubmitResp>(`/employee/month-plans/${id}/withdraw`)
 }
 
-export async function deleteEmployeeMonthPlanItemApi(planId: number, itemId: number) {
+export async function deleteEmployeeMonthPlanItemApi(planId: string, itemId: string) {
   return http.delete<unknown, void>(`/employee/month-plans/${planId}/items/${itemId}`)
 }
 
@@ -432,11 +451,11 @@ export async function submitEmployeeDayPlanApi(payload: SubmitDayPlanReq) {
   return http.post<SubmitDayPlanReq, EmployeeDayPlanSubmitResp>('/employee/day-plans/submit', payload)
 }
 
-export async function deleteEmployeeDayPlanDraftApi(id: number) {
+export async function deleteEmployeeDayPlanDraftApi(id: string) {
   return http.delete<unknown, void>(`/employee/day-plans/${id}`)
 }
 
-export async function withdrawEmployeeDayPlanApi(id: number) {
+export async function withdrawEmployeeDayPlanApi(id: string) {
   return http.post<undefined, EmployeeDayPlanSubmitResp>(`/employee/day-plans/${id}/withdraw`)
 }
 
@@ -444,11 +463,11 @@ export async function getEmployeeResultSubmitOptionsApi() {
   return http.get<unknown, EmployeeResultSubmitOptionsResp>('/employee/results/submit/options')
 }
 
-export async function getEmployeeResultDetailApi(id: number) {
+export async function getEmployeeResultDetailApi(id: string) {
   return http.get<unknown, EmployeeResultDetailResp>(`/employee/results/${id}`)
 }
 
-export async function downloadEmployeeResultEvidenceApi(resultId: number, evidenceId: number) {
+export async function downloadEmployeeResultEvidenceApi(resultId: string, evidenceId: string) {
   return http.get<unknown, Blob>(`/employee/results/${resultId}/evidence/${evidenceId}`, { responseType: 'blob' })
 }
 
@@ -459,8 +478,8 @@ export async function submitEmployeeResultApi(payload: FormData | SubmitEmployee
 }
 
 export async function downloadEmployeeResultExcelApi(payload: {
-  monthPlanId: number
-  rows: Array<{ monthPlanItemId: number; completionStatus: string; remark: string; personalPerformance: number | null }>
+  monthPlanId: string
+  rows: Array<{ monthPlanItemId: string; completionStatus: string; remark: string; personalPerformance: number | null }>
 }) {
   return http.post<typeof payload, Blob>('/employee/results/submit/excel', payload, { responseType: 'blob' })
 }
@@ -477,7 +496,7 @@ export async function getEmployeeAppealOptionsApi() {
   return http.get<unknown, EmployeeAppealOption[]>('/employee/appeals/options')
 }
 
-export async function downloadEmployeeAppealPackageApi(id: number) {
+export async function downloadEmployeeAppealPackageApi(id: string) {
   return http.get<unknown, Blob>(`/employee/appeals/${id}/package`, { responseType: 'blob' })
 }
 
@@ -486,7 +505,7 @@ export async function createEmployeeAppealApi(payload: CreateEmployeeAppealReq) 
 }
 
 export async function createEmployeePlanAdjustmentApi(payload: CreateEmployeePlanAdjustmentReq) {
-  return http.post<CreateEmployeePlanAdjustmentReq, { id: number; adjustmentNo: string; status: string }>('/employee/plan-adjustments', payload)
+  return http.post<CreateEmployeePlanAdjustmentReq, { id: string; adjustmentNo: string; status: string }>('/employee/plan-adjustments', payload)
 }
 
 export async function createEmployeeEvidenceExportApi(payload: { periodType: EmployeeEvidencePeriodType; formats: string[]; includeEvidence: boolean }) {

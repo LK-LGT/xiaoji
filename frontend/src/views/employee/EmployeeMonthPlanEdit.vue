@@ -262,7 +262,8 @@ import PlanDraftVersionDrawer from './components/PlanDraftVersionDrawer.vue'
 import { listPlanDraftVersionsApi, type PlanDraftVersionSummary } from '@/api/planDraftVersions'
 
 interface EditableMonthPlanItem extends Omit<AiPlanItem, 'performanceWeight' | 'estimatedValue'> {
-  id?: number
+  /** BUG-R6-14：月计划条目 ID 是字符串主键。 */
+  id?: string
   uiKey: string
   performanceWeight: number | null
   estimatedValue: number | null
@@ -346,7 +347,7 @@ const optimizableFields: Array<{ key: OptimizableField; label: string }> = [
 const hasOptimizeChanges = computed(() => optimizePreviewFields.value.some((field) => field.changed))
 
 const form = reactive({
-  id: null as number | null,
+  id: null as string | null,
   planMonth: readInitialPlanMonth(),
   employeeName: '',
   departmentName: '',
@@ -356,7 +357,7 @@ const form = reactive({
 })
 const expandedTaskKeys = reactive(new Set<string>())
 let nextLocalTaskKey = 0
-const createTaskUiKey = (id?: number) => id ? `saved-${id}` : `local-${++nextLocalTaskKey}`
+const createTaskUiKey = (id?: string) => id ? `saved-${id}` : `local-${++nextLocalTaskKey}`
 
 function editableNumber(value: unknown) {
   const number = Number(value ?? 0)
@@ -473,8 +474,9 @@ function defaultEstimatedEndDate() {
 
 function getPlanId() {
   const rawId = route.params.id ?? route.query.id
-  const id = Number(Array.isArray(rawId) ? rawId[0] : rawId)
-  return Number.isFinite(id) && id > 0 ? id : null
+  // BUG-R6-14: plan id is a UUID/hex string primary key, never a number.
+  const id = String(Array.isArray(rawId) ? rawId[0] : rawId ?? '').trim()
+  return id ? id : null
 }
 
 async function applyDetail(detail: EmployeeMonthPlanDetailResp | EmployeeMonthPlanDraftClearResp, preserveExpansion = false) {
@@ -977,8 +979,8 @@ function restoreDraftVersion(snapshot: Record<string, unknown>, version: PlanDra
   form.items = items.map((raw) => {
     const item = raw as Partial<EditableMonthPlanItem>
     return {
-      id: typeof item.id === 'number' ? item.id : undefined,
-      uiKey: createTaskUiKey(typeof item.id === 'number' ? item.id : undefined),
+      id: typeof item.id === 'string' ? item.id : undefined,
+      uiKey: createTaskUiKey(typeof item.id === 'string' ? item.id : undefined),
       workType: item.workType ?? 'UNKNOWN',
       taskName: String(item.taskName ?? ''),
       taskContent: String(item.taskContent ?? ''),

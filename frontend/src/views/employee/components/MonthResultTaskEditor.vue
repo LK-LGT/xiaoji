@@ -87,6 +87,7 @@ import { ElMessage } from 'element-plus'
 import { statusMeta, type ResultTaskDraft, type ResultWorkbenchTask } from '../resultWorkbenchModel'
 import ResultStatusTag from '@/components/results/ResultStatusTag.vue'
 import MonthPlanTaskContentView from '@/components/MonthPlanTaskContentView.vue'
+import { buildFileAcceptAttribute, isAcceptedFile } from '@/utils/fileUpload'
 
 const props = defineProps<{
   task: ResultWorkbenchTask
@@ -98,7 +99,7 @@ const emit = defineEmits<{ dirty: [] }>()
 const errors = reactive({ completionStatus: '', description: '', remark: '', personalPerformance: '' })
 
 const dateRange = computed(() => [props.task.startDate, props.task.endDate].filter(Boolean).join(' 至 ') || props.task.periodLabel)
-const fileAccept = computed(() => props.acceptedFileTypes.map((type) => `.${type.toLowerCase()}`).join(','))
+const fileAccept = computed(() => buildFileAcceptAttribute(props.acceptedFileTypes))
 
 function markDirty() {
   props.draft.dirty = true
@@ -110,8 +111,8 @@ function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0] || null
   if (!file) return
-  const extension = file.name.split('.').pop()?.toLowerCase() || ''
-  if (!props.acceptedFileTypes.map((item) => item.toLowerCase()).includes(extension)) {
+  // ⚠️ BUG-R6-19：按扩展名统一归一后再比对（MIME 输入也能正确处理）。
+  if (!isAcceptedFile(file.name, props.acceptedFileTypes)) {
     ElMessage.warning('文件类型不支持')
     input.value = ''
     return

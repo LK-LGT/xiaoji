@@ -125,7 +125,8 @@ async def get_employee_result_submit_options(
         {
             "monthPlanOptions": month_plan_options,
             "monthPlanItemOptions": month_plan_item_options,
-            "acceptedFileTypes": list(result_submission.ACCEPTED_FILE_TYPES),
+            "acceptedFileTypes": list(result_submission.ACCEPTED_FILE_EXTENSIONS),
+            "acceptedFileMimes": list(result_submission.ACCEPTED_FILE_TYPES),
             "maxFileSizeMb": result_submission.MAX_FILE_SIZE_MB,
             "resultVersions": result_versions,
         }
@@ -167,7 +168,7 @@ async def submit_employee_result(
     )
     return _ok(
         {
-            "id": result_submission._as_int(result.id),
+            "id": result_submission._as_id(result.id),
             "versionNo": str(result.version_no),
             "status": result.status,
             "submittedAt": result_submission._iso(result.submitted_at) or "",
@@ -267,7 +268,8 @@ async def get_week_result_submit_options(
     return _ok(
         {
             "plans": options,
-            "acceptedFileTypes": list(result_submission.ACCEPTED_FILE_TYPES),
+            "acceptedFileTypes": list(result_submission.ACCEPTED_FILE_EXTENSIONS),
+            "acceptedFileMimes": list(result_submission.ACCEPTED_FILE_TYPES),
             "maxFileSizeMb": result_submission.MAX_FILE_SIZE_MB,
         }
     )
@@ -405,10 +407,10 @@ def _period_key_of(db: Session, row: Any) -> str:
 def _serialize_draft_version(db: Session, row: Any) -> dict:
     """`PlanDraftVersionDetail`。"""
     return {
-        "id": result_submission._as_int(row.id),
+        "id": result_submission._as_id(row.id),
         "planType": row.plan_type,
         "periodKey": _period_key_of(db, row),
-        "planId": result_submission._as_int(row.plan_id),
+        "planId": result_submission._as_id(row.plan_id),
         "versionNo": row.version_no,
         "sourceType": row.source_type,
         "snapshotSchemaVersion": row.snapshot_schema_version,

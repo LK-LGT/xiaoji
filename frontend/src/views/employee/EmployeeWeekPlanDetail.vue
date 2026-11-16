@@ -37,7 +37,8 @@ import { countWeekWorkPoints, mergeWeekPlanFields } from '@/utils/weekPlanDispla
 import PlanAiReviewCell from '@/components/PlanAiReviewCell.vue'
 import PlanAiReviewDrawer from '@/components/PlanAiReviewDrawer.vue'
 import { useAiReviewCollection } from '@/composables/useAiReviewCollection'
-const route = useRoute(); const router = useRouter(); const id = Number(route.params.id); const loading = ref(false); const errorMessage = ref(''); const detail = ref<WeekPlanDetail | null>(null)
+const route = useRoute(); const router = useRouter(); // BUG-R6-14：周计划主键是字符串 UUID，禁止 `Number(...)`。
+const id = String(route.params.id ?? '').trim(); const loading = ref(false); const errorMessage = ref(''); const detail = ref<WeekPlanDetail | null>(null)
 const withdrawing = ref(false)
 const aiReviews = useAiReviewCollection('WEEK_PLAN')
 const aiReviewDrawerVisible = ref(false)

@@ -78,8 +78,9 @@ const RESULT_COMPLETION_RATE = 100
 
 const props = defineProps<{
   archive: MonthResultArchive
-  details: Record<number, EmployeeResultDetailResp>
-  failedTaskIds: number[]
+  /** BUG-R6-14：任务 ID 是字符串主键，故用 `Record<string, ...>`。 */
+  details: Record<string, EmployeeResultDetailResp>
+  failedTaskIds: string[]
   printedAt: string
 }>()
 

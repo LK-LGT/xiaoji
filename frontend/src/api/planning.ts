@@ -4,17 +4,19 @@ export type PlanStatus = 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED' | 'PAUSED
 export type ResultStatus = 'DRAFT' | 'PENDING' | 'CONFIRMED' | 'REJECTED'
 
 export interface MonthPlan {
-  id: number
+  /** BUG-R6-14：主键为字符串（UUID/十六进制），不可转数字。 */
+  id: string
   title: string
   planMonth: string
   completionRate?: number
   versionNo?: string
-  ownerUserId: number
+  /** BUG-R6-14：员工 ID 为字符串（飞书 open_id / user_id）。 */
+  ownerUserId: string
   /** 部门 ID（飞书 department_id，string）。 */
   deptId?: string
   status: PlanStatus
   submitAt?: string
-  approverId?: number
+  approverId?: string
   approveAt?: string
   approvalComment?: string
   reviewStatus?: string
@@ -23,17 +25,18 @@ export interface MonthPlan {
 }
 
 export interface DayPlan {
-  id: number
+  /** BUG-R6-14：主键为字符串（UUID/十六进制），不可转数字。 */
+  id: string
   title: string
   planDate: string
   content: string
-  monthPlanId?: number
-  ownerUserId: number
+  monthPlanId?: string
+  ownerUserId: string
   /** 部门 ID（飞书 department_id，string）。 */
   deptId?: string
   status: PlanStatus
   submitAt?: string
-  approverId?: number
+  approverId?: string
   approveAt?: string
   approvalComment?: string
   departmentReviewComment?: string
@@ -43,20 +46,21 @@ export interface DayPlan {
 }
 
 export interface ResultItem {
-  id: number
+  /** BUG-R6-14：主键为字符串（UUID/十六进制），不可转数字。 */
+  id: string
   title: string
   resultDate: string
   content: string
   planType: 'DAY' | 'MONTH' | 'TEMP'
-  planId?: number
+  planId?: string
   temporary: boolean
   temporaryReason?: string
-  ownerUserId: number
+  ownerUserId: string
   /** 部门 ID（飞书 department_id，string）。 */
   deptId?: string
   status: ResultStatus
   submitAt?: string
-  confirmerId?: number
+  confirmerId?: string
   confirmAt?: string
   confirmComment?: string
   leaderSuggestion?: string

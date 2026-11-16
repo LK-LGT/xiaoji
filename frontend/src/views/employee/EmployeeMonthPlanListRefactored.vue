@@ -223,7 +223,8 @@ const resultStatusMap = {
 } as const
 
 type MonthCard = {
-  id?: number
+  /** BUG-R6-14：主键为字符串（UUID/十六进制）。 */
+  id?: string
   month: string
   title: string
   isCurrent: boolean
@@ -298,7 +299,7 @@ function getPlanStatus(status: EmployeePlanStatus) { return planStatusMap[status
 function getResultStatus(status: EmployeeResultStatus) { return resultStatusMap[status] }
 function canEdit(status: EmployeePlanStatus) { return status === 'draft' || status === 'rejected' }
 function selectMonth(month: string) { currentMonth.value = month }
-function goEdit(id?: number) { router.push(editPath(id)) }
+function goEdit(id?: string) { router.push(editPath(id)) }
 function goCreateSelectedMonth() {
   if (selectedPlan.value) return goEdit(selectedPlan.value.id)
   router.push({ path: editPath(), query: { planMonth: currentMonth.value } })
@@ -318,7 +319,7 @@ function canSubmitTaskResult(item: TaskRow) {
     && item.status === 'approved'
     && (!item.latestResult || item.latestResult.status === 'rejected')
 }
-function goResultSubmit(itemId: number) {
+function goResultSubmit(itemId: string) {
   if (!selectedPlanDetail.value) return
   router.push({
     path: `/employee/results/workspace/MONTH/${selectedPlanDetail.value.id}`,

@@ -145,7 +145,8 @@ const validationFeedbackVisible = ref(false)
 const dayCardExpanded = ref(false)
 const taskViewMode = ref<TaskViewMode>(readInitialTaskViewMode())
 const versionDrawerVisible = ref(false); const latestDraftVersionNo = ref<number>(); const restoredFromVersionId = ref<number>(); const restoredVersionNo = ref<number>()
-const form = reactive({ id: 0, planDate: props.date, orgName: '', relatedWeekPlanItemIds: [] as number[], content: '', remark: '', status: 'draft' as EmployeePlanStatus, weekPlanItemOptions: [] as EmployeeWeekPlanItemOption[], legacyMonthPlanItem: null as EmployeeLegacyMonthPlanItem | null, reviewStatus: 'PENDING_COMMENT', riskLevel: 'LOW', leaderComment: '', reviewedAt: '', departmentComment: '', departmentReviewedAt: '', calendarRule: null as EmployeeWorkdayCalendarItem | null })
+// BUG-R6-14：日计划 / 周计划条目主键均为字符串 UUID。
+const form = reactive({ id: '', planDate: props.date, orgName: '', relatedWeekPlanItemIds: [] as string[], content: '', remark: '', status: 'draft' as EmployeePlanStatus, weekPlanItemOptions: [] as EmployeeWeekPlanItemOption[], legacyMonthPlanItem: null as EmployeeLegacyMonthPlanItem | null, reviewStatus: 'PENDING_COMMENT', riskLevel: 'LOW', leaderComment: '', reviewedAt: '', departmentComment: '', departmentReviewedAt: '', calendarRule: null as EmployeeWorkdayCalendarItem | null })
 const planStatusMap = { draft: { label: '草稿', type: 'info' }, submitted: { label: '已提交', type: 'warning' }, approved: { label: '已通过', type: 'success' }, rejected: { label: '已驳回', type: 'danger' }, confirmed: { label: '已确认', type: 'success' }, paused: { label: '已暂停', type: 'warning' }, canceled: { label: '已撤销', type: 'danger' }, archived: { label: '已归档', type: 'info' } } as const
 const editable = computed(() => form.status === 'draft' || form.status === 'rejected')
 const isLeaderRoute = computed(() => route.path.startsWith('/leader/'))
@@ -168,7 +169,7 @@ const hasDraftContent = computed(() => Boolean(form.content.trim() || form.relat
 function shortDate(value: string) { return value ? value.slice(5).replace('-', '/') : '--' }
 function weekdayLabel(value: string) { if (!value) return ''; return ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][new Date(`${value}T00:00:00`).getDay()] }
 function formatTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 16) : '' }
-function normalizeForm() { return JSON.stringify({ planDate: form.planDate, relatedWeekPlanItemIds: [...form.relatedWeekPlanItemIds].sort((a, b) => a - b), content: form.content.trim() }) }
+function normalizeForm() { return JSON.stringify({ planDate: form.planDate, relatedWeekPlanItemIds: [...form.relatedWeekPlanItemIds].sort(), content: form.content.trim() }) }
 function readInitialTaskViewMode(): TaskViewMode { try { const saved = window.localStorage.getItem('day-plan-task-view'); return saved === 'cards' ? 'cards' : 'table' } catch { return 'table' } }
 function changeTaskViewMode(value: string | number | boolean | undefined) { const mode: TaskViewMode = value === 'cards' ? 'cards' : 'table'; taskViewMode.value = mode; try { window.localStorage.setItem('day-plan-task-view', mode) } catch { /* preference persistence is optional */ } }
 function applyAiDraft(value: WeekPlanAiItem[] | DayPlanAiForm) { if (Array.isArray(value)) return; form.content = value.content; form.remark = ''; if (taskViewMode.value === 'cards') dayCardExpanded.value = true }
@@ -229,7 +230,7 @@ async function clearDraft() {
   try {
     if (form.id && form.status === 'draft') {
       await deleteEmployeeDayPlanDraftApi(form.id)
-      form.id = 0
+      form.id = ''
       form.relatedWeekPlanItemIds = []
       form.content = ''
       form.remark = ''
@@ -262,7 +263,7 @@ async function clearDraft() {
     clearing.value = false
   }
 }
-function restoreDraftVersion(snapshot: Record<string, unknown>, version: PlanDraftVersionSummary) { form.relatedWeekPlanItemIds = Array.isArray(snapshot.relatedWeekPlanItemIds) ? snapshot.relatedWeekPlanItemIds.map(Number).filter(Number.isFinite) : []; form.content = String(snapshot.content ?? ''); form.remark = ''; restoredFromVersionId.value = version.id; restoredVersionNo.value = version.versionNo; ElMessage.warning(`历史版本 V${version.versionNo} 已恢复，请确认后手动保存`) }
+function restoreDraftVersion(snapshot: Record<string, unknown>, version: PlanDraftVersionSummary) { form.relatedWeekPlanItemIds = Array.isArray(snapshot.relatedWeekPlanItemIds) ? snapshot.relatedWeekPlanItemIds.map((item) => String(item).trim()).filter(Boolean) : []; form.content = String(snapshot.content ?? ''); form.remark = ''; restoredFromVersionId.value = version.id; restoredVersionNo.value = version.versionNo; ElMessage.warning(`历史版本 V${version.versionNo} 已恢复，请确认后手动保存`) }
 async function refreshLatestDraftVersion() { if (!form.planDate) return; const versions = await listPlanDraftVersionsApi('DAY', form.planDate); latestDraftVersionNo.value = versions[0]?.versionNo }
 async function withdrawPlan() { if (!form.id || form.status !== 'submitted' || withdrawing.value) return; try { await ElMessageBox.confirm('撤回后日计划恢复为草稿，可修改后重新提交。确认撤回？', '撤回日计划', { type: 'warning' }) } catch { return } withdrawing.value = true; errorMessage.value = ''; try { await withdrawEmployeeDayPlanApi(form.id); ElMessage.success('日计划已撤回为草稿'); await loadDetail(); emit('changed') } catch (error) { errorMessage.value = error instanceof Error ? error.message : '撤回日计划失败，请稍后重试'; await loadDetail() } finally { withdrawing.value = false } }
 

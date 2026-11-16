@@ -128,10 +128,10 @@ const errorMessage = ref('')
 const rows = ref<EmployeeAppealItem[]>([])
 const dialogVisible = ref(false)
 const submitting = ref(false)
-const downloadingId = ref<number | null>(null)
+const downloadingId = ref<string | null>(null)
 const appealOptions = ref<EmployeeAppealOption[]>([])
 const form = reactive({
-  relatedResultId: null as number | null,
+  relatedResultId: null as string | null,
   title: '',
   reason: '',
 })

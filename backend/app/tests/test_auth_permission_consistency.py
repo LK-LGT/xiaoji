@@ -194,3 +194,38 @@ def test_employee_still_denied_on_feishu_sync(client_with_org: TestClient) -> No
     assert resp.status_code == 403, (
         f"普通员工访问飞书同步端点应 403，实际 {resp.status_code}"
     )
+
+
+def test_login_still_works_after_token_version_bump(client_with_org: TestClient) -> None:
+    """token_version 被递增后，测试账号必须仍能登录并通过鉴权。
+
+    回归点（同步验证时发现）：
+    依赖层用 ``payload["ver"] == employee.token_version`` 校验 token，
+    不一致直接 401。而离职 / 停用 / 改密都会递增 ``token_version``。
+    过去测试账号登录签发 token 时**漏传**了当前版本（默认 1），
+    于是该员工一旦被递增过版本（如组织同步把其标记为离职又复职），
+    就**再也登不进来**，且没有任何报错提示 —— 直接 401。
+
+    这里模拟「版本被递增到 3」的场景，断言仍能正常登录使用。
+    """
+    from backend.app.core.db import get_db
+
+    session_gen = app.dependency_overrides[get_db]
+    db = next(session_gen())
+
+    employee = db.get(Employee, ADMIN_ID)
+    assert employee is not None
+    employee.token_version = 3
+    db.commit()
+
+    data = _login(client_with_org, "admin", "admin123")
+    headers = {"Authorization": f"Bearer {data['accessToken']}"}
+
+    resp = client_with_org.get("/v1/auth/me", headers=headers)
+    assert resp.status_code == 200, (
+        f"token_version 递增后应仍能登录，实际 {resp.status_code} —— "
+        f"签发的 token 没带上当前 token_version。"
+    )
+
+    resp = client_with_org.get("/v1/feishu/sync-organization/status", headers=headers)
+    assert resp.status_code == 200, resp.text

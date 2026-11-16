@@ -648,7 +648,7 @@ async function openEvidence(row: ResultSuggestionRow) {
     if (requestId !== evidenceRequestId) return
     activeRow.value = detail
     evidenceFiles.value = detail.evidences
-    aiReview.value = await getLatestAiReviewApi('RESULT', Number(row.id))
+    aiReview.value = await getLatestAiReviewApi('RESULT', String(row.id))
   } catch (error) {
     if (requestId !== evidenceRequestId) return
     evidenceVisible.value = false

@@ -767,11 +767,13 @@ class TestPerformanceBaseline:
         
         # Act：批量创建 100 条 Record（使用现有的员工）
         records = []
-        # 使用存在的员工 ID：E001, E002, E003
-        existing_employees = ["E001", "E002", "E003"]
-        
+        # ⚠️ `uq_assessmentrecord_task_employee`（迁移 0001 已声明、ORM 这次补上）
+        #    约束「一次考核 × 一个员工只能一条 Record」。本测试循环 100 次却只用
+        #    3 个员工 → 必然撞唯一约束 IntegrityError。
+        #    这里保持「100 条」的批量规模不变，但给 100 个**不同**的员工，
+        #    让性能基准的测点（批量写入耗时）保持有效。
         for i in range(100):
-            emp_id = existing_employees[i % len(existing_employees)]
+            emp_id = f"E{i:03d}"
             record = AssessmentRecord(
                 task_id=task_id,
                 employee_id=emp_id,

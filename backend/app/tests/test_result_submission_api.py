@@ -300,6 +300,85 @@ def test_month_result_submit_options_returns_real_plans(employee_client, db, org
     assert data["maxFileSizeMb"] == result_submission.MAX_FILE_SIZE_MB
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# BUG-R6-19 回归：前后端「允许的文件类型」口径分裂
+#
+# 后端一直用 **MIME**（``application/pdf``），前端却按 **扩展名** 校验
+# （``pdf`` / ``docx`` / ``png``），且拼 ``accept`` 属性时统一加了前导点
+# → 得到 ``.application/pdf`` 这种**无效**的 accept。
+#
+# 后果：
+#   1. 文件选择器不按类型过滤；
+#   2. 前端 ``validateFile`` 拿扩展名去比 MIME 列表 →
+#      **合法 PDF 也被判「文件类型不支持」**，根本传不上去。
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_submit_options_returns_file_extensions_not_mimes(employee_client):
+    """``acceptedFileTypes`` 必须是**扩展名**，否则前端校验必然误杀。"""
+    resp = employee_client.get("/v1/employee/results/submit/options")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+
+    types = data["acceptedFileTypes"]
+    assert types == list(result_submission.ACCEPTED_FILE_EXTENSIONS)
+    # 不得出现 MIME（带斜杠）或带前导点的形式。
+    for item in types:
+        assert "/" not in item, f"acceptedFileTypes 不应包含 MIME：{item}"
+        assert not item.startswith("."), f"acceptedFileTypes 不应带前导点：{item}"
+
+    # MIME 口径单独放在 acceptedFileMimes。
+    assert data["acceptedFileMimes"] == list(result_submission.ACCEPTED_FILE_TYPES)
+
+
+def test_validate_evidence_accepts_extension_when_mime_is_wrong():
+    """浏览器给的 MIME 不可靠时，只要扩展名合法就该放行。
+
+    Windows 上 ``.docx`` 常被标成 ``application/octet-stream``，
+    只认 MIME 会误杀合法文件。
+    """
+    result_submission.validate_evidence(
+        "交付物.pdf", "application/octet-stream", 128
+    )
+    result_submission.validate_evidence(
+        "方案.docx", "application/octet-stream", 128
+    )
+    result_submission.validate_evidence(
+        "截图.png", "application/octet-stream", 128
+    )
+
+
+def test_validate_evidence_accepts_mime_when_extension_is_odd():
+    """扩展名异常但 MIME 合法时也应放行。"""
+    result_submission.validate_evidence(
+        "交付物", "application/pdf", 128
+    )
+
+
+def test_validate_evidence_rejects_unknown_type():
+    """既不在扩展名白名单、也不在 MIME 白名单 → 拒绝。"""
+    with pytest.raises(result_submission.ResultConflict):
+        result_submission.validate_evidence(
+            "恶意脚本.exe", "application/x-msdownload", 128
+        )
+    with pytest.raises(result_submission.ResultConflict):
+        result_submission.validate_evidence(
+            "网页.html", "text/html", 128
+        )
+
+
+def test_validate_evidence_rejects_oversize_and_empty():
+    """大小与空内容仍按原规则拦截。"""
+    with pytest.raises(result_submission.ResultConflict):
+        result_submission.validate_evidence("a.pdf", "application/pdf", 0)
+    with pytest.raises(result_submission.ResultConflict):
+        result_submission.validate_evidence(
+            "a.pdf",
+            "application/pdf",
+            (result_submission.MAX_FILE_SIZE_MB + 1) * 1024 * 1024,
+        )
+
+
 def test_month_result_submit_persists_result(employee_client, db, org):
     plan, item = _month_plan(db, org["a"].id)
     resp = employee_client.post(

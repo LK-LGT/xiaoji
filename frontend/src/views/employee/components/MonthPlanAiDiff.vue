@@ -63,7 +63,8 @@ import type { AiGenerateResponse, AiPlanItem, MonthPlanAiOperationMode } from '@
 type PreviewOperationMode = Exclude<MonthPlanAiOperationMode, 'AUTO' | 'CLARIFY'>
 
 export interface AiPlanDraftItem extends AiPlanItem {
-  id?: number
+  /** BUG-R6-14：月计划条目 ID 是字符串主键。 */
+  id?: string
 }
 
 const props = defineProps<{

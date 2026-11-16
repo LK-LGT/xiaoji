@@ -180,12 +180,25 @@ def _record_approval(
     return row
 
 
-def _apply_month_approval(plan: MonthPlan, approved: bool, comment: str | None) -> None:
-    """月计划审批落库：写 `approved_at` / `approval_comment`。"""
+def _apply_month_approval(
+    db: Session, plan: MonthPlan, approved: bool, comment: str | None
+) -> None:
+    """月计划审批落库：写 `approved_at` / `approval_comment`。
+
+    BUG-R6-03 配套：审批结论**级联到条目**，条目同步写入
+    ``status`` / ``approved_at`` / ``approval_comment``，
+    否则条目永远停在 ``draft``，成果上报按条目匹配时匹配不到。
+    """
     plan.status = _APPROVE_TARGET if approved else _REJECT_TARGET
     plan.approved_at = _now()
     plan.approval_comment = comment or None
     plan.version_no = planning._bump_version(plan)
+
+    now = plan.approved_at
+    for item in planning.list_month_plan_items(db, plan.id):
+        item.status = plan.status
+        item.approved_at = now
+        item.approval_comment = comment or None
 
 
 def _apply_week_approval(plan: WeekPlan, approved: bool, comment: str | None) -> None:
@@ -304,7 +317,7 @@ def list_pending_month_plans(
     if plan_month:
         stmt = stmt.where(MonthPlan.plan_month == planning.normalize_month(plan_month))
     if status:
-        stmt = stmt.where(MonthPlan.status == status)
+        stmt = stmt.where(MonthPlan.status.in_(_status_filter_values(status)))
     stmt = stmt.order_by(MonthPlan.plan_month.desc(), MonthPlan.submitted_at.desc())
 
     rows = db.execute(stmt).scalars().all()
@@ -414,7 +427,7 @@ def approve_month_plan(
     dedup_key = _build_dedup_key(
         PLAN_TYPE_MONTH, plan.id, PlanApprovalAction.APPROVE.value, plan.version_no
     )
-    _apply_month_approval(plan, approved=True, comment=comment)
+    _apply_month_approval(db, plan, approved=True, comment=comment)
     _record_approval(
         db,
         plan_type=PLAN_TYPE_MONTH,
@@ -448,7 +461,7 @@ def reject_month_plan(
     dedup_key = _build_dedup_key(
         PLAN_TYPE_MONTH, plan.id, PlanApprovalAction.REJECT.value, plan.version_no
     )
-    _apply_month_approval(plan, approved=False, comment=comment)
+    _apply_month_approval(db, plan, approved=False, comment=comment)
     _record_approval(
         db,
         plan_type=PLAN_TYPE_MONTH,
@@ -638,8 +651,8 @@ def serialize_month_plan_approval_item(
 ) -> dict[str, Any]:
     """月计划审批项 —— 对齐 `frontend/src/api/department.ts` 的 `MonthPlanApprovalItem`。
 
-    注意：前端的 `ownerId` / `orgId` 是 **number** 类型，而后端主键是 string。
-    这里统一转成 `int`，转换失败回退 0（与前端 `_empty_*` 构造器的口径一致）。
+    ⚠️ BUG-R6-06 修复：`ownerId` / `orgId` / `items[].id` 是飞书十六进制
+    主键，**原样透出字符串**（前端类型也是 `string`），不再 `int()` 强转。
     """
     owner = db.get(Employee, plan.owner_id)
     items = planning.list_month_plan_items(db, plan.id)
@@ -648,25 +661,25 @@ def serialize_month_plan_approval_item(
     return {
         "id": plan.id,
         "planNo": plan.id,
-        "ownerId": _as_int(owner.id if owner is not None else None),
+        "ownerId": _as_id(owner.id if owner is not None else None),
         "employeeNo": (owner.login_account if owner is not None else "") or "",
         "employeeName": (owner.name if owner is not None else "") or "",
-        "orgId": _as_int(owner.department_id if owner is not None else None),
+        "orgId": _as_id(owner.department_id if owner is not None else None),
         "orgName": planning.department_name_for(db, owner),
         "planYear": year,
         "planMonth": month,
         "deliverable": "；".join(i.deliverable for i in items if i.deliverable),
         "estimatedStartDate": _min_date(items, "estimated_start_date"),
         "estimatedEndDate": _max_date(items, "estimated_end_date"),
-        "status": plan.status,
+        "status": _approval_status(plan.status),
         "leaderComment": plan.approval_comment or "",
-        "aiCheckResult": "",
+        "aiCheckResult": _ai_check_result(db, "MONTH_PLAN", plan.id),
         "missingFields": _missing_fields(items),
         "submittedAt": _iso_datetime(plan.submitted_at) or "",
         "version": plan.version_no,
         "items": [
             {
-                "id": _as_int(item.id),
+                "id": _as_id(item.id),
                 "workType": item.task_type or "",
                 "taskName": item.task_name or "",
                 "taskContent": item.task_content or "",
@@ -676,7 +689,7 @@ def serialize_month_plan_approval_item(
                 "estimatedValue": item.estimated_value or 0,
                 "estimatedStartDate": _iso_date(item.estimated_start_date) or "",
                 "estimatedEndDate": _iso_date(item.estimated_end_date) or "",
-                "status": item.status or "",
+                "status": _approval_status(item.status),
             }
             for item in items
         ],
@@ -695,9 +708,9 @@ def serialize_week_plan_summary(
         "title": plan.title or "",
         "weekStart": _iso_date(plan.week_start) or "",
         "weekEnd": _iso_date(plan.week_end) or "",
-        "status": plan.status,
+        "status": _approval_status(plan.status),
         "versionNo": plan.version_no,
-        "ownerUserId": _as_int(owner.id if owner is not None else None),
+        "ownerUserId": _as_id(owner.id if owner is not None else None),
         "employeeName": (owner.name if owner is not None else "") or "",
         "departmentName": planning.department_name_for(db, owner),
         "itemCount": len(items),
@@ -718,10 +731,10 @@ def serialize_daily_review_item(
 
     return {
         "id": plan.id,
-        "ownerId": _as_int(owner.id if owner is not None else None),
+        "ownerId": _as_id(owner.id if owner is not None else None),
         "employeeNo": (owner.login_account if owner is not None else "") or "",
         "employeeName": (owner.name if owner is not None else "") or "",
-        "orgId": _as_int(owner.department_id if owner is not None else None),
+        "orgId": _as_id(owner.department_id if owner is not None else None),
         "orgName": planning.department_name_for(db, owner),
         "planDate": _iso_date(plan.plan_date) or "",
         "submittedAt": _iso_datetime(plan.submitted_at),
@@ -730,7 +743,7 @@ def serialize_daily_review_item(
         "approvalDueAt": _iso_datetime(due_at),
         "overdueApproval": overdue,
         "missingFields": [],
-        "aiCheckResult": "",
+        "aiCheckResult": _ai_check_result(db, "DAY_PLAN", plan.id),
         "reviewStatus": plan.review_status or "PENDING",
         "riskLevel": plan.risk_level or "NONE",
         "leaderComment": plan.leader_comment or "",
@@ -785,14 +798,118 @@ def count_pending_approvals(db: Session, scope: ApprovalScope) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _as_int(value: Any) -> int:
-    """把字符串主键转成 int（前端 TS 类型是 number）。失败回退 0。"""
+def _as_id(value: Any) -> str:
+    """主键 ID 原样透出（**不要**转 int）。
+
+    ⚠️ BUG-R6-06 修复：飞书主键（user_id / department_id / UUID）是
+    **十六进制字符串**，`int("2aaf32ea")` 必抛 ValueError → 旧实现
+    `_as_int` 一律回退 **0**，导致所有审批项的 `ownerId` / `orgId` /
+    `items[].id` 全部塌成 0，彼此无法区分，前端按 ID 筛选/定位全失效。
+
+    前端类型（`frontend/src/api/department.ts`）本来就是 `string`，
+    这里保持一致。
+    """
     if value is None:
-        return 0
+        return ""
+    return str(value)
+
+
+# ── 审批状态 → 前端可识别值 ──────────────────────────────────────────────
+#
+# ⚠️ BUG-R6-08 修复：后端 `PlanStatus` 是**小写**（draft / submitted /
+# approved / rejected），而前端 `performanceAdapters.ts` 的
+# `approvalStatusLabels` 键是**大写**（PENDING_APPROVAL / APPROVED /
+# REJECTED）。两边对不上 → 前端 `canProcess(row)` 恒为 false
+# → **审批按钮永久禁用**，整条审批链路走不通。
+#
+# 这里统一输出前端认识的枚举值。
+_APPROVAL_STATUS_MAP: dict[str, str] = {
+    PlanStatus.DRAFT.value: "PENDING_APPROVAL",
+    PlanStatus.SUBMITTED.value: "PENDING_APPROVAL",
+    PlanStatus.WITHDRAWN.value: "PENDING_APPROVAL",
+    PlanStatus.PENDING.value: "PENDING_APPROVAL",
+    PlanStatus.APPROVED.value: "APPROVED",
+    PlanStatus.REJECTED.value: "REJECTED",
+}
+
+
+def _approval_status(status: str | None) -> str:
+    """把内部状态映射成前端可识别的审批状态码。
+
+    未知状态原样透出（前端会回退显示原值，不会静默变成空）。
+    """
+    text = str(status or "")
+    return _APPROVAL_STATUS_MAP.get(text, text)
+
+
+# 前端筛选值 → 内部状态集合（反向映射）。
+_APPROVAL_STATUS_FILTER_MAP: dict[str, tuple[str, ...]] = {
+    "PENDING_APPROVAL": (
+        PlanStatus.DRAFT.value,
+        PlanStatus.SUBMITTED.value,
+        PlanStatus.WITHDRAWN.value,
+        PlanStatus.PENDING.value,
+    ),
+    "APPROVED": (PlanStatus.APPROVED.value,),
+    "REJECTED": (PlanStatus.REJECTED.value,),
+}
+
+
+def _status_filter_values(status: str | None) -> tuple[str, ...]:
+    """把前端的状态筛选值翻译成内部状态集合。
+
+    ⚠️ BUG-R6-13 修复：前端 `approvalStatusCodes` 发的是大写
+    （`PENDING_APPROVAL` / `APPROVED` / `REJECTED`），而后端 `MonthPlan.status`
+    存的是小写（`draft` / `submitted` / `approved` / `rejected`）。
+    直接 `==` 比较 → 永远查不到任何行，筛选功能形同虚设。
+    """
+    text = str(status or "").strip()
+    if not text:
+        return ()
+    mapped = _APPROVAL_STATUS_FILTER_MAP.get(text.upper())
+    if mapped is not None:
+        return mapped
+    # 未知筛选值：原样比较，兼容直接传内部状态
+    return (text,)
+
+
+# ── AI 复核结果 ─────────────────────────────────────────────────────────
+#
+# ⚠️ BUG-R6-10 修复：原实现硬编码 `"aiCheckResult": ""`，而前端
+# `canApprove()` 要求 `row.aiCheck === '正常'`（由 `aiCheckLabels['NORMAL']`
+# 映射而来）。空串既匹配不上 `NORMAL`，又让审批按钮永久禁用。
+#
+# 这里改为读取 `ai_review` 表里该业务对象的最近一次复核记录，
+# 并按前端标签表的键输出（NORMAL / NOT_RUN / UNKNOWN / MEDIUM / HIGH）。
+_AI_CHECK_NOT_RUN = "NOT_RUN"
+
+
+def _ai_check_result(db: Session, biz_type: str, biz_id: str) -> str:
+    """取该业务对象最近一次 AI 复核的结论（前端 `aiCheckLabels` 的键）。
+
+    - 无复核记录 → `NOT_RUN`（AI 未执行）
+    - 复核记录存在 → 由 `overall_risk` 映射：
+      `LOW` → `NORMAL`，`MEDIUM` → `MEDIUM`，`HIGH` → `HIGH`
+    """
     try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return 0
+        from . import ai_service
+
+        reviews = ai_service.list_reviews(
+            db, biz_type=biz_type, biz_id=str(biz_id), limit=1
+        )
+    except Exception:  # pragma: no cover - 复核表不可用时不应阻断审批列表
+        logger.warning("读取 AI 复核记录失败 biz_type=%s biz_id=%s", biz_type, biz_id)
+        return _AI_CHECK_NOT_RUN
+
+    if not reviews:
+        return _AI_CHECK_NOT_RUN
+
+    risk = str(reviews[0].overall_risk or "").upper()
+    if risk == "LOW":
+        return "NORMAL"
+    if risk in ("MEDIUM", "HIGH"):
+        return risk
+    return "UNKNOWN"
 
 
 def _split_plan_month(plan_month: str) -> tuple[int, int]:

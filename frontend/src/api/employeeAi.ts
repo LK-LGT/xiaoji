@@ -101,10 +101,10 @@ export interface AiContextResponse {
   notice: string
 }
 
-export interface PlanAiParentOption { id: number; planMonth: string; taskName: string; taskContent: string; deliverable: string }
-export interface WeekPlanAiItem { id?: number; monthPlanItemId: number | null; content: string; deliverable?: string; quality?: string; plannedFinishDate: string }
+export interface PlanAiParentOption { /** BUG-R6-14：条目主键为字符串（UUID/十六进制）。 */ id: string; planMonth: string; taskName: string; taskContent: string; deliverable: string }
+export interface WeekPlanAiItem { /** BUG-R6-14：主键为字符串（UUID/十六进制）。 */ id?: string; monthPlanItemId: string | null; content: string; deliverable?: string; quality?: string; plannedFinishDate: string }
 export interface WeekPlanAiDraft { suggestionId: string; items: WeekPlanAiItem[]; warnings: string[]; missingContext: string[]; notice: string; draftVersionId: number; draftVersionNo: number }
-export interface DayPlanAiForm { relatedWeekPlanItemIds: number[]; content: string; remark: string }
+export interface DayPlanAiForm { /** BUG-R6-14：周计划条目主键为字符串（UUID/十六进制）。 */ relatedWeekPlanItemIds: string[]; content: string; remark: string }
 export interface DayPlanAiDraft extends DayPlanAiForm { suggestionId: string; warnings: string[]; missingContext: string[]; notice: string; draftVersionId: number; draftVersionNo: number }
 
 export const getWeekPlanAiContextApi = (weekStart: string) => http.get<unknown, AiContextResponse>('/employee/ai/week-plans/context', { params: { weekStart }, timeout: AI_OPERATION_TIMEOUT_MS })

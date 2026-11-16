@@ -200,7 +200,7 @@ const weekStart = ref('')
 const status = ref<'' | 'NOT_SUBMITTED' | 'SUBMITTED' | 'APPROVED' | 'REJECTED'>('')
 const detailVisible = ref(false)
 const activeRow = ref<WeekResultApprovalItem | null>(null)
-const downloadingEvidenceId = ref<number | null>(null)
+const downloadingEvidenceId = ref<string | null>(null)
 
 function mondayOf(value: string) {
   const [year, month, day] = value.split('-').map(Number)
@@ -329,7 +329,8 @@ async function openEvidence(evidence: WeekResultEvidence) {
 
 onMounted(async () => {
   await loadRows()
-  const requestedId = Number(route.query.id || 0)
+  // BUG-R6-14：成果 ID 是字符串主键。
+  const requestedId = String(route.query.id || '')
   const requested = rows.value.find((item) => item.id === requestedId)
   if (requested) openDetail(requested)
 })

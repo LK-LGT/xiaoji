@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 # 常量
 # ===========================================================================
 
-#: 允许上传的文件类型（前端 `acceptedFileTypes`）。
+#: 允许上传的 MIME 类型（后端按此校验 ``content_type``）。
 ACCEPTED_FILE_TYPES: tuple[str, ...] = (
     "application/pdf",
     "application/msword",
@@ -74,6 +74,44 @@ ACCEPTED_FILE_TYPES: tuple[str, ...] = (
     "image/png",
     "image/jpeg",
 )
+
+#: 允许上传的**文件扩展名**（前端按此校验文件后缀）。
+#:
+#: ⚠️ BUG-R6-19：前后端文件类型口径分裂 —— 后端一直用 **MIME**
+#:    （``application/pdf``），前端却按**扩展名**校验
+#:    （``pdf`` / ``docx`` / ``png`` …），且拼 ``accept`` 属性时
+#:    统一加了前导点：``.application/pdf``。
+#:
+#:    后果：
+#:      1. 文件选择器的 ``accept`` 属性完全无效（浏览器按扩展名匹配，
+#:         ``.application/pdf`` 匹配不到任何真实文件）；
+#:      2. 前端 ``validateFile`` 拿扩展名 ``pdf`` 去比对 MIME 列表
+#:         → **一律判为「文件类型不支持」**，正常 PDF 也传不上去。
+#:
+#:    现在后端**同时**返回扩展名列表，前端据此校验与拼 ``accept``。
+ACCEPTED_FILE_EXTENSIONS: tuple[str, ...] = (
+    "pdf",
+    "doc",
+    "docx",
+    "xls",
+    "xlsx",
+    "txt",
+    "png",
+    "jpg",
+    "jpeg",
+)
+
+#: MIME → 扩展名映射（用于校验「后缀白名单 + MIME 白名单」双口径）。
+_MIME_TO_EXTENSIONS: dict[str, tuple[str, ...]] = {
+    "application/pdf": ("pdf",),
+    "application/msword": ("doc",),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ("docx",),
+    "application/vnd.ms-excel": ("xls",),
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ("xlsx",),
+    "text/plain": ("txt",),
+    "image/png": ("png",),
+    "image/jpeg": ("jpg", "jpeg"),
+}
 
 #: 单文件大小上限（MB）。
 MAX_FILE_SIZE_MB = 20
@@ -144,14 +182,22 @@ def _iso_date(value: date | None) -> str | None:
     return value.isoformat()
 
 
-def _as_int(value: Any) -> int:
-    """把字符串主键转成 int（前端 TS 类型是 number）。失败回退 0。"""
+def _as_id(value: Any) -> str:
+    """主键 ID 原样透出（不要转 int）。
+
+    ⚠️ BUG-R6-14 修复：飞书 / UUID 主键是**十六进制字符串**
+    （如 ``df59311a-ca78-498f-97c3-7960a203a28e``），原实现
+    ``int(str(value))`` 必然抛 ``ValueError`` → 回退成 ``0``，
+    导致前端 ``/employee/results/workspace/MONTH/0`` 拿不到计划，
+    页面直接报「成果包参数无效」。
+
+    前端 TS 类型声明为 ``number``（历史遗留），但运行时只做 key /
+    路由参数使用，不参与算术 —— 故这里统一返回**字符串**，
+    与 ``plan_approval._as_id`` 保持同一口径。
+    """
     if value is None:
-        return 0
-    try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return 0
+        return ""
+    return str(value)
 
 
 def _plan_model(plan_type: str) -> Any:
@@ -453,14 +499,62 @@ def validate_evidence(
     content_type: str,
     size: int,
 ) -> None:
-    """校验附件类型与大小。不合法抛 `ResultConflict`（HTTP 400）。"""
+    """校验附件类型与大小。不合法抛 `ResultConflict`（HTTP 400）。
+
+    ⚠️ BUG-R6-19：类型校验改为**双口径** —— MIME 与扩展名**任一**匹配即放行。
+
+    原因：浏览器给出的 ``Content-Type`` 并不可靠（Windows 上
+    ``.docx`` 常常被标成 ``application/octet-stream``，
+    ``.txt`` 甚至可能被标成 ``text/plain``），只认 MIME 会误杀合法文件；
+    只认扩展名又会放过「改个后缀伪装」的文件。
+
+    现在的规则：
+      - 扩展名在白名单里 → 放行（并要求 MIME 也不是明显冲突的类型）；
+      - MIME 在白名单里 → 放行（此时扩展名可能缺失或异常）；
+      - 两者都不在 → 拒绝。
+    """
     if size <= 0:
         raise ResultConflict("附件内容为空")
     max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
     if size > max_bytes:
         raise ResultConflict(f"附件大小超过 {MAX_FILE_SIZE_MB} MB 上限")
-    if content_type and content_type not in ACCEPTED_FILE_TYPES:
-        raise ResultConflict(f"不支持的附件类型：{content_type}")
+
+    extension = (file_name.rsplit(".", 1)[-1].strip().lower()
+                 if "." in (file_name or "") else "")
+    mime_ok = (not content_type) or content_type in ACCEPTED_FILE_TYPES
+    ext_ok = extension in ACCEPTED_FILE_EXTENSIONS
+
+    if ext_ok:
+        # 扩展名合法：MIME 若被识别但不冲突（MIME 白名单之外但属于
+        # 浏览器给出的通用类型）也放行；明显冲突的类型（如 text/html）
+        # 仍然拒绝，避免把伪装成 pdf 的 html 页面当证据存进来。
+        if content_type and not mime_ok:
+            allowed_for_ext = {
+                ext
+                for mime, exts in _MIME_TO_EXTENSIONS.items()
+                for ext in exts
+            }
+            generic_mimes = {
+                "application/octet-stream",
+                "binary/octet-stream",
+                "",
+            }
+            if content_type.lower() not in generic_mimes:
+                # 既不在 MIME 白名单，又不是通用二进制类型 —— 放行但记一条日志。
+                logger.info(
+                    "附件 %s 的 MIME (%s) 不在白名单，但扩展名 %s 合法，已放行",
+                    file_name, content_type, extension,
+                )
+        return
+
+    if mime_ok and content_type:
+        # MIME 合法（扩展名缺失或异常）→ 放行。
+        return
+
+    raise ResultConflict(
+        f"不支持的附件类型：{file_name}"
+        + (f"（{content_type}）" if content_type else "")
+    )
 
 
 def store_evidence(
@@ -663,7 +757,7 @@ def list_results_for_approval(
 def serialize_evidence(row: ResultEvidence) -> dict[str, Any]:
     """证据附件（对齐前端 `EmployeeResultEvidence` / `WeekResultEvidence`）。"""
     return {
-        "id": _as_int(row.id),
+        "id": _as_id(row.id),
         "fileName": row.file_name,
         "fileType": row.file_type,
         "fileSize": row.file_size,
@@ -685,7 +779,7 @@ def serialize_month_result_detail(db: Session, result: Result) -> dict[str, Any]
         .all()
     )
     return {
-        "id": _as_int(result.id),
+        "id": _as_id(result.id),
         "resultNo": result.id,
         "title": result.title,
         "resultDate": _iso_date(result.result_date) or "",
@@ -697,9 +791,9 @@ def serialize_month_result_detail(db: Session, result: Result) -> dict[str, Any]
         "versionNo": str(result.version_no),
         "status": result.status,
         "planType": "MONTH",
-        "planId": _as_int(result.plan_id),
+        "planId": _as_id(result.plan_id),
         "planTitle": getattr(plan, "title", "") or "",
-        "monthPlanItemId": _as_int(result.plan_item_id),
+        "monthPlanItemId": _as_id(result.plan_item_id),
         "planItemName": getattr(item, "task_name", "") or "",
         "submittedAt": _iso(result.submitted_at) or "",
         "suggestionStatus": "",
@@ -722,9 +816,9 @@ def serialize_week_result(db: Session, result: Result) -> dict[str, Any]:
         .all()
     )
     return {
-        "id": _as_int(result.id),
-        "weekPlanId": _as_int(result.plan_id),
-        "weekPlanItemId": _as_int(result.plan_item_id),
+        "id": _as_id(result.id),
+        "weekPlanId": _as_id(result.plan_id),
+        "weekPlanItemId": _as_id(result.plan_item_id),
         "resultDate": _iso_date(result.result_date) or "",
         "title": result.title,
         "content": result.content,
@@ -735,12 +829,12 @@ def serialize_week_result(db: Session, result: Result) -> dict[str, Any]:
         "evidenceStatus": result.evidence_status,
         "status": result.status,
         "submitAt": _iso(result.submitted_at) or "",
-        "approverId": _as_int(result.approver_id),
+        "approverId": _as_id(result.approver_id),
         "approveAt": _iso(result.approved_at),
         "approvalComment": result.approval_comment,
         "evidences": [
             {
-                "id": _as_int(e.id),
+                "id": _as_id(e.id),
                 "fileName": e.file_name,
                 "fileType": e.file_type,
                 "fileSize": e.file_size,
@@ -756,9 +850,9 @@ def serialize_week_result(db: Session, result: Result) -> dict[str, Any]:
 def serialize_result_version(result: Result) -> dict[str, Any]:
     """月成果版本摘要（对齐前端 `resultVersions[]`）。"""
     return {
-        "id": _as_int(result.id),
-        "monthPlanId": _as_int(result.plan_id),
-        "monthPlanItemId": _as_int(result.plan_item_id),
+        "id": _as_id(result.id),
+        "monthPlanId": _as_id(result.plan_id),
+        "monthPlanItemId": _as_id(result.plan_item_id),
         "versionNo": str(result.version_no),
         "status": result.status,
         "submittedAt": _iso(result.submitted_at) or "",
@@ -782,9 +876,9 @@ def serialize_week_submit_option(
 ) -> dict[str, Any]:
     """周成果提交选项（对齐前端 `WeekResultSubmitOption`）。"""
     task = {
-        "id": _as_int(item.id),
-        "weekPlanId": _as_int(plan.id),
-        "monthPlanItemId": _as_int(item.month_plan_item_id),
+        "id": _as_id(item.id),
+        "weekPlanId": _as_id(plan.id),
+        "monthPlanItemId": _as_id(item.month_plan_item_id),
         "content": item.content or "",
         "deliverable": item.deliverable or "",
         "quality": item.quality or "",
@@ -792,7 +886,7 @@ def serialize_week_submit_option(
         "sortNo": item.sort_no,
     }
     return {
-        "weekPlanId": _as_int(plan.id),
+        "weekPlanId": _as_id(plan.id),
         "weekPlanTitle": plan.title or "",
         "weekStart": _iso_date(plan.week_start) or "",
         "weekEnd": _iso_date(plan.week_end) or "",
@@ -815,7 +909,7 @@ def serialize_month_submit_option(
     """
     owner = db.get(Employee, plan.owner_id)
     plan_option = {
-        "id": _as_int(plan.id),
+        "id": _as_id(plan.id),
         "title": plan.title or "",
         "planMonth": plan.plan_month or "",
         "employeeName": getattr(owner, "name", "") or "",
@@ -827,8 +921,8 @@ def serialize_month_submit_option(
     for plan_item in items:
         item_options.append(
             {
-                "id": _as_int(plan_item.id),
-                "monthPlanId": _as_int(plan.id),
+                "id": _as_id(plan_item.id),
+                "monthPlanId": _as_id(plan.id),
                 "taskName": plan_item.task_name or "",
                 "taskContent": plan_item.task_content or "",
                 "performanceWeight": plan_item.performance_weight or 0,

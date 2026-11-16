@@ -295,7 +295,7 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detailError = ref('')
 const activeDetail = ref<EmployeeResultDetailResp | null>(null)
-const downloadingEvidenceId = ref<number | null>(null)
+const downloadingEvidenceId = ref<string | null>(null)
 let detailRequestSequence = 0
 const monthPageSize = 10
 const dateRange = computed<[string, string] | null>({
@@ -326,8 +326,9 @@ const resultSummary = computed(() => ({
 const hasActiveFilters = computed(() => Boolean(query.keyword || query.status || query.startDate || query.endDate))
 type PendingSubmitTarget = {
   key: string
-  monthPlanId: number
-  monthPlanItemId: number
+  // BUG-R6-14：计划 / 条目 ID 是字符串主键。
+  monthPlanId: string
+  monthPlanItemId: string
   planTitle: string
   planMonth: string
   taskName: string
@@ -445,7 +446,7 @@ function fileSizeText(size: number) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
-async function openDetail(id: number) {
+async function openDetail(id: string) {
   const requestSequence = ++detailRequestSequence
   detailVisible.value = true
   detailLoading.value = true

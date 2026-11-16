@@ -288,6 +288,7 @@ import {
 import ResultStatusTag from '@/components/results/ResultStatusTag.vue'
 import MonthPlanTaskContentView from '@/components/MonthPlanTaskContentView.vue'
 import { saveBlob } from '@/utils/download'
+import { buildFileAcceptAttribute, isAcceptedFile } from '@/utils/fileUpload'
 
 type TaskFilter = 'all' | 'pending' | 'submitted' | 'completed'
 type WorkspaceViewMode = 'FORM' | 'SHEET'
@@ -320,7 +321,11 @@ const weekOptions = reactive<WeekResultSubmitOptions>({ plans: [], acceptedFileT
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null
 
 const packageType = computed<ResultPackageType>(() => String(route.params.type).toUpperCase() === 'WEEK' ? 'WEEK' : 'MONTH')
-const planId = computed(() => Number(route.params.planId))
+// BUG-R6-14 修复：计划主键是**十六进制 / UUID 字符串**，
+// 原实现 `Number(route.params.planId)` 对非数字串得到 NaN →
+// `Number.isInteger(NaN)` 为 false → 页面直接报「成果包参数无效」。
+// 这里原样透出字符串（路由参数本身就是字符串），不再做数值强转。
+const planId = computed(() => String(route.params.planId ?? ''))
 const activeTask = computed(() => activePackage.value?.tasks.find((task) => task.key === activeTaskKey.value) || activePackage.value?.tasks[0] || null)
 const activeDraft = computed(() => activeTask.value ? drafts[activeTask.value.key] : null)
 const printPlan = computed(() => activePackage.value?.type === 'MONTH'
@@ -388,7 +393,10 @@ function scheduleAutosave() { scheduleTaskAutosave(activeTask.value) }
 
 function sheetFileAccept(task: ResultWorkbenchTask) {
   const options = task.type === 'WEEK' ? weekOptions : monthOptions
-  return options.acceptedFileTypes.map((type) => `.${type.toLowerCase()}`).join(',')
+  // ⚠️ BUG-R6-19：后端此前返回 MIME（application/pdf），这里统一加前导点
+  //    → 得到 `.application/pdf` 这种无效的 accept 属性。
+  //    改用共享工具按扩展名归一（兼容 MIME / 扩展名两种输入）。
+  return buildFileAcceptAttribute(options.acceptedFileTypes)
 }
 
 function monthItem(task: ResultWorkbenchTask) {
@@ -437,9 +445,8 @@ function onSheetDragLeave(event: DragEvent, task: ResultWorkbenchTask) {
 async function applySheetFile(file: File | null, task: ResultWorkbenchTask, input?: HTMLInputElement) {
   if (!file || !task.editable) return
   const options = task.type === 'WEEK' ? weekOptions : monthOptions
-  const extension = file.name.split('.').pop()?.toLowerCase() || ''
-  const accepted = options.acceptedFileTypes.map((type) => type.toLowerCase())
-  if (!accepted.includes(extension)) {
+  // ⚠️ BUG-R6-19：按扩展名统一归一后再比对（MIME 输入也能正确处理）。
+  if (!isAcceptedFile(file.name, options.acceptedFileTypes)) {
     ElMessage.warning('文件类型不支持')
     if (input) input.value = ''
     return
@@ -677,20 +684,23 @@ async function printPreview() {
 function clearPrintSheet() { printVisible.value = false }
 
 async function loadWorkspace() {
-  if (!Number.isInteger(planId.value) || planId.value <= 0) { errorMessage.value = '成果包参数无效'; return }
+  // BUG-R6-14 修复：主键是字符串，不能用 `Number.isInteger` 判空。
+  if (!planId.value) { errorMessage.value = '成果包参数无效'; return }
   loading.value = true; errorMessage.value = ''
   try {
     const [months, weeks] = await Promise.all([getEmployeeResultSubmitOptionsApi(), getWeekResultSubmitOptionsApi()])
     Object.assign(monthOptions, months); Object.assign(weekOptions, weeks)
     const inferredMonth = packageType.value === 'MONTH'
-      ? months.monthPlanOptions.find((plan) => plan.id === planId.value)?.planMonth
-      : weeks.plans.find((plan) => plan.weekPlanId === planId.value)?.weekStart.slice(0, 7)
+      ? months.monthPlanOptions.find((plan) => String(plan.id) === planId.value)?.planMonth
+      : weeks.plans.find((plan) => String(plan.weekPlanId) === planId.value)?.weekStart.slice(0, 7)
     const data = buildResultWorkbench(monthOptions, weekOptions, inferredMonth || String(route.query.month || currentMonthKey()))
-    activePackage.value = data.packages.find((item) => item.type === packageType.value && item.planId === planId.value) || null
+    activePackage.value = data.packages.find((item) => item.type === packageType.value && String(item.planId) === planId.value) || null
     if (!activePackage.value) throw new Error('成果包不存在或对应计划尚未审批通过')
     for (const task of activePackage.value.tasks) drafts[task.key] = initialDraft(task)
-    const requestedTaskId = Number(route.query.taskId)
-    const selected = activePackage.value.tasks.find((task) => task.taskId === requestedTaskId)
+    // BUG-R6-14 修复：taskId 同样是字符串主键，原实现 `Number(...)` → NaN，
+    // 永远匹配不到条目。
+    const requestedTaskId = String(route.query.taskId ?? '')
+    const selected = activePackage.value.tasks.find((task) => String(task.taskId) === requestedTaskId)
       || activePackage.value.tasks.find((task) => task.status === 'REJECTED')
       || activePackage.value.tasks.find((task) => task.editable)
       || activePackage.value.tasks[0]

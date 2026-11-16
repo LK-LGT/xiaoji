@@ -287,7 +287,10 @@ onBeforeUnmount(() => {
 async function refreshHealth() {
   try {
     const health = await getHealth()
-    systemHealthy.value = health.status === 'UP'
+    // BUG-R6-15：后端 `/health` 返回 `status: "ok"`（`/v1/health` 同样返回 "ok"），
+    // 前端原先只认 "UP"，导致侧边栏常驻显示“服务连接异常”。
+    const status = String(health.status ?? '').trim().toUpperCase()
+    systemHealthy.value = status === 'OK' || status === 'UP'
   } catch {
     systemHealthy.value = false
   }

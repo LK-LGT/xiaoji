@@ -154,8 +154,10 @@ def test_pending_month_plans_returns_real_data(client, db, org):
     assert item["orgName"] == "业务部"
     assert item["planYear"] == 2026
     assert item["planMonth"] == 11
-    assert item["status"] == PlanStatus.SUBMITTED.value
-    assert isinstance(item["ownerId"], int)
+    assert item["status"] == "PENDING_APPROVAL"
+    # ⚠️ BUG-R6-06：主键是飞书十六进制字符串，原样透出（前端类型也是 string）。
+    assert isinstance(item["ownerId"], str)
+    assert item["ownerId"] == "E_A"
     assert len(item["items"]) == 1
 
 

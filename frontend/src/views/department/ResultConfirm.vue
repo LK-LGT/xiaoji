@@ -411,7 +411,7 @@ async function openDetailById(id: string) {
     const detail = mapResultConfirm(await getResultConfirmApi(id))
     if (requestId !== detailRequestId) return
     activeRow.value = detail
-    aiReview.value = await getLatestAiReviewApi('RESULT', Number(id))
+    aiReview.value = await getLatestAiReviewApi('RESULT', String(id))
   } catch (error) {
     if (requestId !== detailRequestId) return
     detailVisible.value = false

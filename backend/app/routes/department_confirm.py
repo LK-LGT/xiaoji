@@ -174,7 +174,7 @@ def _serialize_approval_item(
         rows = db.query(ResultEvidence).filter(ResultEvidence.result_id == result.id).all()
         evidences = [
             {
-                "id": result_submission._as_int(e.id),
+                "id": result_submission._as_id(e.id),
                 "fileName": e.file_name,
                 "fileType": e.file_type,
                 "fileSize": e.file_size,
@@ -187,9 +187,9 @@ def _serialize_approval_item(
 
     dept = getattr(owner, "department", None)
     return {
-        "id": result_submission._as_int(result.id) if result else 0,
-        "weekPlanId": result_submission._as_int(plan.id),
-        "ownerUserId": result_submission._as_int(owner.id),
+        "id": result_submission._as_id(result.id) if result else "",
+        "weekPlanId": result_submission._as_id(plan.id),
+        "ownerUserId": result_submission._as_id(owner.id),
         "employeeNo": owner.login_account or "",
         "employeeName": owner.name or "",
         "groupName": getattr(dept, "name", "") or "",
@@ -205,7 +205,7 @@ def _serialize_approval_item(
         "evidenceStatus": result.evidence_status if result else "NONE",
         "status": status,
         "submitAt": result_submission._iso(result.submitted_at) if result else "",
-        "approverId": result_submission._as_int(result.approver_id) if result else 0,
+        "approverId": result_submission._as_id(result.approver_id) if result else "",
         "approveAt": result_submission._iso(result.approved_at) if result else "",
         "approvalComment": result.approval_comment if result else "",
         "supervisorResult": bool(result and result.status == RESULT_STATUS_CONFIRMED),
@@ -267,7 +267,7 @@ def _approve_week_result(
         raise HTTPException(status_code=404, detail=exc.message) from exc
 
     return {
-        "id": result_submission._as_int(updated.id),
+        "id": result_submission._as_id(updated.id),
         "status": "APPROVED" if approve else "REJECTED",
         "submittedAt": result_submission._iso(updated.submitted_at) or "",
         "message": "周成果已通过" if approve else "周成果已驳回",

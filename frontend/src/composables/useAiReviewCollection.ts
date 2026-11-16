@@ -6,14 +6,24 @@ import {
   type AiReviewBizType,
 } from '@/api/aiReview'
 
+/**
+ * BUG-R6-14：业务对象 ID（计划 / 成果主键）是字符串 UUID，
+ * 这里一律按字符串处理，禁止 `Number(...)` 归一化，
+ * 否则十六进制 / UUID 会被折叠为 `NaN` / `0`。
+ */
+function normalizeId(rawId: number | string | null | undefined): string {
+  if (rawId === null || rawId === undefined) return ''
+  return String(rawId).trim()
+}
+
 export function useAiReviewCollection(bizType: AiReviewBizType) {
-  const reviews = ref<Record<number, AiReview>>({})
+  const reviews = ref<Record<string, AiReview>>({})
   const loading = ref(false)
   let requestId = 0
 
   async function load(rawIds: Array<number | string>) {
     const activeRequest = ++requestId
-    const ids = [...new Set(rawIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))]
+    const ids = [...new Set(rawIds.map(normalizeId).filter((id) => id.length > 0))]
     if (!ids.length) {
       reviews.value = {}
       return
@@ -21,7 +31,7 @@ export function useAiReviewCollection(bizType: AiReviewBizType) {
     loading.value = true
     try {
       const chunks = Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) => ids.slice(index * 100, (index + 1) * 100))
-      let result: Record<number, AiReview>
+      let result: Record<string, AiReview>
       try {
         result = Object.assign({}, ...await Promise.all(chunks.map((chunk) => getLatestAiReviewsApi(bizType, chunk))))
       } catch {
@@ -33,7 +43,7 @@ export function useAiReviewCollection(bizType: AiReviewBizType) {
             return null
           }
         }))
-        result = Object.fromEntries(entries.filter((entry): entry is readonly [number, AiReview] => entry !== null))
+        result = Object.fromEntries(entries.filter((entry): entry is readonly [string, AiReview] => entry !== null))
       }
       if (activeRequest === requestId) reviews.value = result
     } catch {
@@ -44,8 +54,8 @@ export function useAiReviewCollection(bizType: AiReviewBizType) {
   }
 
   async function loadOne(rawId: number | string) {
-    const id = Number(rawId)
-    if (!Number.isInteger(id) || id <= 0) return null
+    const id = normalizeId(rawId)
+    if (!id) return null
     try {
       const review = await getLatestAiReviewApi(bizType, id)
       if (review) reviews.value = { ...reviews.value, [id]: review }
@@ -61,8 +71,8 @@ export function useAiReviewCollection(bizType: AiReviewBizType) {
   }
 
   function reviewFor(rawId: number | string | null | undefined) {
-    const id = Number(rawId)
-    return Number.isInteger(id) && id > 0 ? reviews.value[id] || null : null
+    const id = normalizeId(rawId)
+    return id ? reviews.value[id] || null : null
   }
 
   return { reviews, loading, load, loadOne, reviewFor }

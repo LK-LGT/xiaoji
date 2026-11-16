@@ -548,23 +548,38 @@ def clear_month_plan_draft(db: Session, owner_id: str, plan_id: str) -> MonthPla
 
 
 def submit_month_plan(db: Session, owner_id: str, plan_id: str) -> MonthPlan:
-    """提交月计划：draft/withdrawn → submitted。"""
+    """提交月计划：draft/withdrawn → submitted。
+
+    BUG-R6-03 修复：原先只改计划本体状态，条目仍留在 ``draft`` 且
+    ``submitted_at`` 为空 → 条目级视图（成果上报按条目匹配）拿不到已提交条目。
+    现在提交时**级联**条目状态与提交时间。
+    """
     plan = get_month_plan(db, owner_id, plan_id)
     assert_transition(plan.status, PlanStatus.SUBMITTED.value)
+    now = _now()
     plan.status = PlanStatus.SUBMITTED.value
-    plan.submitted_at = _now()
+    plan.submitted_at = now
     plan.version_no = _bump_version(plan)
+    for item in list_month_plan_items(db, plan.id):
+        item.status = PlanStatus.SUBMITTED.value
+        item.submitted_at = now
     db.flush()
     return plan
 
 
 def withdraw_month_plan(db: Session, owner_id: str, plan_id: str) -> MonthPlan:
-    """撤回月计划：submitted → draft。"""
+    """撤回月计划：submitted → draft。
+
+    BUG-R6-03 配套：撤回时条目状态**回滚**为 ``draft``，与提交时的级联对称。
+    """
     plan = get_month_plan(db, owner_id, plan_id)
     assert_transition(plan.status, PlanStatus.DRAFT.value)
     plan.status = PlanStatus.DRAFT.value
     plan.submitted_at = None
     plan.version_no = _bump_version(plan)
+    for item in list_month_plan_items(db, plan.id):
+        item.status = PlanStatus.DRAFT.value
+        item.submitted_at = None
     db.flush()
     return plan
 
@@ -736,7 +751,11 @@ def delete_week_plan(db: Session, owner_id: str, plan_id: str) -> WeekPlan:
 
 
 def submit_week_plan(db: Session, owner_id: str, plan_id: str) -> WeekPlan:
-    """提交周计划。"""
+    """提交周计划。
+
+    注：``week_plan_item`` 表**没有** ``status`` / ``submitted_at`` 字段
+    （周计划条目用 ``completion_status`` 表达完成度），故此处不做条目级联。
+    """
     plan = get_week_plan(db, owner_id, plan_id)
     assert_transition(plan.status, PlanStatus.SUBMITTED.value)
     plan.status = PlanStatus.SUBMITTED.value

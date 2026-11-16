@@ -328,7 +328,7 @@ async def get_week_result_submit_context(
     )
     return _ok(
         {
-            "weekPlanId": result_submission._as_int(plan.id),
+            "weekPlanId": result_submission._as_id(plan.id),
             "weekPlanTitle": plan.title,
             "weekStart": planning._date_str(plan.week_start),
             "weekEnd": planning._date_str(plan.week_end),
@@ -337,7 +337,8 @@ async def get_week_result_submit_context(
             "latestResult": (
                 result_submission.serialize_week_result(db, latest) if latest else None
             ),
-            "acceptedFileTypes": list(result_submission.ACCEPTED_FILE_TYPES),
+            "acceptedFileTypes": list(result_submission.ACCEPTED_FILE_EXTENSIONS),
+            "acceptedFileMimes": list(result_submission.ACCEPTED_FILE_TYPES),
             "maxFileSizeMb": result_submission.MAX_FILE_SIZE_MB,
         }
     )
@@ -376,7 +377,7 @@ async def submit_week_result(
     )
     return _ok(
         {
-            "id": result_submission._as_int(result.id),
+            "id": result_submission._as_id(result.id),
             "status": result.status,
             "submittedAt": result_submission._iso(result.submitted_at) or "",
             "message": "周成果已提交",

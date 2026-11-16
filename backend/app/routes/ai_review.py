@@ -9,7 +9,8 @@
 - 复核记录写入 `ai_review` 表（`services/ai_service.record_review`），
   支持「最近一次复核」查询与 ``ensure`` 幂等语义。
 - ⚠️ **只记录，不写业务表**（决策⑤）：复核不会修改计划 / 成果的状态或分数。
-- 权限复用既有 token 鉴权：员工只能复核自己的计划。
+- 权限复用既有 token 鉴权：计划**所有者**与对该员工有**数据可见权**的人
+  （直属主管 / 部门负责人 / HR）都可复核（见 `_get_plan_for_review`）。
 
 分页约定：前端这些端点直接消费单个对象或 Record，故返回对象而非分页结构。
 """
@@ -26,6 +27,7 @@ from ..core.db import get_db
 from ..dependencies import get_current_user
 from ..domain.models import Employee
 from ..services import ai_review_engine, ai_service, planning
+from ..services import access_control
 
 logger = logging.getLogger(__name__)
 
@@ -258,12 +260,22 @@ def _load_plan_items(
 ) -> list[dict[str, Any]]:
     """载入计划条目并转成规则引擎可用的字典列表。
 
-    **权限**：只允许复核自己的计划（token 鉴权得出的当前用户）。
+    **权限**（BUG-R6-11 修复）：
+    原实现只允许复核**自己的**计划（`planning.get_month_plan(db, user.id, ...)`
+    内部校验 `owner_id == user.id`），导致**审批人**（主管 / 部门负责人）
+    想给下属的计划跑 AI 检查时必然 404「月计划不存在」——
+    而审批页的 `canApprove()` 又把「AI 检查正常」当作硬前置，
+    于是审批链路彻底走不通。
+
+    现在放行两类人：
+    1. 计划**所有者**；
+    2. 对该计划所有者有**数据可见权**的人
+       （`access_control.can_access_employee`：直属下属 / 所管部门成员 / HR）。
     """
     plan_id = str(biz_id)
     try:
         if biz_type == "MONTH_PLAN":
-            plan = planning.get_month_plan(db, user.id, plan_id)
+            plan = _get_plan_for_review(db, user, biz_type, plan_id)
             rows = planning.list_month_plan_items(db, plan.id)
             return [
                 {
@@ -277,7 +289,7 @@ def _load_plan_items(
                 for row in rows
             ]
         if biz_type == "WEEK_PLAN":
-            plan = planning.get_week_plan(db, user.id, plan_id)
+            plan = _get_plan_for_review(db, user, biz_type, plan_id)
             rows = planning.list_week_plan_items(db, plan.id)
             return [
                 {
@@ -290,7 +302,7 @@ def _load_plan_items(
                 for row in rows
             ]
         if biz_type == "DAY_PLAN":
-            plan = planning.get_day_plan(db, user.id, plan_id)
+            plan = _get_plan_for_review(db, user, biz_type, plan_id)
             return [
                 {
                     "content": plan.content,
@@ -303,6 +315,63 @@ def _load_plan_items(
         raise HTTPException(status_code=404, detail=exc.message) from exc
 
     return []
+
+
+def _get_plan_for_review(
+    db: Session,
+    user: Employee,
+    biz_type: str,
+    plan_id: str,
+) -> Any:
+    """取计划并校验当前用户是否有权复核。
+
+    先按 owner 取（本人路径）；取不到时按「审批人 / 可见该员工的范围」再试一次。
+    """
+    try:
+        return _getter_for_biz_type(biz_type)(db, user.id, plan_id)
+    except planning.PlanNotFound:
+        pass
+
+    # 审批人路径：按计划主键直接取，再校验可见性。
+    from ..domain.models import DayPlan, MonthPlan, WeekPlan
+
+    model = {
+        "MONTH_PLAN": MonthPlan,
+        "WEEK_PLAN": WeekPlan,
+        "DAY_PLAN": DayPlan,
+    }.get(biz_type)
+    if model is None:
+        raise planning.PlanNotFound("计划不存在")
+
+    candidate = db.get(model, plan_id)
+    if candidate is None:
+        raise planning.PlanNotFound("计划不存在")
+
+    owner = db.get(Employee, candidate.owner_id)
+    if owner is None:
+        raise planning.PlanNotFound("计划不存在")
+
+    # ⚠️ `can_access_employee(context, target_employee, db)` — 第一个参数是
+    #    **AccessContext**（不是 db！）。直接传 db 会让内部 `context.employee_id`
+    #    触发 `AttributeError: 'Session' object has no attribute 'employee_id'`。
+    context = access_control.build_access_context(db, user)
+    if not access_control.can_access_employee(context, owner, db):
+        # ⚠️ 沿用本模块既有的「不泄露存在性」约定：越权访问一律回 **404**
+        #    「计划不存在」，而不是 403「无权复核该计划」。
+        #    403 会明确告诉调用方「这个 plan_id 真实存在」，
+        #    与 `planning.get_*_plan` 的 owner 校验失败路径（404）不一致。
+        raise HTTPException(status_code=404, detail="计划不存在")
+
+    return candidate
+
+
+def _getter_for_biz_type(biz_type: str):
+    """按业务类型取对应的 `get_*_plan` 读取函数。"""
+    return {
+        "MONTH_PLAN": planning.get_month_plan,
+        "WEEK_PLAN": planning.get_week_plan,
+        "DAY_PLAN": planning.get_day_plan,
+    }[biz_type]
 
 
 def _serialize_review(review: Any) -> dict[str, Any]:

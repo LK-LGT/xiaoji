@@ -187,9 +187,10 @@ const weekPlanBasePath = isLeaderWorkspace ? '/leader/my-week-plans' : '/employe
 const approvalTargetLabel = isLeaderWorkspace ? '部门负责人' : '直属领导'
 const authStore = useAuthStore()
 const { goBack } = useSmartBack(weekPlanBasePath)
-const initialRouteId = Number(route.params.id || 0)
-const currentPlanId = ref(Number.isInteger(initialRouteId) && initialRouteId > 0 ? initialRouteId : 0)
-const isEdit = computed(() => currentPlanId.value > 0)
+// BUG-R6-14：周计划主键是字符串（UUID/十六进制），不可转数字。
+const initialRouteId = String(route.params.id ?? '').trim()
+const currentPlanId = ref(initialRouteId)
+const isEdit = computed(() => currentPlanId.value.length > 0)
 const initialWeekStart = routeWeekStart() || currentMonday()
 const loading = ref(false)
 const saving = ref(false)
@@ -277,7 +278,7 @@ function changeTaskViewMode(value: string | number | boolean | undefined) { cons
 function mergeSaveItems(items: WeekPlanSavePayload['items'], finishDate = weekEnd.value) {
   const safeItems = items.length ? items : [emptyItem()]
   const parentId = safeItems.length === 1 ? safeItems[0].monthPlanItemId : null
-  return { monthPlanItemId: parentId && parentId > 0 ? parentId : null, content: mergeWeekWorkContent(safeItems.map((item) => item.content)), deliverable: mergeWeekTextField(safeItems.map((item) => item.deliverable)), quality: mergeWeekTextField(safeItems.map((item) => item.quality)), plannedFinishDate: finishDate }
+  return { monthPlanItemId: parentId || null, content: mergeWeekWorkContent(safeItems.map((item) => item.content)), deliverable: mergeWeekTextField(safeItems.map((item) => item.deliverable)), quality: mergeWeekTextField(safeItems.map((item) => item.quality)), plannedFinishDate: finishDate }
 }
 function applyAiDraft(value: WeekPlanAiItem[] | DayPlanAiForm) { if (!Array.isArray(value)) return; const previous = weekItem.value; const deliverable = mergeWeekTextField(value.map((item) => item.deliverable)); const quality = mergeWeekTextField(value.map((item) => item.quality)); form.items = [{ monthPlanItemId: value.length === 1 ? (value[0].monthPlanItemId ?? previous.monthPlanItemId ?? null) : null, content: mergeWeekWorkContent(value.map((item) => item.content)), deliverable: deliverable || previous.deliverable || '', quality: quality || previous.quality || '', plannedFinishDate: weekEnd.value }]; aiAssistantVisible.value = false }
 async function locateIssue(issue: PlanValidationIssue) { if (!issue.targetId) return; assistDrawerVisible.value = false; if (taskViewMode.value === 'cards') weekCardExpanded.value = true; await nextTick(); const target = document.getElementById(issue.targetId); target?.scrollIntoView({ behavior: 'smooth', block: 'center' }); setTimeout(() => (target?.querySelector('input, textarea, button, [tabindex]') as HTMLElement | null)?.focus(), 280) }
@@ -319,7 +320,7 @@ async function clearDraft() {
       if (!form.versionNo) throw new Error('周计划版本信息缺失，请刷新页面后重试')
       await deleteEmployeeWeekPlanApi(currentPlanId.value, form.versionNo)
     }
-    currentPlanId.value = 0
+    currentPlanId.value = ''
     form.versionNo = undefined
     form.items = [{ monthPlanItemId: null, content: '', deliverable: '', quality: '', plannedFinishDate: addDays(weekStart, 6) }]
     detailStatus.value = 'DRAFT'

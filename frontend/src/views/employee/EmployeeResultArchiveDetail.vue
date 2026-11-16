@@ -118,14 +118,14 @@ const approvalEvents = computed(() => {
 const versions = computed(() => detail.value ? [{ resultId: detail.value.id, versionNo: monthDetail.value?.versionNo || 'V1', submittedAt: monthDetail.value?.submittedAt || weekDetail.value?.submitAt, changeSummary: '当前成果版本', current: true }] : [])
 function dateTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 16) : '--' }
 function fileSize(value?: number) { if (!value) return '未知大小'; if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`; return `${(value / 1024 / 1024).toFixed(2)} MB` }
-async function loadDetail() { loading.value = true; errorMessage.value = ''; try { detail.value = type.value === 'MONTH' ? await getEmployeeResultDetailApi(Number(route.params.resultId)) : await getEmployeeWeekResultDetailApi(Number(route.params.resultId)) } catch (error) { errorMessage.value = error instanceof Error ? error.message : '成果详情加载失败' } finally { loading.value = false } }
+async function loadDetail() { loading.value = true; errorMessage.value = ''; try { detail.value = type.value === 'MONTH' ? await getEmployeeResultDetailApi(String(route.params.resultId)) : await getEmployeeWeekResultDetailApi(String(route.params.resultId)) } catch (error) { errorMessage.value = error instanceof Error ? error.message : '成果详情加载失败' } finally { loading.value = false } }
 function backToArchive() {
   const keys = ['view', 'archiveType', 'archiveMonth', 'archiveStatus', 'archiveKeyword', 'archivePage'] as const
   const query = Object.fromEntries(keys.flatMap((key) => route.query[key] == null ? [] : [[key, route.query[key]]]))
   void router.push({ path: resultBasePath.value, query: { ...query, view: 'archive' } })
 }
 function handleRejection() { void router.push({ path: `${resultBasePath.value}/workspace/${type.value}/${route.query.planId}`, query: { taskId: route.query.taskId, month: route.query.archiveMonth } }) }
-async function downloadEvidence(id: number) { const resultId = detail.value?.id; if (!resultId) return; try { const blob = type.value === 'MONTH' ? await downloadEmployeeResultEvidenceApi(resultId, id) : await downloadWeekResultEvidenceApi(resultId, id); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = '成果证明材料'; link.click(); URL.revokeObjectURL(url) } catch (error) { errorMessage.value = error instanceof Error ? error.message : '附件下载失败' } }
+async function downloadEvidence(id: string) { const resultId = detail.value?.id; if (!resultId) return; try { const blob = type.value === 'MONTH' ? await downloadEmployeeResultEvidenceApi(resultId, id) : await downloadWeekResultEvidenceApi(resultId, id); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = '成果证明材料'; link.click(); URL.revokeObjectURL(url) } catch (error) { errorMessage.value = error instanceof Error ? error.message : '附件下载失败' } }
 function printDetail() { window.print() }; function compareVersion() { ElMessage.info('当前版本暂无可比较的相邻版本') }
 onMounted(() => { if (type.value === 'WEEK') void loadDetail() })
 </script>

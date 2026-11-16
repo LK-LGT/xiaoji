@@ -436,10 +436,15 @@ def test_serialize_month_plan_approval_item_shape(db, org):
     data = plan_approval.serialize_month_plan_approval_item(db, plan)
 
     assert data["id"] == plan.id
-    assert isinstance(data["ownerId"], int)
+    # ⚠️ BUG-R6-06：主键是飞书十六进制字符串，原样透出（前端类型也是 string）。
+    #    旧断言 `isinstance(..., int)` 期望 int，转换失败会静默塌成 0。
+    assert isinstance(data["ownerId"], str)
+    assert data["ownerId"] == "E_A"
     assert data["employeeName"] == "员工甲"
     assert data["orgName"] == "业务部"
-    assert data["status"] == PlanStatus.SUBMITTED.value
+    # ⚠️ BUG-R6-08：后端内部状态是小写，前端 `approvalStatusLabels` 的键是大写
+    #    （PENDING_APPROVAL / APPROVED / REJECTED）。不对齐则审批按钮永久禁用。
+    assert data["status"] == "PENDING_APPROVAL"
     assert data["planYear"] == 2026
     assert data["planMonth"] == 11
     assert data["version"] == plan.version_no
@@ -456,7 +461,7 @@ def test_serialize_week_plan_summary_shape(db, org):
     assert data["id"] == plan.id
     assert data["weekStart"] == "2026-11-09"
     assert data["weekEnd"] == "2026-11-15"
-    assert data["status"] == PlanStatus.SUBMITTED.value
+    assert data["status"] == "PENDING_APPROVAL"
     assert data["employeeName"] == "员工甲"
     assert data["departmentName"] == "业务部"
     assert data["itemCount"] == 0

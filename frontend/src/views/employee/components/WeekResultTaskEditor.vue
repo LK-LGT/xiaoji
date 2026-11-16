@@ -61,19 +61,20 @@ import { computed, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import { statusMeta, type ResultTaskDraft, type ResultWorkbenchTask } from '../resultWorkbenchModel'
 import ResultStatusTag from '@/components/results/ResultStatusTag.vue'
+import { buildFileAcceptAttribute, isAcceptedFile } from '@/utils/fileUpload'
 
 const props = defineProps<{ task: ResultWorkbenchTask; draft: ResultTaskDraft; acceptedFileTypes: string[]; maxFileSizeMb: number }>()
 const emit = defineEmits<{ dirty: [] }>()
 const errors = reactive({ completionStatus: '', deliverable: '' })
-const fileAccept = computed(() => props.acceptedFileTypes.map((type) => `.${type.toLowerCase()}`).join(','))
+const fileAccept = computed(() => buildFileAcceptAttribute(props.acceptedFileTypes))
 
 function markDirty() { props.draft.dirty = true; emit('dirty') }
 function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0] || null
   if (!file) return
-  const extension = file.name.split('.').pop()?.toLowerCase() || ''
-  if (!props.acceptedFileTypes.map((item) => item.toLowerCase()).includes(extension)) { ElMessage.warning('文件类型不支持'); input.value = ''; return }
+  // ⚠️ BUG-R6-19：按扩展名统一归一后再比对（MIME 输入也能正确处理）。
+  if (!isAcceptedFile(file.name, props.acceptedFileTypes)) { ElMessage.warning('文件类型不支持'); input.value = ''; return }
   if (file.size > props.maxFileSizeMb * 1024 * 1024) { ElMessage.warning(`文件大小不能超过 ${props.maxFileSizeMb} MB`); input.value = ''; return }
   props.draft.file = file
   markDirty()

@@ -102,7 +102,8 @@ const isLeaderWorkspace = route.path.startsWith('/leader/')
 const weekPlanBasePath = isLeaderWorkspace ? '/leader/my-week-plans' : '/employee/week-plans'
 const loading = ref(false)
 const detailLoading = ref(false)
-const withdrawingPlanId = ref<number | null>(null)
+// BUG-R6-14：周计划主键为字符串（UUID/十六进制）。
+const withdrawingPlanId = ref<string | null>(null)
 const errorMessage = ref('')
 const rows = ref<WeekPlanSummary[]>([])
 const selectedDetail = ref<WeekPlanDetail | null>(null)

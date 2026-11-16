@@ -185,7 +185,8 @@ import PlanAiChatThread, { type MonthPlanStarter } from './components/PlanAiChat
 import PlanAiExampleInput from './components/PlanAiExampleInput.vue'
 
 type PreviewMode = Exclude<MonthPlanAiOperationMode, 'AUTO' | 'CLARIFY'>
-type WorkspaceMonthPlan = Omit<EmployeeMonthPlanDetailResp, 'id'> & { id?: number }
+// BUG-R6-14: plan id is a string primary key.
+type WorkspaceMonthPlan = Omit<EmployeeMonthPlanDetailResp, 'id'> & { id?: string }
 
 const route = useRoute()
 const router = useRouter()
@@ -289,8 +290,8 @@ const starters = computed<MonthPlanStarter[]>(() => {
 
 function planId() {
   const raw = Array.isArray(route.params.id) ? route.params.id[0] : route.params.id
-  const value = Number(raw)
-  return Number.isInteger(value) && value > 0 ? value : undefined
+  const value = String(raw ?? '').trim()
+  return value ? value : undefined
 }
 
 function queryMonth() {
@@ -329,11 +330,12 @@ async function loadWorkspace() {
   errorMessage.value = ''
   contextSelectionInitialized.value = false
   try {
-    plan.value = id ? await getEmployeeMonthPlanDetailApi(id) : createEmptyWorkspacePlan(queryMonth())
-    jobDescription.value = plan.value.positionName || ''
+    const loaded = id ? await getEmployeeMonthPlanDetailApi(id) : createEmptyWorkspacePlan(queryMonth())
+    plan.value = loaded
+    jobDescription.value = loaded.positionName || ''
     const [context, versions] = await Promise.all([
-      getMonthPlanAiContextApi(plan.value.planMonth),
-      listPlanDraftVersionsApi('MONTH', plan.value.planMonth),
+      getMonthPlanAiContextApi(loaded.planMonth),
+      listPlanDraftVersionsApi('MONTH', loaded.planMonth),
     ])
     applyContextInfo(context)
     latestDraftVersionNo.value = versions[0]?.versionNo
@@ -530,8 +532,9 @@ async function applySuggestion(value: { mode: 'replace' | 'append'; indexes: num
       recordVersion: true,
       versionRequestId: aiRequestId(),
     }
-    const saved = plan.value.id
-      ? await saveEmployeeMonthPlanDraftApi(plan.value.id, draftPayload)
+    const currentPlanId = plan.value?.id
+    const saved = currentPlanId
+      ? await saveEmployeeMonthPlanDraftApi(currentPlanId, draftPayload)
       : await createEmployeeMonthPlanDraftApi(draftPayload)
     plan.value = saved
     const actionCode = value.indexes.length === source.items.length ? 'APPLY_ALL' : 'APPLY_ITEM'

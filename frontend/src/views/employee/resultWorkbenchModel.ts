@@ -14,8 +14,13 @@ export type ResultPrimaryAction = 'START' | 'CONTINUE' | 'HANDLE_REJECTION' | 'V
 export interface ResultWorkbenchTask {
   key: string
   type: ResultPackageType
-  planId: number
-  taskId: number
+  /**
+   * 计划主键。BUG-R6-14：主键是**十六进制 / UUID 字符串**，
+   * 不是数字 —— 早期 TS 声明为 `number` 纯属历史遗留，
+   * 任何 `Number(...)` 强转都会把它塌成 `0`。
+   */
+  planId: string
+  taskId: string
   planTitle: string
   periodKey: string
   periodLabel: string
@@ -27,7 +32,7 @@ export interface ResultWorkbenchTask {
   endDate?: string
   status: ResultWorkbenchStatus
   editable: boolean
-  latestResultId?: number
+  latestResultId?: string
   monthVersion?: EmployeeResultSubmitOptionsResp['resultVersions'][number]
   weekResult?: WeekResultRecord | null
 }
@@ -44,7 +49,8 @@ export interface ResultPackageCounts {
 export interface ResultWorkbenchPackage {
   key: string
   type: ResultPackageType
-  planId: number
+  /** 计划主键（字符串，见 `ResultWorkbenchTask.planId`）。 */
+  planId: string
   periodKey: string
   title: string
   startDate?: string
@@ -99,7 +105,10 @@ export function primaryActionLabel(action: ResultPrimaryAction) {
 }
 
 export function sortTasks<T extends Pick<ResultWorkbenchTask, 'status' | 'taskId'>>(tasks: T[]) {
-  return [...tasks].sort((left, right) => resultStatusRank(left.status) - resultStatusRank(right.status) || left.taskId - right.taskId)
+  // BUG-R6-14：taskId 是字符串，不能做数值减法（NaN 比较不稳定）。
+  // 改为按状态优先级 + 字符串字典序，保证排序稳定。
+  return [...tasks].sort((left, right) => resultStatusRank(left.status) - resultStatusRank(right.status)
+    || String(left.taskId).localeCompare(String(right.taskId)))
 }
 
 export function sortPackages<T extends Pick<ResultWorkbenchPackage, 'status' | 'startDate'>>(packages: T[]) {
@@ -117,12 +126,14 @@ function weekStatus(status?: string): ResultWorkbenchStatus {
 
 function latestMonthVersion(
   versions: EmployeeResultSubmitOptionsResp['resultVersions'],
-  planId: number,
-  taskId: number,
+  planId: string,
+  taskId: string,
 ) {
+  // BUG-R6-14：主键是字符串，版本号按字符串字典序倒排（UUID 无大小序语义，
+  // 但版本号在 `versionNo` 上单独可比，这里保持稳定排序即可）。
   return versions
-    .filter((version) => version.monthPlanId === planId && version.monthPlanItemId === taskId)
-    .sort((left, right) => right.id - left.id)[0]
+    .filter((version) => String(version.monthPlanId) === planId && String(version.monthPlanItemId) === taskId)
+    .sort((left, right) => String(right.id).localeCompare(String(left.id)))[0]
 }
 
 function countTasks(tasks: ResultWorkbenchTask[]): ResultPackageCounts {
@@ -210,11 +221,13 @@ export function buildResultWorkbench(
     })
   }
 
-  const weekGroups = new Map<number, typeof weekOptions.plans>()
+  // BUG-R6-14：周计划主键也是字符串，Map 键用 `string`。
+  const weekGroups = new Map<string, typeof weekOptions.plans>()
   for (const option of weekOptions.plans) {
-    const group = weekGroups.get(option.weekPlanId)
+    const weekPlanId = String(option.weekPlanId)
+    const group = weekGroups.get(weekPlanId)
     if (group) group.push(option)
-    else weekGroups.set(option.weekPlanId, [option])
+    else weekGroups.set(weekPlanId, [option])
   }
   for (const [planId, options] of weekGroups) {
     const first = options[0]

@@ -4,8 +4,9 @@ import type { PageResponse } from './performance'
 export type WeekPlanStatus = 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED'
 
 export interface WeekPlanParentOption {
-  monthPlanItemId: number
-  monthPlanId: number
+  /** BUG-R6-14：条目 / 计划主键为字符串（UUID/十六进制）。 */
+  monthPlanItemId: string
+  monthPlanId: string
   monthPlanTitle: string
   planMonth: string
   taskType: 'REGULAR'
@@ -18,8 +19,9 @@ export interface WeekPlanParentOption {
 }
 
 export interface WeekPlanItem {
-  id: number
-  monthPlanItemId: number | null
+  /** BUG-R6-14：主键为字符串（UUID/十六进制）。 */
+  id: string
+  monthPlanItemId: string | null
   content: string
   completionStatus?: string
   deliverable?: string
@@ -31,7 +33,8 @@ export interface WeekPlanItem {
 }
 
 export interface WeekPlanSummary {
-  id: number
+  /** BUG-R6-14：主键为字符串（UUID/十六进制）。 */
+  id: string
   title: string
   weekStart: string
   weekEnd: string
@@ -100,7 +103,8 @@ export interface WeekPlanSavePayload {
   weekStart: string
   versionNo?: number
   items: Array<{
-    monthPlanItemId: number | null
+    /** BUG-R6-14：条目主键为字符串（UUID/十六进制）。 */
+    monthPlanItemId: string | null
     content: string
     deliverable?: string
     quality?: string
@@ -112,7 +116,8 @@ export interface WeekPlanSavePayload {
 }
 
 export interface WeekPlanAction {
-  id: number
+  /** BUG-R6-14：主键为字符串（UUID/十六进制）。 */
+  id: string
   status: WeekPlanStatus
   versionNo: number
   message: string
@@ -131,7 +136,7 @@ export function listEmployeeWeekPlansApi(params?: WeekPlanListQuery) {
   return http.get<unknown, WeekPlanSummary[]>('/employee/week-plans', { params })
 }
 
-export function getEmployeeWeekPlanApi(id: number) {
+export function getEmployeeWeekPlanApi(id: string) {
   return http.get<unknown, WeekPlanDetail>(`/employee/week-plans/${id}`)
 }
 
@@ -143,19 +148,19 @@ export function createEmployeeWeekPlanApi(payload: WeekPlanSavePayload) {
   return http.post<WeekPlanSavePayload, WeekPlanDetail>('/employee/week-plans', payload)
 }
 
-export function updateEmployeeWeekPlanApi(id: number, payload: WeekPlanSavePayload) {
+export function updateEmployeeWeekPlanApi(id: string, payload: WeekPlanSavePayload) {
   return http.put<WeekPlanSavePayload, WeekPlanDetail>(`/employee/week-plans/${id}`, payload)
 }
 
-export function submitEmployeeWeekPlanApi(id: number, versionNo: number) {
+export function submitEmployeeWeekPlanApi(id: string, versionNo: number) {
   return http.post<undefined, WeekPlanAction>(`/employee/week-plans/${id}/submit`, undefined, { params: { versionNo } })
 }
 
-export function withdrawEmployeeWeekPlanApi(id: number, versionNo: number) {
+export function withdrawEmployeeWeekPlanApi(id: string, versionNo: number) {
   return http.post<undefined, WeekPlanAction>(`/employee/week-plans/${id}/withdraw`, undefined, { params: { versionNo } })
 }
 
-export function deleteEmployeeWeekPlanApi(id: number, versionNo: number) {
+export function deleteEmployeeWeekPlanApi(id: string, versionNo: number) {
   return http.delete<unknown, WeekPlanAction>(`/employee/week-plans/${id}`, { params: { versionNo } })
 }
 
@@ -163,15 +168,15 @@ export function listLeaderWeekPlansApi(params?: WeekPlanListQuery) {
   return http.get<unknown, WeekPlanSummary[]>('/leader/week-plan-approvals', { params })
 }
 
-export function getLeaderWeekPlanApi(id: number) {
+export function getLeaderWeekPlanApi(id: string) {
   return http.get<unknown, WeekPlanDetail>(`/leader/week-plan-approvals/${id}`)
 }
 
-export function approveLeaderWeekPlanApi(id: number, versionNo: number, comment: string) {
+export function approveLeaderWeekPlanApi(id: string, versionNo: number, comment: string) {
   return http.post<unknown, WeekPlanAction>(`/leader/week-plan-approvals/${id}/approve`, { versionNo, comment })
 }
 
-export function rejectLeaderWeekPlanApi(id: number, versionNo: number, comment: string) {
+export function rejectLeaderWeekPlanApi(id: string, versionNo: number, comment: string) {
   return http.post<unknown, WeekPlanAction>(`/leader/week-plan-approvals/${id}/reject`, { versionNo, comment })
 }
 
@@ -194,15 +199,15 @@ export function listDepartmentWeekPlanApprovalsApi(params?: WeekPlanListQuery) {
   return http.get<unknown, WeekPlanSummary[]>('/department/week-plan-approvals', { params })
 }
 
-export function getDepartmentWeekPlanApprovalApi(id: number) {
+export function getDepartmentWeekPlanApprovalApi(id: string) {
   return http.get<unknown, WeekPlanDetail>(`/department/week-plan-approvals/${id}`)
 }
 
-export function approveDepartmentWeekPlanApi(id: number, versionNo: number, comment: string) {
+export function approveDepartmentWeekPlanApi(id: string, versionNo: number, comment: string) {
   return http.post<unknown, WeekPlanAction>(`/department/week-plan-approvals/${id}/approve`, { versionNo, comment })
 }
 
-export function rejectDepartmentWeekPlanApi(id: number, versionNo: number, comment: string) {
+export function rejectDepartmentWeekPlanApi(id: string, versionNo: number, comment: string) {
   return http.post<unknown, WeekPlanAction>(`/department/week-plan-approvals/${id}/reject`, { versionNo, comment })
 }
 
@@ -210,7 +215,7 @@ export function listDepartmentWeekPlansApi(params?: WeekPlanListQuery) {
   return http.get<unknown, PageResponse<WeekPlanSummary>>('/department/week-plans', { params })
 }
 
-export function getDepartmentWeekPlanApi(id: number) {
+export function getDepartmentWeekPlanApi(id: string) {
   return http.get<unknown, WeekPlanDetail>(`/department/week-plans/${id}`)
 }
 

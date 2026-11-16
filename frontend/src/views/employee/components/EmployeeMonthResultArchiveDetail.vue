@@ -149,8 +149,9 @@ const pageError = ref('')
 const activeTab = ref<DetailTab>('content')
 const archive = ref<MonthResultArchive | null>(null)
 const options = ref<EmployeeResultSubmitOptionsResp | null>(null)
-const selectedTaskId = ref<number | null>(null)
-const taskDetails = reactive(new Map<number, TaskDetailState>())
+// BUG-R6-14：任务 / 成果 ID 是字符串主键，不是数字。
+const selectedTaskId = ref<string | null>(null)
+const taskDetails = reactive(new Map<string, TaskDetailState>())
 const printedAt = ref('')
 const tabs = [{ label: '成果内容', value: 'content' as const }, { label: '审批记录', value: 'approval' as const }, { label: '历史版本', value: 'history' as const }]
 
@@ -163,7 +164,7 @@ const failedTaskIds = computed(() => failedTasks.value.map((task) => task.id))
 const detailsLoading = computed(() => [...taskDetails.values()].some((item) => item.state === 'loading'))
 const hasRejectedTask = computed(() => archive.value?.tasks.some((task) => task.status === 'REJECTED') || false)
 const performanceTotal = computed(() => [...taskDetails.values()].reduce((sum, item) => sum + Number(item.detail?.personalPerformance || 0), 0))
-const printDetails = computed<Record<number, EmployeeResultDetailResp>>(() => Object.fromEntries(
+const printDetails = computed<Record<string, EmployeeResultDetailResp>>(() => Object.fromEntries(
   [...taskDetails.entries()].flatMap(([taskId, value]) => value.detail ? [[taskId, value.detail]] : []),
 ))
 const approvalEvents = computed(() => {
@@ -180,7 +181,8 @@ const versions = computed(() => {
   if (!task || !options.value) return []
   return options.value.resultVersions
     .filter((version) => version.monthPlanId === archive.value?.planId && version.monthPlanItemId === task.id && !['draft', 'not_submitted'].includes(version.status))
-    .sort((left, right) => String(right.submittedAt).localeCompare(String(left.submittedAt)) || right.id - left.id)
+    // BUG-R6-14：成果 ID 是字符串，不能做数值减法。
+    .sort((left, right) => String(right.submittedAt).localeCompare(String(left.submittedAt)) || String(right.id).localeCompare(String(left.id)))
     .map((version) => ({ resultId: version.id, versionNo: version.versionNo, submittedAt: dateTime(version.submittedAt), changeSummary: version.status === 'rejected' ? '成果退回' : version.status === 'confirmed' ? '成果确认' : '提交成果', rejectionComment: version.status === 'rejected' ? version.leaderSuggestion : '', current: version.id === task.latestVersion?.id }))
 })
 
@@ -212,7 +214,7 @@ async function loadArchive() {
   taskDetails.clear()
   try {
     options.value = await getEmployeeResultSubmitOptionsApi()
-    const planId = resolveMonthArchivePlanId(options.value, Number(route.params.resultId), route.query.archiveScope)
+    const planId = resolveMonthArchivePlanId(options.value, String(route.params.resultId), route.query.archiveScope)
     archive.value = buildMonthResultArchives(options.value).find((item) => item.planId === planId) || null
     if (!archive.value) throw new Error('未找到对应的月度成果档案')
     selectedTaskId.value = archive.value.tasks.find((task) => task.latestVersion)?.id || null
@@ -242,7 +244,7 @@ function handleRejection() {
   if (!archive.value || !task) return
   void router.push({ path: `${resultBasePath.value}/workspace/MONTH/${archive.value.planId}`, query: { taskId: String(task.id), month: archive.value.planMonth } })
 }
-async function downloadEvidence(task: MonthResultArchiveTask, evidenceId: number, fileName: string) {
+async function downloadEvidence(task: MonthResultArchiveTask, evidenceId: string, fileName: string) {
   const resultId = taskDetails.get(task.id)?.detail?.id
   if (!resultId) return
   try { saveBlob(await downloadEmployeeResultEvidenceApi(resultId, evidenceId), fileName) }

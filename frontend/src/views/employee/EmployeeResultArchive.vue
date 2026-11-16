@@ -97,7 +97,8 @@ import ResultStatusTag from '@/components/results/ResultStatusTag.vue'
 import { buildMonthResultArchives, monthArchiveStatusMeta, type MonthArchiveStatus } from './resultArchiveModel'
 
 type ArchiveStatus = MonthArchiveStatus | 'APPROVED'
-interface ArchiveRow { key: string; type: 'MONTH' | 'WEEK'; resultId: number; planId: number; taskId: number; title: string; description: string; periodKey: string; periodLabel: string; status: ArchiveStatus; updatedAt: string; resultDate: string; resultCount: number; taskCount: number; searchText: string }
+// BUG-R6-14：成果 / 计划 / 任务 ID 都是字符串主键。
+interface ArchiveRow { key: string; type: 'MONTH' | 'WEEK'; resultId: string; planId: string; taskId: string; title: string; description: string; periodKey: string; periodLabel: string; status: ArchiveStatus; updatedAt: string; resultDate: string; resultCount: number; taskCount: number; searchText: string }
 const ARCHIVE_SCROLL_KEY = 'employee-result-archive-scroll'
 const route = useRoute(); const router = useRouter(); const resultBasePath = computed(() => route.path.startsWith('/leader/') ? '/leader/results' : '/employee/results'); const loading = ref(false); const errorMessage = ref(''); const pageNo = ref(positiveInt(route.query.archivePage)); const pageSize = 10
 const filters = reactive({
@@ -111,7 +112,7 @@ const allRows = computed<ArchiveRow[]>(() => {
   if (months) {
     for (const archive of buildMonthResultArchives(months)) {
       const description = [archive.employeeName, archive.projectName].filter(Boolean).join(' · ')
-      result.push({ key: archive.key, type: 'MONTH', resultId: 0, planId: archive.planId, taskId: 0, title: archive.title, description, periodKey: archive.planMonth, periodLabel: monthText(archive.planMonth), status: archive.status, updatedAt: archive.updatedAt, resultDate: `${archive.planMonth}-01`, resultCount: archive.counts.result, taskCount: archive.counts.total, searchText: archive.searchText })
+      result.push({ key: archive.key, type: 'MONTH', resultId: '', planId: archive.planId, taskId: '', title: archive.title, description, periodKey: archive.planMonth, periodLabel: monthText(archive.planMonth), status: archive.status, updatedAt: archive.updatedAt, resultDate: `${archive.planMonth}-01`, resultCount: archive.counts.result, taskCount: archive.counts.total, searchText: archive.searchText })
     }
   }
   const weeks = weekOptions.value

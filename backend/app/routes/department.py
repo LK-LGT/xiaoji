@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, Optional
 
@@ -25,6 +26,34 @@ from .shared import JsonBody
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/department", tags=["department"], dependencies=[Depends(get_current_user)])
+
+
+def _normalize_plan_month(plan_month: Optional[str]) -> str:
+    """校验并归一 `planMonth` 查询参数。
+
+    BUG-R6-05 修复：前端 `DepartmentDashboard.vue` / `ResultConfirm.vue` 发的是
+    **camelCase** `planMonth`，而后端原签名是 snake_case `plan_month` 且带
+    正则约束 → FastAPI 报 `Missing field required: plan_month`（422）。
+    现在统一用 `alias="planMonth"` 接收，并在此处做格式校验（非法值返回 422）。
+
+    ⚠️ 必须返回 **非空 str**：响应模型 `ProjectMonthPlanPackage.planMonth`
+    是必填 `str`，若这里返回 `None` → Pydantic 校验失败 → 整个端点 500。
+    缺失时用当前月份兜底（前端 `packageMonth` 默认也是 `currentMonth()`）。
+    """
+    if plan_month is None or str(plan_month).strip() == "":
+        return _current_month()
+    text = str(plan_month).strip()
+    if not re.fullmatch(r"\d{4}-\d{2}", text):
+        raise HTTPException(
+            status_code=422,
+            detail=f"planMonth 格式非法，应为 YYYY-MM，收到: {text}",
+        )
+    return text
+
+
+def _current_month() -> str:
+    """当前月份，格式 `YYYY-MM`（与前端 `currentMonth()` 一致）。"""
+    return datetime.now().strftime("%Y-%m")
 
 
 # ============================================
@@ -320,14 +349,14 @@ async def list_department_employees(
         for emp in employees:
             # 获取组织名称
             org_name = "未归属部门"
-            org_id_int = 1  # 默认 org_id
+            # ⚠️ BUG-R6-04 修复：飞书部门 ID 是**十六进制字符串**
+            # （如 `486d98d57d1c6b14`），旧实现 `int(...)` 必失败 → 回退成
+            # int `1` → 塞进 `orgId: str` 字段 → Pydantic 校验失败 → 整个端点 500。
+            # 现在原样透出字符串；无部门时用字符串哨兵 `"0"`（与
+            # `_empty_leader_employee_summary` 的口径一致）。
+            org_id_value = str(emp.department_id) if emp.department_id else "0"
             
             if emp.department_id:
-                try:
-                    org_id_int = int(emp.department_id) if isinstance(emp.department_id, str) else emp.department_id
-                except (ValueError, TypeError):
-                    org_id_int = 1
-                    
                 dept = db.query(Department).filter(
                     Department.id == emp.department_id
                 ).first()
@@ -339,7 +368,7 @@ async def list_department_employees(
                 ownerId=str(emp.id),
                 employeeName=emp.name,
                 employeeNo=getattr(emp, 'employee_no', None),
-                orgId=org_id_int,
+                orgId=org_id_value,
                 orgName=org_name,
                 monthPlanCount=3,
                 weekPlanCount=2,
@@ -361,18 +390,19 @@ async def list_department_employees(
 @router.get("/project-month-plan-packages", response_model=list[ProjectMonthPlanPackage])
 async def list_project_month_plan_packages(
     db: Session = Depends(get_db),
-    plan_month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
+    plan_month: Optional[str] = Query(None, alias="planMonth"),
     org_id: Optional[str] = Query(None),
 ):
     """获取项目组月计划包
     
     按项目组、月份统计计划审批情况
     """
+    plan_month = _normalize_plan_month(plan_month)
     try:
         # 简化实现：返回模拟数据
         packages = [
             ProjectMonthPlanPackage(
-                groupId=1,
+                groupId="1",
                 groupName="产品研发组",
                 departmentName="技术部",
                 planMonth=plan_month,
@@ -386,7 +416,7 @@ async def list_project_month_plan_packages(
                 ]
             ),
             ProjectMonthPlanPackage(
-                groupId=2,
+                groupId="2",
                 groupName="市场推广组",
                 departmentName="市场部",
                 planMonth=plan_month,
@@ -397,7 +427,7 @@ async def list_project_month_plan_packages(
                 pendingMembers=[]
             ),
             ProjectMonthPlanPackage(
-                groupId=3,
+                groupId="3",
                 groupName="数据分析组",
                 departmentName="技术部",
                 planMonth=plan_month,
@@ -422,9 +452,10 @@ async def list_project_month_plan_packages(
 async def get_project_month_plan_package(
     group_id: str,
     db: Session = Depends(get_db),
-    plan_month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
+    plan_month: Optional[str] = Query(None, alias="planMonth"),
 ):
     """获取项目组完整月计划详情"""
+    plan_month = _normalize_plan_month(plan_month)
     try:
         # 简化实现：返回模拟详情数据
         package_info = ProjectMonthPlanPackage(
@@ -533,29 +564,30 @@ async def get_project_month_plan_package(
 @router.get("/project-result-packages", response_model=list[ProjectResultPackage])
 async def list_project_result_packages(
     db: Session = Depends(get_db),
-    plan_month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
+    plan_month: Optional[str] = Query(None, alias="planMonth"),
     org_id: Optional[str] = Query(None),
 ):
     """获取项目组成果包"""
+    plan_month = _normalize_plan_month(plan_month)
     try:
         # 简化实现：返回模拟数据
         packages = [
             ProjectResultPackage(
-                groupId=1,
+                groupId="1",
                 groupName="产品研发组",
                 planMonth=plan_month,
                 totalResultCount=8,
                 approvedCount=6,
             ),
             ProjectResultPackage(
-                groupId=2,
+                groupId="2",
                 groupName="市场推广组",
                 planMonth=plan_month,
                 totalResultCount=5,
                 approvedCount=5,
             ),
             ProjectResultPackage(
-                groupId=3,
+                groupId="3",
                 groupName="数据分析组",
                 planMonth=plan_month,
                 totalResultCount=3,

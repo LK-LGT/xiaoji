@@ -281,7 +281,10 @@ EMPLOYEE_PLAN_SHAPES: tuple[tuple[str, set[str], bool], ...] = (
             "weekPlanStatus",
             "task",
             "latestResult",
+            # ⚠️ BUG-R6-19：`acceptedFileTypes` 现在返回**扩展名**
+            #    （pdf / docx / png …），另加 `acceptedFileMimes` 保留 MIME 口径。
             "acceptedFileTypes",
+            "acceptedFileMimes",
             "maxFileSizeMb",
         },
         False,

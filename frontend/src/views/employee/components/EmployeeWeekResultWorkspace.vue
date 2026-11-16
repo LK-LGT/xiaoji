@@ -98,6 +98,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getWeekResultSubmitOptionsApi, submitWeekResultApi, type WeekResultRecord, type WeekResultSubmitOption } from '@/api/weekResult'
 import { groupRowsByMonth, paginateMonthGroups } from '@/utils/monthGroups'
+import { buildFileAcceptAttribute, fileExtension as fileExtensionUtil, isAcceptedFile } from '@/utils/fileUpload'
 
 const monthPageSize = 10
 
@@ -127,13 +128,14 @@ const monthPage = ref(1)
 const expandedMonthKeys = reactive(new Set<string>())
 const editableRows = ref<EditableWeekResultRow[]>([])
 const activeRowKey = ref('')
-const options = reactive({ plans: [] as WeekResultSubmitOption[], acceptedFileTypes: ['pdf', 'doc', 'docx', 'zip', 'png', 'jpg', 'jpeg', 'webp'], maxFileSizeMb: 20 })
+// ⚠️ BUG-R6-19：默认值必须与后端 `ACCEPTED_FILE_EXTENSIONS` 一致（扩展名，不是 MIME）。
+const options = reactive({ plans: [] as WeekResultSubmitOption[], acceptedFileTypes: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'png', 'jpg', 'jpeg'], maxFileSizeMb: 20 })
 
 const focusWeekMonth = computed(() => {
   const raw = Array.isArray(route.query.weekMonth) ? route.query.weekMonth[0] : route.query.weekMonth
   return typeof raw === 'string' && /^\d{4}-\d{2}$/.test(raw) ? raw : ''
 })
-const uploadAccept = computed(() => options.acceptedFileTypes.map((type) => `.${type.toLowerCase()}`).join(','))
+const uploadAccept = computed(() => buildFileAcceptAttribute(options.acceptedFileTypes))
 const rows = computed<WeekResultRow[]>(() => options.plans.map((plan) => ({
   ...plan,
   key: `${plan.weekPlanId}-${plan.task.id}`,
@@ -175,7 +177,9 @@ function rebuildEditableRows() {
     hasEvidence: Boolean(row.latestResult?.evidences.length),
     file: null,
   }))
-  const focusPlanId = Number(Array.isArray(route.query.weekPlanId) ? route.query.weekPlanId[0] : route.query.weekPlanId)
+  // BUG-R6-14：周计划 ID 是字符串主键，不能用 `Number(...)` 强转
+  // （NaN 永远匹配不到行）。
+  const focusPlanId = String(Array.isArray(route.query.weekPlanId) ? route.query.weekPlanId[0] : route.query.weekPlanId ?? '')
   const focusRow = editableRows.value.find((row) => row.weekPlanId === focusPlanId)
     || editableRows.value.find((row) => !rowLocked(row))
     || editableRows.value[0]
@@ -185,7 +189,7 @@ function rebuildEditableRows() {
 function resetMonthView() {
   monthPage.value = 1
   expandedMonthKeys.clear()
-  const focusPlanId = Number(Array.isArray(route.query.weekPlanId) ? route.query.weekPlanId[0] : route.query.weekPlanId)
+  const focusPlanId = String(Array.isArray(route.query.weekPlanId) ? route.query.weekPlanId[0] : route.query.weekPlanId ?? '')
   const focusRow = editableRows.value.find((row) => row.weekPlanId === focusPlanId)
   const monthToOpen = focusWeekMonth.value || focusRow?.planMonth || ''
   if (!monthToOpen) return
@@ -196,9 +200,10 @@ function resetMonthView() {
   expandedMonthKeys.add(monthToOpen)
 }
 
-function fileExtension(fileName: string) { return fileName.split('.').pop()?.toLowerCase() || '' }
+function fileExtension(fileName: string) { return fileExtensionUtil(fileName) }
 function validateFile(file: File) {
-  if (!options.acceptedFileTypes.map((type) => type.toLowerCase()).includes(fileExtension(file.name))) {
+  // ⚠️ BUG-R6-19：按扩展名统一归一后再比对（MIME 输入也能正确处理）。
+  if (!isAcceptedFile(file.name, options.acceptedFileTypes)) {
     ElMessage.warning('文件类型不支持，请上传 PDF、Word、Zip 或图片文件')
     return false
   }

@@ -286,6 +286,7 @@ import { notifyAiReviewResult } from '@/utils/aiReviewFeedback'
 import { useCancelableAiRequest } from '@/composables/useCancelableAiRequest'
 import { groupRowsByMonth, paginateMonthGroups } from '@/utils/monthGroups'
 import { formatMonthPlanPeriod, formatMonthPlanStandard } from '@/utils/monthPlanPeriod'
+import { buildFileAcceptAttribute, fileExtension, isAcceptedFile } from '@/utils/fileUpload'
 import EmployeeWeekResultWorkspace from './components/EmployeeWeekResultWorkspace.vue'
 
 const RESULT_COMPLETION_RATE = 100
@@ -336,12 +337,13 @@ const printGroup = ref<TargetMonthGroup | null>(null)
 const { running: aiChecking, run: runAiCheck, stop: stopAiCheckRequest } = useCancelableAiRequest()
 
 const options = reactive<EmployeeResultSubmitOptionsResp>({
-  monthPlanOptions: [], monthPlanItemOptions: [], acceptedFileTypes: ['pdf', 'doc', 'docx', 'zip', 'png', 'jpg', 'jpeg', 'webp'], maxFileSizeMb: 20, resultVersions: [],
+  // ⚠️ BUG-R6-19：默认值必须与后端 `ACCEPTED_FILE_EXTENSIONS` 一致（扩展名，不是 MIME）。
+  monthPlanOptions: [], monthPlanItemOptions: [], acceptedFileTypes: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'png', 'jpg', 'jpeg'], maxFileSizeMb: 20, resultVersions: [],
 })
 let loadOptionsRequestId = 0
 
 const activeRow = computed(() => editableRows.value.find((row) => row.key === activeRowKey.value) || editableRows.value[0] || null)
-const uploadAccept = computed(() => options.acceptedFileTypes.map((type) => `.${type.toLowerCase()}`).join(','))
+const uploadAccept = computed(() => buildFileAcceptAttribute(options.acceptedFileTypes))
 
 const previewRows = computed<PerformancePreviewRow[]>(() => {
   const planMap = new Map(options.monthPlanOptions.map((plan) => [plan.id, plan]))
@@ -366,18 +368,19 @@ const allTargetMonthsExpanded = computed(() => targetMonthGroups.value.length > 
 const allTargetMonthsCollapsed = computed(() => targetMonthGroups.value.every((group) => !expandedTargetMonthKeys.has(group.key)))
 
 function readInitialMonthPlanId() {
+  // BUG-R6-14：计划 ID 是字符串主键，不能用 Number() 强转（NaN 永远匹配不到）。
   const rawId = route.query.monthPlanId
-  const id = Number(Array.isArray(rawId) ? rawId[0] : rawId)
-  return Number.isInteger(id) && id > 0 ? id : null
+  const id = String(Array.isArray(rawId) ? rawId[0] : rawId ?? '')
+  return id ? id : null
 }
 
 function readInitialMonthPlanItemId() {
   const rawId = route.query.monthPlanItemId
-  const id = Number(Array.isArray(rawId) ? rawId[0] : rawId)
-  return Number.isInteger(id) && id > 0 ? id : null
+  const id = String(Array.isArray(rawId) ? rawId[0] : rawId ?? '')
+  return id ? id : null
 }
 
-function latestResultVersionFor(monthPlanId: number, monthPlanItemId: number) {
+function latestResultVersionFor(monthPlanId: string, monthPlanItemId: string) {
   return options.resultVersions.find((item) => item.monthPlanId === monthPlanId && item.monthPlanItemId === monthPlanItemId)
 }
 
@@ -483,9 +486,10 @@ function versionStatusMeta(status: string) {
   }[status] ?? { label: status, type: 'info' as const })
 }
 
-function getFileExt(fileName: string) { return fileName.split('.').pop()?.toLowerCase() ?? '' }
+function getFileExt(fileName: string) { return fileExtension(fileName) }
 function validateFile(file: File) {
-  if (!options.acceptedFileTypes.map((type) => type.toLowerCase()).includes(getFileExt(file.name))) {
+  // ⚠️ BUG-R6-19：后端此前给的是 MIME 列表，这里按扩展名比对 → 合法文件被误杀。
+  if (!isAcceptedFile(file.name, options.acceptedFileTypes)) {
     ElMessage.warning('文件类型不支持，请上传 PDF、Word、Zip 或图片文件')
     return false
   }
