@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from sqlalchemy.orm import Session
@@ -353,7 +353,7 @@ async def list_leader_employee_work_items(
     owner_id: str,
     page_no: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    work_type: Optional[str] = Query(None),
+    work_type: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取指定员工的工作项分页。
@@ -425,9 +425,9 @@ def _empty_leader_employee_summary(owner_id: str) -> dict:
 @router.get("/month-plan-approvals")
 async def list_leader_month_plan_approvals(
     request: Request,
-    planYear: Optional[int] = Query(None),
-    planMonth: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
+    planYear: int | None = Query(None),
+    planMonth: int | None = Query(None),
+    status: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -461,9 +461,9 @@ async def list_leader_month_plan_approvals(
 async def page_leader_month_plan_approvals(
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=200),
-    planYear: Optional[int] = Query(None),
-    planMonth: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
+    planYear: int | None = Query(None),
+    planMonth: int | None = Query(None),
+    status: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:

@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """检查数据库结构。"""
 
-import sqlite3
 import os
+import sqlite3
 
 dbs = [
     'performance_management.db',
@@ -20,12 +20,12 @@ for db in dbs:
             print(f"\n✓ {db}")
             print(f"  表数: {len(tables)}")
             print(f"  表列表: {tables[:5]}")
-            
+
             if 'assessment_record' in tables:
                 cursor.execute("PRAGMA table_info(assessment_record)")
                 columns = [(row[1], row[2]) for row in cursor.fetchall()]
                 print(f"  assessment_record 列: {columns}")
-            
+
             conn.close()
         except Exception as e:
             print(f"✗ {db}: {e}")

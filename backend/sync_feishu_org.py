@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """同步飞书组织架构到本地数据库。"""
 
+from app.core.config import settings
 from app.core.db import init_db
 from app.services.feishu_client import FeishuClient
 from app.services.organization_sync import OrganizationSyncService
-from app.core.config import settings
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -25,7 +25,7 @@ try:
     )
     service = OrganizationSyncService(db, client)
     stats = service.sync_all()
-    
+
     print("✅ 同步完成！")
     print(f"   部门数: {stats['departments_synced']}")
     print(f"   员工数: {stats['employees_synced']}")

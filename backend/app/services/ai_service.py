@@ -31,6 +31,8 @@ from ..domain.plan_models import (
     AiConversation,
     AiMessage,
     AiReview,
+)
+from ..domain.plan_models import (
     AiSuggestionAction as AiSuggestionActionRow,
 )
 

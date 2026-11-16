@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,8 +20,8 @@ class SelfReviewMetricInput(BaseModel):
 
     metric_code: str = Field(..., min_length=1, max_length=64, description="指标编码")
     value: float = Field(..., description="指标实测值")
-    unit: Optional[str] = Field(None, max_length=32, description="单位")
-    comment: Optional[str] = Field(None, max_length=500, description="指标备注")
+    unit: str | None = Field(None, max_length=32, description="单位")
+    comment: str | None = Field(None, max_length=500, description="指标备注")
 
 
 class SelfReviewAttachment(BaseModel):
@@ -30,10 +30,10 @@ class SelfReviewAttachment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_id: str = Field(..., min_length=1, max_length=128, description="文件 ID")
-    file_name: Optional[str] = Field(None, max_length=255, description="文件名")
-    file_size: Optional[int] = Field(None, ge=0, description="文件大小（字节）")
-    file_type: Optional[str] = Field(None, max_length=64, description="文件类型")
-    url: Optional[str] = Field(None, max_length=1024, description="可访问链接")
+    file_name: str | None = Field(None, max_length=255, description="文件名")
+    file_size: int | None = Field(None, ge=0, description="文件大小（字节）")
+    file_type: str | None = Field(None, max_length=64, description="文件类型")
+    url: str | None = Field(None, max_length=1024, description="可访问链接")
 
 
 class SelfReviewAnswerItem(BaseModel):
@@ -42,7 +42,7 @@ class SelfReviewAnswerItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     field_key: str = Field(..., min_length=1, max_length=64)
-    text: Optional[str] = Field(None, max_length=4000)
+    text: str | None = Field(None, max_length=4000)
 
 
 class SelfReviewSubmitRequest(BaseModel):
@@ -66,18 +66,18 @@ class SelfReviewSubmitRequest(BaseModel):
     self_comment: str = Field(
         ..., min_length=1, max_length=4000, description="自评正文（业务层要求 >=10 字）"
     )
-    highlights: Optional[str] = Field(None, max_length=2000, description="亮点")
-    improvement_areas: Optional[str] = Field(None, max_length=2000, description="改进方向")
-    metric_values: Optional[list[SelfReviewMetricInput]] = Field(
+    highlights: str | None = Field(None, max_length=2000, description="亮点")
+    improvement_areas: str | None = Field(None, max_length=2000, description="改进方向")
+    metric_values: list[SelfReviewMetricInput] | None = Field(
         None, description="指标值列表（可选）"
     )
-    attachments: Optional[list[SelfReviewAttachment]] = Field(
+    attachments: list[SelfReviewAttachment] | None = Field(
         None, description="附件列表（可选）"
     )
-    answers: Optional[list[SelfReviewAnswerItem]] = Field(
+    answers: list[SelfReviewAnswerItem] | None = Field(
         None, description="结构化表单答案（供渠道层使用，业务层可忽略）"
     )
-    dedup_key: Optional[str] = Field(
+    dedup_key: str | None = Field(
         None,
         max_length=255,
         description="幂等键（飞书事件可能重复投递；自研前端可不传）",

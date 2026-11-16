@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -198,8 +198,8 @@ async def get_dispute_dashboard(
 
 @router.get("/cases")
 async def list_dispute_cases(
-    status: Optional[str] = Query(None),
-    keyword: Optional[str] = Query(None),
+    status: str | None = Query(None),
+    keyword: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -313,7 +313,7 @@ async def list_dispute_reviewers(
 @router.get("/cases/{case_id}/reviewer-candidates")
 async def list_dispute_reviewer_candidates(
     case_id: str,
-    keyword: Optional[str] = Query(None),
+    keyword: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:

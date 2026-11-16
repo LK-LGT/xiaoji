@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 
 from ..domain.models import Department, Employee, EmployeeDepartment, SystemAdmin
 
-
 # 组织节点类型。飞书只有部门与虚拟组两类，这里按规则归一。
 ORG_TYPE_DEPARTMENT = "DEPARTMENT"
 ORG_TYPE_GROUP = "GROUP"

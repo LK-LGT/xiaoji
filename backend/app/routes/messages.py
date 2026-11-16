@@ -1,6 +1,7 @@
 """消息 API 路由。"""
 
-from typing import Any, Optional
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -31,7 +32,7 @@ def _empty_summary() -> dict[str, Any]:
 
 @router.get("/summary")
 async def get_messages_summary(
-    current_user_id: Optional[str] = Query(None),
+    current_user_id: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取消息汇总（未读消息数等）。"""
@@ -43,7 +44,7 @@ async def get_messages_summary(
 
 @router.get("")
 async def list_messages(
-    current_user_id: Optional[str] = Query(None),
+    current_user_id: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -64,7 +65,7 @@ async def list_messages(
 @router.post("/{message_id}/read")
 async def mark_as_read(
     message_id: str,
-    current_user_id: Optional[str] = Query(None),
+    current_user_id: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """标记消息已读。"""
@@ -73,7 +74,7 @@ async def mark_as_read(
 
 @router.post("/read-all")
 async def mark_all_as_read(
-    current_user_id: Optional[str] = Query(None),
+    current_user_id: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """标记所有消息为已读。"""

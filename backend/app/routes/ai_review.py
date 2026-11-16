@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
@@ -26,8 +26,7 @@ from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..dependencies import get_current_user
 from ..domain.models import Employee
-from ..services import ai_review_engine, ai_service, planning
-from ..services import access_control
+from ..services import access_control, ai_review_engine, ai_service, planning
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +147,7 @@ async def ensure_plan_ai_review(
 async def preview_result_ai_review(
     bizType: str = Form(...),
     bizId: str = Form(...),
-    file: Optional[UploadFile] = File(None),
+    file: UploadFile | None = File(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:

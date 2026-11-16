@@ -18,26 +18,26 @@ total_employees = []
 
 while True:
     page_num += 1
-    
+
     params = {
         "page_size": 50,
         "department_id_type": "department_id",
     }
     if page_token:
         params["page_token"] = page_token
-    
+
     try:
         data = client._request("GET", "/contact/v3/users", params=params)
-        
+
         items = data.get("items", [])
         total_employees.extend(items)
-        
+
         print(f"第 {page_num} 页：{len(items)} 人，累计：{len(total_employees)} 人")
-        
+
         page_token = data.get("page_token")
         if not page_token:
             break
-    
+
     except Exception as e:
         print(f"错误: {e}")
         break
@@ -62,7 +62,7 @@ if total_employees:
             if dept_id not in depts:
                 depts[dept_id] = 0
             depts[dept_id] += 1
-    
+
     print(f"\n按部门统计 ({len(depts)} 个部门)：")
     for dept_id, count in sorted(depts.items(), key=lambda x: x[1], reverse=True):
         print(f"  {dept_id}: {count} 人")

@@ -17,8 +17,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
-from typing import Any, Sequence
+from collections.abc import Sequence
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -40,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 def _now() -> datetime:
     """当前 UTC 时间（naive），与 `domain.models._now` 保持同一口径。"""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 # ===========================================================================

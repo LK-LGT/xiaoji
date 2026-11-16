@@ -13,16 +13,16 @@ import logging
 import secrets
 import string
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
+from ...dependencies import get_current_user
 from ...domain.models import Employee
 from ...services import password_hasher, system_views
 from ..shared import JsonBody
-from ...dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +59,10 @@ def _generate_initial_password(length: int = 12) -> str:
 
 @router.get("")
 async def list_users(
-    keyword: Optional[str] = Query(None),
-    deptId: Optional[str] = Query(None),
-    status: Optional[int] = Query(None),
-    roleId: Optional[str] = Query(None),
+    keyword: str | None = Query(None),
+    deptId: str | None = Query(None),
+    status: int | None = Query(None),
+    roleId: str | None = Query(None),
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),

@@ -28,8 +28,8 @@ from sqlalchemy.orm import Session
 from .. import exceptions
 from ..domain.enums import RecordStatus, SubmitSource
 from ..domain.models import AssessmentRecord, AssessmentTask, Employee
+from ..schemas_self_review import SelfReviewSubmitRequest
 from ..services import review_service
-from ..schemas_self_review import SelfReviewAnswerItem, SelfReviewSubmitRequest
 
 logger = logging.getLogger(__name__)
 

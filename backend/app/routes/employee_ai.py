@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
@@ -51,7 +51,7 @@ class AiOperationPayload(BaseModel):
     planDate: str = ""
     intentText: str = ""
     instruction: str = ""
-    conversationId: Optional[int] = None
+    conversationId: int | None = None
     conciseOutput: bool = False
     exampleFileName: str = ""
     exampleContent: str = ""
@@ -75,7 +75,7 @@ class AiConversationPayload(BaseModel):
 
     sceneCode: str = ""
     bizType: str = ""
-    bizId: Optional[int] = None
+    bizId: int | None = None
     title: str = ""
 
 
@@ -94,8 +94,8 @@ def _ok(data: Any) -> dict:
 @router.get("/month-plans/context")
 async def get_month_plan_ai_context(
     planMonth: str,
-    intentText: Optional[str] = Query(None),
-    selectedKnowledgeTypes: Optional[str] = Query(None),
+    intentText: str | None = Query(None),
+    selectedKnowledgeTypes: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取月计划 AI 上下文。
@@ -299,10 +299,10 @@ async def record_ai_suggestion_action(
 
 @router.get("/conversations/active")
 async def get_active_ai_conversation(
-    sceneCode: Optional[str] = Query(None),
-    bizId: Optional[int] = Query(None),
-    planType: Optional[str] = Query(None),
-    periodKey: Optional[str] = Query(None),
+    sceneCode: str | None = Query(None),
+    bizId: int | None = Query(None),
+    planType: str | None = Query(None),
+    periodKey: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -324,10 +324,10 @@ async def get_active_ai_conversation(
 
 @router.get("/conversations/history")
 async def list_ai_conversation_history(
-    sceneCode: Optional[str] = Query(None),
-    bizId: Optional[int] = Query(None),
-    planType: Optional[str] = Query(None),
-    periodKey: Optional[str] = Query(None),
+    sceneCode: str | None = Query(None),
+    bizId: int | None = Query(None),
+    planType: str | None = Query(None),
+    periodKey: str | None = Query(None),
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=100),
     current_user: Employee = Depends(get_current_user),
@@ -352,7 +352,7 @@ async def list_ai_conversation_history(
 @router.get("/conversations/{conversation_id}/messages")
 async def list_ai_conversation_messages(
     conversation_id: str,
-    beforeId: Optional[str] = Query(None),
+    beforeId: str | None = Query(None),
     size: int = Query(30, ge=1, le=200),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -545,9 +545,9 @@ def _serialize_message(message: Any) -> dict:
 
 
 def _scene_code(
-    scene_code: Optional[str],
-    plan_type: Optional[str],
-    period_key: Optional[str],
+    scene_code: str | None,
+    plan_type: str | None,
+    period_key: str | None,
 ) -> str:
     """归一化场景标识。
 

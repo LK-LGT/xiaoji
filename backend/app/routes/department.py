@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/department", tags=["department"], dependencies=[Depends(get_current_user)])
 
 
-def _normalize_plan_month(plan_month: Optional[str]) -> str:
+def _normalize_plan_month(plan_month: str | None) -> str:
     """校验并归一 `planMonth` 查询参数。
 
     BUG-R6-05 修复：前端 `DepartmentDashboard.vue` / `ResultConfirm.vue` 发的是
@@ -197,9 +197,9 @@ def _month_plan_page(
     *,
     page_no: int,
     page_size: int,
-    plan_year: Optional[int] = None,
-    plan_month: Optional[int] = None,
-    status: Optional[str] = None,
+    plan_year: int | None = None,
+    plan_month: int | None = None,
+    status: str | None = None,
 ) -> dict:
     """构造月计划审批分页响应（`LeaderMonthPlanApprovalPage`）。
 
@@ -247,7 +247,7 @@ class DepartmentEmployeeSummary(BaseModel):
     """部门员工摘要"""
     ownerId: str
     employeeName: str
-    employeeNo: Optional[str] = None
+    employeeNo: str | None = None
     # 飞书部门 ID 是长十六进制字符串。
     orgId: str
     orgName: str
@@ -256,7 +256,7 @@ class DepartmentEmployeeSummary(BaseModel):
     dayPlanCount: int = 0
     resultCount: int = 0
     totalWorkCount: int = 0
-    latestActivityAt: Optional[str] = None
+    latestActivityAt: str | None = None
 
     class Config:
         from_attributes = True
@@ -265,7 +265,7 @@ class DepartmentEmployeeSummary(BaseModel):
 class PendingMember(BaseModel):
     """待审批成员"""
     employeeName: str
-    employeeNo: Optional[str] = None
+    employeeNo: str | None = None
     statusLabel: str
 
 
@@ -275,7 +275,7 @@ class ProjectMonthPlanPackage(BaseModel):
     # 飞书部门/项目组 ID 是长十六进制字符串，不能转 int。
     groupId: str
     groupName: str
-    departmentName: Optional[str] = None
+    departmentName: str | None = None
     planMonth: str
     totalMemberCount: int = 0
     approvedCount: int = 0
@@ -290,25 +290,25 @@ class ProjectMonthPlanPackage(BaseModel):
 class ProjectMonthPlanItem(BaseModel):
     """月计划条目"""
     id: str
-    taskName: Optional[str] = None
-    taskContent: Optional[str] = None
-    deliverable: Optional[str] = None
-    quality: Optional[str] = None
-    performanceWeight: Optional[int] = None
-    estimatedValue: Optional[float] = None
-    estimatedStartDate: Optional[str] = None
-    estimatedEndDate: Optional[str] = None
+    taskName: str | None = None
+    taskContent: str | None = None
+    deliverable: str | None = None
+    quality: str | None = None
+    performanceWeight: int | None = None
+    estimatedValue: float | None = None
+    estimatedStartDate: str | None = None
+    estimatedEndDate: str | None = None
 
 
 class ProjectMonthPlan(BaseModel):
     """项目组成员月计划"""
     id: str
     employeeName: str
-    employeeNo: Optional[str] = None
+    employeeNo: str | None = None
     version: int = 1
-    approvedAt: Optional[str] = None
-    approverName: Optional[str] = None
-    leaderComment: Optional[str] = None
+    approvedAt: str | None = None
+    approverName: str | None = None
+    leaderComment: str | None = None
     items: list[ProjectMonthPlanItem] = Field(default_factory=list)
 
 
@@ -322,9 +322,9 @@ class ProjectResultMemberProgress(BaseModel):
     """项目组成员成果进度（前端 `ProjectResultMemberProgress`）。"""
 
     ownerId: str = ""
-    employeeNo: Optional[str] = None
+    employeeNo: str | None = None
     employeeName: str = ""
-    positionName: Optional[str] = None
+    positionName: str | None = None
     resultStatus: str = ""
     statusLabel: str = ""
     confirmedResultCount: int = 0
@@ -355,14 +355,14 @@ class ProjectResultPackage(BaseModel):
     # 飞书部门/项目组 ID 是长十六进制字符串。
     groupId: str
     groupName: str
-    departmentName: Optional[str] = None
+    departmentName: str | None = None
     planMonth: str
     totalMemberCount: int = 0
     completedMemberCount: int = 0
     status: str = "COLLECTING"  # EMPTY / COLLECTING / OPEN
     contentAvailable: bool = False
     pendingMembers: list[ProjectResultMemberProgress] = Field(default_factory=list)
-    completedAt: Optional[str] = None
+    completedAt: str | None = None
 
     class Config:
         from_attributes = True
@@ -382,13 +382,13 @@ class ProjectResultPackageDetail(BaseModel):
 @router.get("/employees", response_model=list[DepartmentEmployeeSummary])
 async def list_department_employees(
     db: Session = Depends(get_db),
-    org_id: Optional[str] = Query(None),
+    org_id: str | None = Query(None),
 ):
     """获取部门员工及其工作统计"""
     try:
         # 查询所有员工
         employees: list[Employee] = db.query(Employee).all()
-        
+
         result = []
         for emp in employees:
             # 获取组织名称
@@ -399,14 +399,14 @@ async def list_department_employees(
             # 现在原样透出字符串；无部门时用字符串哨兵 `"0"`（与
             # `_empty_leader_employee_summary` 的口径一致）。
             org_id_value = str(emp.department_id) if emp.department_id else "0"
-            
+
             if emp.department_id:
                 dept = db.query(Department).filter(
                     Department.id == emp.department_id
                 ).first()
                 if dept:
                     org_name = dept.name
-            
+
             # 统计数据（暂时使用模拟值）
             result.append(DepartmentEmployeeSummary(
                 ownerId=str(emp.id),
@@ -421,7 +421,7 @@ async def list_department_employees(
                 totalWorkCount=15,
                 latestActivityAt="2026-11-13T14:30:00",
             ))
-        
+
         return result
     except Exception as e:
         logger.error(f"获取部门员工失败: {str(e)}")
@@ -434,11 +434,11 @@ async def list_department_employees(
 @router.get("/project-month-plan-packages", response_model=list[ProjectMonthPlanPackage])
 async def list_project_month_plan_packages(
     db: Session = Depends(get_db),
-    plan_month: Optional[str] = Query(None, alias="planMonth"),
-    org_id: Optional[str] = Query(None),
+    plan_month: str | None = Query(None, alias="planMonth"),
+    org_id: str | None = Query(None),
 ):
     """获取项目组月计划包
-    
+
     按项目组、月份统计计划审批情况
     """
     plan_month = _normalize_plan_month(plan_month)
@@ -482,7 +482,7 @@ async def list_project_month_plan_packages(
                 pendingMembers=[]
             ),
         ]
-        
+
         return packages
     except Exception as e:
         logger.error(f"获取项目组月计划包失败: {str(e)}")
@@ -496,7 +496,7 @@ async def list_project_month_plan_packages(
 async def get_project_month_plan_package(
     group_id: str,
     db: Session = Depends(get_db),
-    plan_month: Optional[str] = Query(None, alias="planMonth"),
+    plan_month: str | None = Query(None, alias="planMonth"),
 ):
     """获取项目组完整月计划详情"""
     plan_month = _normalize_plan_month(plan_month)
@@ -512,7 +512,7 @@ async def get_project_month_plan_package(
             contentAvailable=True,
             status="OPEN",
         )
-        
+
         plans = [
             ProjectMonthPlan(
                 id="plan_001",
@@ -592,7 +592,7 @@ async def get_project_month_plan_package(
                 ]
             ),
         ]
-        
+
         return ProjectMonthPlanPackageDetail(
             packageInfo=package_info,
             plans=plans
@@ -657,16 +657,16 @@ def _build_result_packages(
     db: Session,
     *,
     plan_month: str,
-    org_id: Optional[str],
-    scope: Optional[plan_approval.ApprovalScope],
+    org_id: str | None,
+    scope: plan_approval.ApprovalScope | None,
 ) -> list[ProjectResultPackage]:
     """按部门聚合真实成果，构造项目组成果包。
 
     ⚠️ 可见范围：`scope` 为 None 表示不限制（内部调用）；
     否则只聚合 `scope` 覆盖到的部门/直属下属所在部门。
     """
-    from ..domain.result_models import Result
     from ..domain.models import MonthPlan, MonthPlanItem
+    from ..domain.result_models import Result
 
     # 1) 该月份所有有月计划的员工
     plans = (
@@ -798,8 +798,8 @@ def _build_result_packages(
 @router.get("/project-result-packages", response_model=list[ProjectResultPackage])
 async def list_project_result_packages(
     db: Session = Depends(get_db),
-    plan_month: Optional[str] = Query(None, alias="planMonth"),
-    org_id: Optional[str] = Query(None),
+    plan_month: str | None = Query(None, alias="planMonth"),
+    org_id: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
 ):
     """获取项目组成果包（按部门聚合真实成果）。
@@ -848,9 +848,9 @@ async def get_department_dashboard(
 
 @router.get("/month-plan-approvals", include_in_schema=True)
 async def list_plan_approvals(
-    planYear: Optional[int] = Query(None),
-    planMonth: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
+    planYear: int | None = Query(None),
+    planMonth: int | None = Query(None),
+    status: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -884,9 +884,9 @@ async def list_plan_approvals(
 # 兼容旧路径（前端已切换到 /month-plan-approvals）
 @router.get("/plan-approval", include_in_schema=False)
 async def list_plan_approvals_legacy(
-    planYear: Optional[int] = Query(None),
-    planMonth: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
+    planYear: int | None = Query(None),
+    planMonth: int | None = Query(None),
+    status: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -896,7 +896,7 @@ async def list_plan_approvals_legacy(
 
 @router.get("/week-plan-approvals", include_in_schema=True)
 async def list_week_plan_approvals(
-    status: Optional[str] = Query(None),
+    status: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -917,7 +917,7 @@ async def list_week_plan_approvals(
 # 兼容旧路径（前端已切换到 /week-plan-approvals）
 @router.get("/week-plan-approval", include_in_schema=False)
 async def list_week_plan_approvals_legacy(
-    status: Optional[str] = Query(None),
+    status: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1226,7 +1226,7 @@ async def list_department_employee_work_items(
     owner_id: str,
     page_no: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    work_type: Optional[str] = Query(None),
+    work_type: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取指定员工的工作项分页。
@@ -1271,7 +1271,7 @@ async def get_department_employee_month_plan(
 @router.get("/project-result-packages/{group_id}")
 async def get_project_result_package(
     group_id: str,
-    plan_month: Optional[str] = Query(None, alias="planMonth"),
+    plan_month: str | None = Query(None, alias="planMonth"),
     db: Session = Depends(get_db),
     current_user: Employee = Depends(get_current_user),
 ) -> dict:
@@ -1635,9 +1635,9 @@ def _empty_leader_employee_summary(owner_id: str) -> dict:
 async def page_month_plan_approvals(
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=200),
-    planYear: Optional[int] = Query(None),
-    planMonth: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
+    planYear: int | None = Query(None),
+    planMonth: int | None = Query(None),
+    status: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -1690,9 +1690,9 @@ async def get_month_plan_approval(
 async def page_leader_month_plan_approvals(
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=200),
-    planYear: Optional[int] = Query(None),
-    planMonth: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
+    planYear: int | None = Query(None),
+    planMonth: int | None = Query(None),
+    status: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:

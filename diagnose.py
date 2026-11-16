@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """快速诊断脚本 - 检查系统是否正常运行。"""
 
-import requests
 import sys
-from datetime import datetime
+
+import requests
+
 
 def print_header(text):
     print(f"\n{'='*60}")
@@ -20,9 +21,9 @@ def print_status(name, status, detail=""):
 
 def main():
     print_header("🔍 绩效管理系统 - 快速诊断")
-    
+
     all_good = True
-    
+
     # 1. 检查后端
     print("\n📡 后端服务检查...")
     try:
@@ -35,7 +36,7 @@ def main():
     except Exception as e:
         print_status("后端 API", False, str(e))
         all_good = False
-    
+
     # 2. 检查前端
     print("\n🎨 前端服务检查...")
     try:
@@ -48,7 +49,7 @@ def main():
     except Exception as e:
         print_status("前端应用", False, str(e))
         all_good = False
-    
+
     # 3. 检查 API 功能
     print("\n🔗 API 功能检查...")
     try:
@@ -70,7 +71,7 @@ def main():
     except Exception as e:
         print_status("获取员工列表", False, str(e))
         all_good = False
-    
+
     # 4. 检查部门数据
     print("\n🏢 部门数据检查...")
     try:
@@ -92,10 +93,10 @@ def main():
     except Exception as e:
         print_status("获取部门列表", False, str(e))
         all_good = False
-    
+
     # 最终结果
     print_header("📊 诊断结果")
-    
+
     if all_good:
         print("""
 ✅ 所有检查都通过！系统正常运行

@@ -5,15 +5,14 @@
 """
 
 from datetime import datetime, timedelta
-from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
+from ...dependencies import get_current_user
 from ...services import system_views, workday_rule
 from ..shared import JsonBody
-from ...dependencies import get_current_user
 
 router = APIRouter(prefix="/v1/system", tags=["system"], dependencies=[Depends(get_current_user)])
 
@@ -155,9 +154,9 @@ async def get_system_options(db: Session = Depends(get_db)) -> dict:
 
 @router.get("/employees")
 async def get_employees(
-    keyword: Optional[str] = Query(None),
-    deptId: Optional[str] = Query(None),
-    status: Optional[int] = Query(None),
+    keyword: str | None = Query(None),
+    deptId: str | None = Query(None),
+    status: int | None = Query(None),
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),

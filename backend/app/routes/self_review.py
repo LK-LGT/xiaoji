@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy.orm import Session
@@ -25,9 +24,9 @@ from .. import dependencies, exceptions
 from ..core.db import get_db
 from ..domain.models import Employee
 from ..schemas_self_review import (
+    SelfReviewErrorResponse,
     SelfReviewSubmitRequest,
     SelfReviewSubmitResponse,
-    SelfReviewErrorResponse,
 )
 from ..services import self_review_service
 

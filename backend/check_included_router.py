@@ -1,5 +1,5 @@
-from app.routes.self_review import router as sr_router
 from app.main import app
+from app.routes.self_review import router as sr_router
 
 print("=== Checking _IncludedRouter ===")
 for route_obj in app.routes:

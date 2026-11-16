@@ -3,26 +3,28 @@
 """
 import uuid
 from datetime import date
+
 from app.core.db import get_engine, get_sessionmaker
 from app.domain.models import Base, Department, Employee
+
 
 def seed_data():
     """创建示例数据"""
     # 创建所有表
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
-    
+
     # 获取 session
     SessionLocal = get_sessionmaker()
     db = SessionLocal()
-    
+
     try:
         # 检查是否已经有数据
         existing = db.query(Department).first()
         if existing:
             print("✓ 数据库已有示例数据，跳过初始化")
             return
-        
+
         # 创建部门
         depts = [
             Department(id="DEPT_HR", name="人力资源部", parent_id=None, leader_id=None, active=True),
@@ -34,14 +36,14 @@ def seed_data():
         db.add_all(depts)
         db.commit()
         print("✓ 部门创建成功")
-        
+
         # 创建员工
         admin_id = str(uuid.uuid4())
         manager_id = str(uuid.uuid4())
         employee_id = str(uuid.uuid4())
         hr_staff_id = str(uuid.uuid4())
         tech_lead_id = str(uuid.uuid4())
-        
+
         employees = [
             Employee(
                 id=admin_id,
@@ -97,16 +99,16 @@ def seed_data():
         db.add_all(employees)
         db.commit()
         print("✓ 员工创建成功")
-        
+
         # 更新部门负责人
         db.query(Department).filter(Department.id == "DEPT_HR").update({"leader_id": admin_id})
         db.query(Department).filter(Department.id == "DEPT_SALES").update({"leader_id": manager_id})
         db.query(Department).filter(Department.id == "DEPT_TECH").update({"leader_id": tech_lead_id})
         db.commit()
         print("✓ 部门负责人分配成功")
-        
+
         print("\n✅ 示例数据创建完成！")
-        
+
     finally:
         db.close()
 

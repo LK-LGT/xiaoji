@@ -17,7 +17,7 @@ print("📂 拉取所有部门...")
 try:
     departments = client.fetch_departments()
     print(f"✅ 拉取到 {len(departments)} 个部门\n")
-    
+
     for dept in departments[:10]:
         print(f"  - {dept.get('name')} (ID: {dept.get('department_id')})")
         print(f"    主管: {dept.get('leader_user_id')}")
@@ -33,12 +33,12 @@ if departments:
         dept_id = dept.get('department_id')
         dept_name = dept.get('name')
         print(f"\n部门: {dept_name} ({dept_id})")
-        
+
         try:
             # 飞书 API: department_id_type 指定用什么 ID 查询
-            data = client._request("GET", "/contact/v3/users", 
+            data = client._request("GET", "/contact/v3/users",
                 params={"department_id": dept_id, "department_id_type": "department_id", "page_size": 50})
-            
+
             items = data.get("items", [])
             print(f"  员工数: {len(items)}")
             for emp in items[:3]:

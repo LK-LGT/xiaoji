@@ -21,7 +21,7 @@ import logging
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -67,7 +67,7 @@ class SyncNotConfiguredError(Exception):
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def build_idempotency_key(
@@ -82,9 +82,9 @@ def build_idempotency_key(
     造成重复同步；定时触发按「调度窗口」聚合，天然幂等。
     """
     if trigger_type == "scheduled":
-        window = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")[:-1] + "0"
+        window = datetime.now(UTC).strftime("%Y%m%d%H%M")[:-1] + "0"
         return f"scheduled:{window}"
-    window = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")[:-1] + "0"
+    window = datetime.now(UTC).strftime("%Y%m%d%H%M")[:-1] + "0"
     return f"manual:{actor_id or 'anonymous'}:{mode}:{window}"
 
 
@@ -133,7 +133,7 @@ def create_batch(
         raise SyncAlreadyRunningError(batch_id=running.id)
 
     batch = OrganizationSyncBatch(
-        batch_no=f"ORG-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10]}",
+        batch_no=f"ORG-{datetime.now(UTC):%Y%m%d}-{uuid.uuid4().hex[:10]}",
         status="pending",
         mode=mode,
         trigger_type=trigger_type,

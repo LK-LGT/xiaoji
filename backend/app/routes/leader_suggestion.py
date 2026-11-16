@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -130,14 +130,14 @@ def _load_evidence_for_reviewer(
 
 @router.get("/result-suggestions")
 async def list_result_suggestions(
-    status: Optional[str] = Query(None),
-    orgId: Optional[str] = Query(None),
-    ownerId: Optional[str] = Query(None),
-    scopeOrgId: Optional[str] = Query(None),
-    startDate: Optional[str] = Query(None),
-    endDate: Optional[str] = Query(None),
-    suggestionStatus: Optional[str] = Query(None),
-    evidenceStatus: Optional[str] = Query(None),
+    status: str | None = Query(None),
+    orgId: str | None = Query(None),
+    ownerId: str | None = Query(None),
+    scopeOrgId: str | None = Query(None),
+    startDate: str | None = Query(None),
+    endDate: str | None = Query(None),
+    suggestionStatus: str | None = Query(None),
+    evidenceStatus: str | None = Query(None),
     current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -357,8 +357,8 @@ async def open_leader_result_evidence_archive_entry(
 
 @router.get("/project-day-plan-packages")
 async def list_leader_project_day_plan_packages(
-    scopeOrgId: Optional[str] = Query(None),
-    planDate: Optional[str] = Query(None),
+    scopeOrgId: str | None = Query(None),
+    planDate: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取项目日计划包列表。
@@ -371,7 +371,7 @@ async def list_leader_project_day_plan_packages(
 @router.get("/project-day-plan-packages/{group_id}")
 async def get_leader_project_day_plan_package(
     group_id: str,
-    planDate: Optional[str] = Query(None),
+    planDate: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取项目日计划包详情。
@@ -395,8 +395,8 @@ async def get_leader_project_day_plan_package(
 
 @router.get("/project-week-plan-packages")
 async def list_leader_project_week_plan_packages(
-    scopeOrgId: Optional[str] = Query(None),
-    weekStart: Optional[str] = Query(None),
+    scopeOrgId: str | None = Query(None),
+    weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取项目周计划包列表。
@@ -409,7 +409,7 @@ async def list_leader_project_week_plan_packages(
 @router.get("/project-week-plan-packages/{group_id}")
 async def get_leader_project_week_plan_package(
     group_id: str,
-    weekStart: Optional[str] = Query(None),
+    weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取项目周计划包详情。
@@ -427,7 +427,7 @@ async def get_leader_project_week_plan_package(
 @router.get("/project-week-plan-packages/{group_id}/excel")
 async def download_leader_project_week_plan_excel(
     group_id: str,
-    weekStart: Optional[str] = Query(None),
+    weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> Any:
     """导出项目周计划 Excel。
@@ -447,8 +447,8 @@ async def download_leader_project_week_plan_excel(
 
 @router.get("/project-week-result-packages")
 async def list_leader_project_week_result_packages(
-    scopeOrgId: Optional[str] = Query(None),
-    weekStart: Optional[str] = Query(None),
+    scopeOrgId: str | None = Query(None),
+    weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取项目周成果包列表。
@@ -461,7 +461,7 @@ async def list_leader_project_week_result_packages(
 @router.get("/project-week-result-packages/{group_id}")
 async def get_leader_project_week_result_package(
     group_id: str,
-    weekStart: Optional[str] = Query(None),
+    weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取项目周成果包详情。
@@ -479,7 +479,7 @@ async def get_leader_project_week_result_package(
 @router.get("/project-week-result-packages/{group_id}/excel")
 async def download_leader_project_week_result_excel(
     group_id: str,
-    weekStart: Optional[str] = Query(None),
+    weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> Any:
     """导出项目周成果 Excel。

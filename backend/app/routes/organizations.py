@@ -15,8 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
-from ..domain.models import Department, Employee
 from ..dependencies import get_current_user
+from ..domain.models import Department, Employee
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +56,13 @@ def get_departments_tree(db: Session = Depends(get_db)) -> dict[str, Any]:
         .filter(~Department.id.like("DEPT_%"))
         .all()
     )
-    
+
     dept_map = {d.id: d for d in depts}
-    
+
     # 计算每个部门的直属员工数
     def get_direct_employee_count(dept_id: str) -> int:
         return db.query(Employee).filter(Employee.department_id == dept_id).count()
-    
+
     # 递归计算部门及子部门总人数
     def count_total_employees(dept_id: str, visited: set | None = None) -> int:
         if visited is None:
@@ -70,30 +70,30 @@ def get_departments_tree(db: Session = Depends(get_db)) -> dict[str, Any]:
         if dept_id in visited:
             return 0
         visited.add(dept_id)
-        
+
         # 直属员工
         direct = get_direct_employee_count(dept_id)
-        
+
         # 子部门的人
         children = [d for d in depts if d.parent_id == dept_id]
         total = direct
         for child in children:
             total += count_total_employees(child.id, visited)
-        
+
         return total
-    
+
     # 构建树结构
     def build_tree_node(dept_id: str) -> dict[str, Any]:
         dept = dept_map.get(dept_id)
         if not dept:
             return {}
-        
+
         direct_count = get_direct_employee_count(dept_id)
         total_count = count_total_employees(dept_id)
-        
+
         children_depts = [d for d in depts if d.parent_id == dept_id]
         children_depts.sort(key=lambda x: x.name or "")
-        
+
         return {
             "id": dept.id,
             "name": dept.name or "(根部门)",
@@ -102,20 +102,20 @@ def get_departments_tree(db: Session = Depends(get_db)) -> dict[str, Any]:
             "total_count": total_count,
             "children": [build_tree_node(child.id) for child in children_depts],
         }
-    
+
     # 找一级部门
     root_depts = [
-        d for d in depts 
+        d for d in depts
         if d.parent_id == "0" or d.parent_id == 0 or not d.parent_id
     ]
     root_depts.sort(key=lambda x: x.name or "")
-    
+
     tree = [build_tree_node(d.id) for d in root_depts]
-    
+
     total_emps = db.query(Employee).filter(
         ~Employee.department_id.like("DEPT_%")
     ).count()
-    
+
     return {
         "code": 0,
         "data": {
@@ -149,7 +149,7 @@ def get_org_chart(db: Session = Depends(get_db)) -> dict[str, Any]:
         .filter(~Department.id.like("DEPT_%"))
         .all()
     )
-    
+
     nodes = []
     for d in depts:
         nodes.append({
@@ -158,7 +158,7 @@ def get_org_chart(db: Session = Depends(get_db)) -> dict[str, Any]:
             "parent": d.parent_id or "root",
             "type": "department",
         })
-    
+
     return {
         "code": 0,
         "data": {
@@ -201,14 +201,14 @@ def get_department(
     dept = db.query(Department).filter(Department.id == department_id).first()
     if not dept:
         raise HTTPException(status_code=404, detail="Department not found")
-    
+
     # 查该部门的直属员工
     employees = (
         db.query(Employee)
         .filter(Employee.department_id == department_id)
         .all()
     )
-    
+
     return {
         "code": 0,
         "data": {
@@ -254,14 +254,14 @@ def list_departments(
     """
     query = db.query(Department).filter(~Department.id.like("DEPT_%"))
     total = query.count()
-    
+
     items = (
         query.order_by(Department.name)
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
-    
+
     return {
         "code": 0,
         "data": {
@@ -310,13 +310,13 @@ def get_employee(
     emp = db.query(Employee).filter(Employee.id == employee_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
-    
+
     dept = (
         db.query(Department)
         .filter(Department.id == emp.department_id)
         .first()
     )
-    
+
     return {
         "code": 0,
         "data": {
@@ -358,19 +358,19 @@ def list_employees(
         }
     """
     query = db.query(Employee).filter(~Employee.department_id.like("DEPT_%"))
-    
+
     if department_id:
         query = query.filter(Employee.department_id == department_id)
-    
+
     total = query.count()
-    
+
     items = (
         query.order_by(Employee.name)
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
-    
+
     return {
         "code": 0,
         "data": {

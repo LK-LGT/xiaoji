@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -44,7 +44,7 @@ class AiModelConfigPayload(BaseModel):
     configName: str = Field(default="")
     providerCode: str = Field(default="OPENAI_COMPATIBLE")
     baseUrl: str = Field(default="")
-    apiKey: Optional[str] = Field(default=None, description="仅写入不回传")
+    apiKey: str | None = Field(default=None, description="仅写入不回传")
     modelName: str = Field(default="")
     timeoutSeconds: int = Field(default=60)
     globalEnabled: bool = Field(default=False)
@@ -216,14 +216,14 @@ async def get_ai_metrics(
 
 @router.get("/call-logs")
 async def list_ai_call_logs(
-    start: Optional[str] = Query(None),
-    end: Optional[str] = Query(None),
-    sceneCode: Optional[str] = Query(None),
-    success: Optional[bool] = Query(None),
-    userId: Optional[str] = Query(None),
-    orgId: Optional[str] = Query(None),
-    requestId: Optional[str] = Query(None),
-    suggestionId: Optional[str] = Query(None),
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+    sceneCode: str | None = Query(None),
+    success: bool | None = Query(None),
+    userId: str | None = Query(None),
+    orgId: str | None = Query(None),
+    requestId: str | None = Query(None),
+    suggestionId: str | None = Query(None),
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),

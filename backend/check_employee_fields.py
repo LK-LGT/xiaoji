@@ -14,7 +14,7 @@ employees = client.fetch_employees(page_size=1)
 if employees:
     emp = employees[0]
     print("✅ 员工数据字段检查：\n")
-    
+
     required_fields = {
         'user_id': '员工 ID（必需）',
         'name': '员工名称（必需）',
@@ -23,13 +23,13 @@ if employees:
         'email': '邮箱',
         'open_id': '开放 ID',
     }
-    
+
     for field, desc in required_fields.items():
         if field in emp:
             print(f"   ✅ {field}: {emp[field]} - {desc}")
         else:
             print(f"   ❌ {field}: 缺失 - {desc}")
-            
+
     print("\n完整返回数据：")
     print(emp)
 else:

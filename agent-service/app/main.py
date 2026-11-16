@@ -325,10 +325,10 @@ def draft(req: DraftRequest, _auth: None = Depends(require_service_token)) -> Dr
     # --- 3. 证据缺口 ---
     #    判定标准：某维度**没有关联到任何可引用证据** → 需要补
     #    （而不是"评语里没引用" —— 评语是模型写的，不该用它判断证据够不够）
-    
+
     # 构建证据目录 —— evidence_id → evidence 对象
     evidence_by_id = {e.id: e for e in req.evidence}
-    
+
     gaps: list[dict[str, Any]] = []
     for m in req.metrics:
         # 情况 1：没有关联任何证据
@@ -340,7 +340,7 @@ def draft(req: DraftRequest, _auth: None = Depends(require_service_token)) -> Dr
                 }
             )
             continue
-        
+
         # 情况 2：关联的证据 ID 在 evidence 里不存在
         missing_ids = [eid for eid in m.evidence_ids if eid not in evidence_by_id]
         if missing_ids:
@@ -350,7 +350,7 @@ def draft(req: DraftRequest, _auth: None = Depends(require_service_token)) -> Dr
                     "request": f"「{m.dimension or m.code}」引用的证据 ID {missing_ids} 不存在或已删除，请重新关联。",
                 }
             )
-    
+
     # 所有实际存在且可用的证据
     linked_evidence_ids = {eid for m in req.metrics for eid in m.evidence_ids if eid in evidence_by_id}
 

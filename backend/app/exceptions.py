@@ -5,21 +5,21 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 
 class BaseAppError(Exception):
     """所有业务异常的基类。
-    
+
     FastAPI 中间件会捕获这个异常，转成 HTTPException。
     """
-    
+
     def __init__(
         self,
         code: str,
         message: str,
         status_code: int = 400,
-        details: Optional[dict] = None
+        details: dict | None = None
     ):
         self.code = code
         self.message = message
@@ -35,18 +35,18 @@ class BaseAppError(Exception):
 
 class AttendanceEvidenceRejected(BaseAppError):
     """决策②：考勤异常证据不能进入算分集。
-    
+
     当：
     - 尝试添加考勤异常作为指标值
     - 尝试用考勤异常支持某个评分
-    
+
     场景：
     - 员工请假 → 仅记录，不计分
     - 加班 → 仅参考，不计分
     - 迟到 → 仅参考，不计分
     """
-    
-    def __init__(self, attendance_type: Optional[str] = None):
+
+    def __init__(self, attendance_type: str | None = None):
         message = f"考勤异常({attendance_type})" if attendance_type else "考勤异常"
         message += "仅作参考，不能进入评分计算集合"
         super().__init__(
@@ -59,18 +59,18 @@ class AttendanceEvidenceRejected(BaseAppError):
 
 class ModelNotTrusted(BaseAppError):
     """决策⑤：模型无法自行决策权限、等级等敏感事项。
-    
+
     当：
     - AI 尝试覆盖用户权限
     - AI 尝试直接修改分数
     - AI 尝试作为唯一依据做权限检查
-    
+
     场景：
     - AI 建议"查看员工 A 的数据" → 被拒绝，因为权限由 L2 决定
     - AI 生成的等级作为 Score.rating → 被拒绝，因为分数由规则引擎产出
     """
-    
-    def __init__(self, detail: str, ai_output: Optional[str] = None):
+
+    def __init__(self, detail: str, ai_output: str | None = None):
         super().__init__(
             code="MODEL_NOT_TRUSTED",
             message=f"AI 建议不可直接使用：{detail}",
@@ -81,16 +81,16 @@ class ModelNotTrusted(BaseAppError):
 
 class GapDetected(BaseAppError):
     """关键指标缺失。
-    
+
     当：
     - 必需指标没有数据
     - 指标指向的证据不存在
-    
+
     场景：
     - 销售额指标指向证据 E001，但 E001 不存在 → 降级处理
     - 关键指标（weight > 0.1）缺失 → 提示 HR
     """
-    
+
     def __init__(self, metric_code: str, reason: str):
         super().__init__(
             code="GAP_DETECTED",
@@ -107,18 +107,18 @@ class GapDetected(BaseAppError):
 
 class PermissionDenied(BaseAppError):
     """用户无权执行该操作。
-    
+
     参考 P0-3 权限模型：
     - 权限来自 token（可信）
     - 不信任 URL 参数或 Body 中的 employee_id
     - 权限检查在 L2 业务层，不让 L3 AI 参与
     """
-    
+
     def __init__(
         self,
         user_id: str,
         action: str,
-        resource: Optional[str] = None
+        resource: str | None = None
     ):
         resource_str = f" {resource}" if resource else ""
         message = f"用户 {user_id} 无权执行 {action}{resource_str}"
@@ -136,7 +136,7 @@ class PermissionDenied(BaseAppError):
 
 class NotAuthenticated(BaseAppError):
     """用户未认证。"""
-    
+
     def __init__(self, reason: str = "Token 无效或过期"):
         super().__init__(
             code="NOT_AUTHENTICATED",
@@ -152,9 +152,9 @@ class NotAuthenticated(BaseAppError):
 
 class DataValidationError(BaseAppError):
     """数据验证失败。"""
-    
-    def __init__(self, detail: str, field: Optional[str] = None):
-        message = f"数据验证失败"
+
+    def __init__(self, detail: str, field: str | None = None):
+        message = "数据验证失败"
         if field:
             message += f"（字段 {field}）"
         message += f"：{detail}"
@@ -168,7 +168,7 @@ class DataValidationError(BaseAppError):
 
 class RecordNotFound(BaseAppError):
     """记录不存在。"""
-    
+
     def __init__(self, entity_type: str, entity_id: str):
         super().__init__(
             code="NOT_FOUND",
@@ -180,7 +180,7 @@ class RecordNotFound(BaseAppError):
 
 class DuplicateRecord(BaseAppError):
     """记录重复。"""
-    
+
     def __init__(self, entity_type: str, key: str, value: Any):
         super().__init__(
             code="DUPLICATE",
@@ -197,12 +197,12 @@ class DuplicateRecord(BaseAppError):
 
 class ConfigurationError(BaseAppError):
     """配置错误。
-    
+
     参考决策③：配置检验的三道保险。
     """
-    
-    def __init__(self, detail: str, field: Optional[str] = None):
-        message = f"配置错误"
+
+    def __init__(self, detail: str, field: str | None = None):
+        message = "配置错误"
         if field:
             message += f"（{field}）"
         message += f"：{detail}"
@@ -216,7 +216,7 @@ class ConfigurationError(BaseAppError):
 
 class RubricNotFound(BaseAppError):
     """rubric（分级规则）不存在或损坏。"""
-    
+
     def __init__(self, metric_code: str):
         super().__init__(
             code="RUBRIC_NOT_FOUND",
@@ -233,12 +233,12 @@ class RubricNotFound(BaseAppError):
 
 class InvalidStateTransition(BaseAppError):
     """无效的状态转移。
-    
+
     如：
     - 已确认的 Record 尝试重新自评
     - pending 状态的 Task 尝试关闭
     """
-    
+
     def __init__(
         self,
         entity_type: str,
@@ -263,7 +263,7 @@ class InvalidStateTransition(BaseAppError):
 
 class DeadlineExceeded(BaseAppError):
     """截止期限已过。"""
-    
+
     def __init__(self, deadline_type: str, deadline: str):
         super().__init__(
             code="DEADLINE_EXCEEDED",
@@ -275,18 +275,18 @@ class DeadlineExceeded(BaseAppError):
 
 class DowngradedMode(BaseAppError):
     """系统降级模式。
-    
+
     当：
     - AI 服务不可用
     - 某个关键依赖挂了
-    
+
     处理：
     - 返回结构化数据
     - 不尝试 AI 分析
     - 标注 data_quality.degraded = True
     """
-    
-    def __init__(self, reason: str, impact: Optional[str] = None):
+
+    def __init__(self, reason: str, impact: str | None = None):
         message = f"系统降级：{reason}"
         if impact:
             message += f"。影响：{impact}"
@@ -305,12 +305,12 @@ class DowngradedMode(BaseAppError):
 
 class KAnonymityViolation(BaseAppError):
     """k-匿名 破裂。
-    
+
     参考 P2-1：
     - 部门 < 5 人，不能显示平均分
     - 某些查询会暴露个人信息
     """
-    
+
     def __init__(self, detail: str):
         super().__init__(
             code="K_ANONYMITY_VIOLATION",

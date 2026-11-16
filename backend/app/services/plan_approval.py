@@ -31,9 +31,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Sequence
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -246,7 +247,7 @@ class ApprovalScope:
     managed_department_ids: frozenset[str]
 
     @classmethod
-    def from_access_context(cls, context: Any) -> "ApprovalScope":
+    def from_access_context(cls, context: Any) -> ApprovalScope:
         return cls(
             direct_report_ids=frozenset(getattr(context, "direct_report_ids", ()) or ()),
             managed_department_ids=frozenset(

@@ -16,20 +16,15 @@ from __future__ import annotations
 
 import logging
 from enum import StrEnum
-from typing import Optional
 
 from fastapi import Depends, Header
 from sqlalchemy.orm import Session
 
-from .core.db import get_db
 from .core.config import settings
+from .core.db import get_db
 from .domain import models
+from .exceptions import NotAuthenticated, PermissionDenied, RecordNotFound
 from .routes.auth import _decode_token
-from .exceptions import (
-    NotAuthenticated,
-    PermissionDenied,
-    RecordNotFound
-)
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +48,7 @@ MOCK_TOKENS = {
         "manager_id": None,
         "department_id": "DEPT_HR",
     },
-    
+
     # 主管示例 1：M001 是 E001/E002 的直属主管
     "manager_token_001": {
         "employee_id": "M001",
@@ -63,7 +58,7 @@ MOCK_TOKENS = {
         "manager_id": "M002",  # M001 的上级是 M002（部门经理）
         "department_id": "DEPT_SALES",
     },
-    
+
     # 主管示例 2：M002 是 M001 的直属主管（部门经理）
     "manager_token_002": {
         "employee_id": "M002",
@@ -73,7 +68,7 @@ MOCK_TOKENS = {
         "manager_id": None,
         "department_id": "DEPT_SALES",
     },
-    
+
     # 普通员工示例 1：E001 由 M001 管理
     "emp_token_001": {
         "employee_id": "E001",
@@ -83,7 +78,7 @@ MOCK_TOKENS = {
         "manager_id": "M001",
         "department_id": "DEPT_SALES",
     },
-    
+
     # 普通员工示例 2：E002 由 M001 管理
     "emp_token_002": {
         "employee_id": "E002",
@@ -93,7 +88,7 @@ MOCK_TOKENS = {
         "manager_id": "M001",
         "department_id": "DEPT_SALES",
     },
-    
+
     # 普通员工示例 3：E003 由 M002 管理
     "emp_token_003": {
         "employee_id": "E003",
@@ -171,36 +166,36 @@ PERMISSION_MATRIX = {
 # └─────────────────────────────────────────────────────┘
 
 async def get_current_user(
-    authorization: Optional[str] = Header(None),
+    authorization: str | None = Header(None),
     db: Session = Depends(get_db)
 ) -> models.Employee:
     """从 token 提取 employee_id 并验证。
-    
+
     关键原则（P0-3）：
     - token 由 L2 鉴权层签发，是可信的
     - employee_id 硬写在 token 里，不让前端/AI 决定
     - 即使请求中有其他 employee_id，也全部忽略
-    
+
     参数：
     - authorization: HTTP 请求头 "Authorization: Bearer <token>"
-    
+
     返回：
     - Employee 对象（包含 id, name, department_id, manager_id 等）
-    
+
     抛出：
     - NotAuthenticated：token 无效或过期
-    
+
     【板块1】实现：Mock 版本，从硬编码 token 解析用户信息。
     """
-    
+
     if not authorization:
         raise NotAuthenticated("缺少 Authorization header")
-    
+
     # 提取 token（格式：Bearer <token>）
     parts = authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise NotAuthenticated("Authorization header 格式错误，应为 'Bearer <token>'")
-    
+
     token = parts[1]
 
     if settings.secure_auth:
@@ -223,13 +218,13 @@ async def get_current_user(
     if not token_data:
         logger.warning("Invalid token received")
         raise NotAuthenticated("Token 无效或已过期")
-    
+
     employee_id = token_data["employee_id"]
-    
+
     # 从数据库查询员工对象
     # 如果数据库中没有这个员工，则创建一个临时对象（模拟场景）
     employee = db.query(models.Employee).filter_by(id=employee_id).first()
-    
+
     if not employee:
         # Mock 场景下可以创建，实际生产环境应该拒绝
         logger.info(f"创建 Mock 员工: {employee_id} ({token_data['name']})")
@@ -244,7 +239,7 @@ async def get_current_user(
         db.add(employee)
         db.commit()
         db.refresh(employee)
-    
+
     logger.info(f"Auth success: {employee.name} ({employee.id})")
     return employee
 
@@ -270,22 +265,22 @@ def get_direct_reports(
     db: Session = Depends(get_db)
 ) -> list[str]:
     """获取 user 的直属下级 ID 列表。
-    
+
     使用场景：
     - 主管查看/评分下级员工
     - 权限检查（colleague_result 查询）
-    
+
     返回：
     - 直属下级的 employee_id 列表
-    
+
     【板块1】实现：从数据库查询。
     """
-    
+
     direct_reports = db.query(models.Employee).filter_by(
         manager_id=user.id,
         employment_status="active"
     ).all()
-    
+
     return [emp.id for emp in direct_reports]
 
 
@@ -324,22 +319,22 @@ def check_can_view_score(
     db: Session
 ) -> bool:
     """检查 user_id 是否能查看 target_employee_id 的成绩。
-    
+
     权限规则：
     - 自己能查自己（view_own_score）
     - 主管能查直属下级（view_direct_report_score）
     - 部门负责人能查管理范围内员工
     - HR 能查所有人（view_all_scores）
-    
+
     参数：
     - user_id: 当前用户 ID
     - target_employee_id: 目标员工 ID
     - db: SQLAlchemy Session（必须传入，不能用 Depends）
-    
+
     返回：True（有权）
-    
+
     抛出：PermissionDenied（无权）
-    
+
     【要求 13-17】
     - 所有函数都接收 db:Session，数据库操作全部使用传入会话
     - 权限不通过时，抛出 exceptions.PermissionDenied，不返回普通 HTTPException
@@ -354,7 +349,7 @@ def check_can_view_score(
             action="view_score",
             resource=f"employee:{target_employee_id}（当前用户不存在）"
         )
-    
+
     target_emp = db.query(models.Employee).filter_by(id=target_employee_id).first()
     if not target_emp:
         raise PermissionDenied(
@@ -362,7 +357,7 @@ def check_can_view_score(
             action="view_score",
             resource=f"employee:{target_employee_id}（目标员工不存在）"
         )
-    
+
     context = build_access_context_for_user(user, db)
     if can_access_employee(context, target_emp, db):
         return True
@@ -380,28 +375,28 @@ def check_can_submit_review(
     db: Session
 ) -> models.AssessmentRecord:
     """检查 user_id 是否能提交某个 record 的评分。
-    
+
     权限规则：
     - 自己的 record，自己能提交自评（submit_own_review）
     - 直属下级的 record，主管能提交评分（submit_direct_report_review）
-    
+
     参数：
     - user_id: 当前用户 ID
     - target_record_id: 目标记录 ID
     - db: SQLAlchemy Session（必须传入，不能用 Depends）
-    
+
     返回：AssessmentRecord 对象（后续使用）
-    
+
     抛出：
     - PermissionDenied（无权）
     - RecordNotFound（记录不存在）
-    
+
     【要求 13-17】
     - 所有函数都接收 db:Session，数据库操作全部使用传入会话
     - 权限不通过时，抛出 exceptions.PermissionDenied，不返回普通 HTTPException
     - 没有写死业务逻辑，不混入业务接口代码，只做依赖注入
     """
-    
+
     from .services.access_control import can_access_employee
 
     # 第 1 步：查询当前用户完整信息
@@ -412,12 +407,12 @@ def check_can_submit_review(
             action="submit_review",
             resource=f"record:{target_record_id}（当前用户不存在）"
         )
-    
+
     # 第 2 步：查询记录
     record = db.query(models.AssessmentRecord).filter_by(id=target_record_id).first()
     if not record:
         raise RecordNotFound("AssessmentRecord", target_record_id)
-    
+
     # 第 3 步：查询被评估的员工
     target_emp = db.query(models.Employee).filter_by(id=record.employee_id).first()
     if not target_emp:
@@ -426,12 +421,11 @@ def check_can_submit_review(
             action="submit_review",
             resource=f"record:{target_record_id}（目标员工不存在）"
         )
-    
+
     context = build_access_context_for_user(user, db)
     if record.employee_id == user_id and context.has_permission("submit_own_review"):
         return record
 
-    from .services.access_control import can_access_employee
     if context.has_permission("submit_direct_report_review") and can_access_employee(
         context, target_emp, db
     ):
@@ -460,7 +454,7 @@ async def get_current_hr(
             action="access_hr_interface",
             resource="HR操作"
         )
-    
+
     return user
 
 
@@ -479,5 +473,5 @@ async def get_current_manager(
             action="access_manager_interface",
             resource="主管操作（无直属下级）"
         )
-    
+
     return user

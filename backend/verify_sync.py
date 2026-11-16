@@ -2,7 +2,7 @@
 """验证数据库中的飞书同步数据。"""
 
 from app.core.db import get_sessionmaker
-from app.domain.models import Employee, Department
+from app.domain.models import Department, Employee
 
 db = get_sessionmaker()()
 

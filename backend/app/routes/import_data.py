@@ -5,14 +5,13 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from typing import Any
 
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
-from ..domain.models import Employee, Department
 from ..dependencies import get_current_user
+from ..domain.models import Department, Employee
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +170,7 @@ def import_departments_csv(file: UploadFile = File(...), db: Session = Depends(g
                 dept.name = name
                 dept.parent_id = row.get("parent_id", "").strip() or None
                 dept.leader_id = row.get("leader_id", "").strip() or None
-                
+
                 active_str = row.get("active", "true").strip().lower()
                 dept.active = active_str in ("true", "1", "yes")
 

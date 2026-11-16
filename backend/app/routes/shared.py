@@ -1,6 +1,6 @@
 """共享的响应模型与请求体基类。"""
 
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -11,14 +11,14 @@ class ResponseModel:
         self.code = code
         self.data = data or {}
         self.message = message
-    
+
     def __dict__(self):
         return {
             "code": self.code,
             "data": self.data,
             "message": self.message,
         }
-    
+
     def model_dump(self):
         return self.__dict__()
 
