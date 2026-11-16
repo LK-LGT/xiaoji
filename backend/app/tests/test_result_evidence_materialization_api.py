@@ -521,20 +521,53 @@ def test_new_version_creates_new_evidence(db, org):
 
 
 # ---------------------------------------------------------------------------
-# 7. 不碰 MetricValue
+# 7. 物化本身不碰 MetricValue
+#
+# ⚠️ A7 落地后，**审批通过**这个动作确实会写 MetricValue（计划执行率指标，
+#    由 A7 的 `plan_execution_metric` 负责）。但那是 A7 的职责，
+#    **物化函数本身**依然不碰算分集 —— 这条边界依然要守住。
+#
+#    所以这里改为直接验证**物化函数**本身：
+#    调 `materialize_result()` 后 MetricValue 仍为空。
 # ---------------------------------------------------------------------------
 
 
-def test_materialize_does_not_write_metric_value(db, org):
-    """物化不写指标实测值 —— 算分唯一真值归 A7 的规则引擎。"""
+def test_materialize_function_itself_does_not_write_metric_value(db, org):
+    """物化函数本身不写指标实测值（算分唯一真值归 A7 规则引擎）。"""
+    plan, item = _month_plan(db)
+    result = _submit_month_result(db, plan, item)
+    result.status = RESULT_STATUS_CONFIRMED
+    db.flush()
+
+    # 直接调物化 —— 不走 approve_result（那里才会触发 A7 的执行率写入）
+    materialization.materialize_result(db, result)
+    db.flush()
+
+    mvs = list(db.execute(select(MetricValue)).scalars().all())
+    assert mvs == []
+
+
+def test_approval_writes_execution_rate_metric_not_from_materialization(db, org):
+    """审批通过会写执行率指标 —— 但那是 A7 的职责，不是物化干的。
+
+    这条断言锁定的是**职责边界**：A6 物化只产证据，
+    执行率指标由 A7 的服务单独算。两者在同一个审批点位上先后发生。
+    """
+    from backend.app.services import plan_execution_metric as pem
+
     plan, item = _month_plan(db)
     result = _submit_month_result(db, plan, item)
 
     result_submission.approve_result(db, "E_LEAD", result.id)
     db.flush()
 
+    # 证据（A6 的产物）
+    assert len(_evidences(db)) == 1
+    # 指标（A7 的产物）—— 恰好一条，且 metric_code 是执行率
     mvs = list(db.execute(select(MetricValue)).scalars().all())
-    assert mvs == []
+    assert len(mvs) == 1
+    assert mvs[0].metric_code == pem.PLAN_EXECUTION_RATE_CODE
+    assert mvs[0].source == pem.METRIC_SOURCE_PLAN
 
 
 # ---------------------------------------------------------------------------

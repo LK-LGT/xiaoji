@@ -525,9 +525,13 @@ def approve_result(
 ) -> Result:
     """主管通过成果：`submitted → confirmed`。
 
-    ⚠️ **审批通过时会顺带物化成绩效证据**（A6 · 决策 D4 的 E2）。
-    物化失败**不阻断审批** —— 成果已经通过审批是既成事实，
-    证据转换可以事后补跑（``materialize_for_result``）。
+    ⚠️ **审批通过时会顺带做两件附加动作**：
+
+    1. **物化成绩效证据**（A6 · 决策 D4 的 E2）—— `usage=scoring`
+    2. **重算计划执行率指标**（A7）—— 写入 `MetricValue`（算分集唯一入口）
+
+    两者失败都**不阻断审批** —— 成果已经通过审批是既成事实，
+    证据 / 指标转换可以事后补跑。
     """
     result = fetch_result(db, result_id)
     _assert_not_self_approval(result, actor_id)
@@ -539,6 +543,7 @@ def approve_result(
     db.flush()
 
     _try_materialize(db, result)
+    _try_refresh_execution_rate(db, result)
     return result
 
 
@@ -557,6 +562,21 @@ def _try_materialize(db: Session, result: Result) -> None:
         logger.warning("成果 %s 物化为证据失败（不影响审批）：%s", result.id, exc.message)
     except Exception:  # noqa: BLE001 —— 物化是附加动作，绝不能拖垮审批
         logger.exception("成果 %s 物化为证据时发生未预期错误（不影响审批）", result.id)
+
+
+def _try_refresh_execution_rate(db: Session, result: Result) -> None:
+    """重算计划执行率指标（A7）—— **失败不阻断主流程**。
+
+    执行率是「算分集」的一个指标，写入走
+    ``evidence_service.add_metric_value``（算分集唯一入口），
+    不绕过它。
+    """
+    from . import plan_execution_metric
+
+    try:
+        plan_execution_metric.refresh_after_result_approval(db, result)
+    except Exception:  # noqa: BLE001 —— 指标重算是附加动作，绝不能拖垮审批
+        logger.exception("成果 %s 审批后重算计划执行率失败（不影响审批）", result.id)
 
 
 def reject_result(

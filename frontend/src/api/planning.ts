@@ -67,6 +67,21 @@ export interface PlanningStats {
   overduePendingDayPlans: number
   currentMonthResults: number
   closureRate: string
+  /** 统计周期 YYYY-MM */
+  period?: string
+  /** 周期内已审批通过的成果数 */
+  confirmedResults?: number
+  /** 周期内被驳回的成果数 */
+  rejectedResults?: number
+  /** 计划执行率（0~100，按条目绩效权重加权） */
+  planExecutionRate?: number | null
+  /** 统计范围内的员工数 */
+  scopedEmployeeCount?: number
+  detail?: {
+    submittedResults?: number
+    expectedItems?: number
+    scopedEmployeeIds?: string[]
+  }
 }
 
 export function getPlanningStatsApi() {

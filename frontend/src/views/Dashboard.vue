@@ -37,9 +37,35 @@
         </div>
       </el-col>
     </el-row>
+    <el-row :gutter="16" class="mt16">
+      <el-col :span="6">
+        <div class="metric success">
+          <span>计划执行率</span>
+          <strong>{{ executionRateText }}</strong>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="metric primary">
+          <span>已审批成果</span>
+          <strong>{{ stats.confirmedResults ?? 0 }}</strong>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="metric warning">
+          <span>被驳回成果</span>
+          <strong>{{ stats.rejectedResults ?? 0 }}</strong>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="metric primary">
+          <span>统计范围人数</span>
+          <strong>{{ stats.scopedEmployeeCount ?? 0 }}</strong>
+        </div>
+      </el-col>
+    </el-row>
     <el-alert
       class="mt16"
-      title="当前版本已接入登录、JWT/Redis 会话、月计划、日计划、成果提交与审批确认接口。"
+      title="已接入登录、JWT/Redis 会话、月计划、日计划、成果提交与审批确认接口；计划执行统计与执行率指标已接真实数据。"
       type="success"
       :closable="false"
     />
@@ -62,6 +88,18 @@ const lastUpdated = computed(() => new Intl.DateTimeFormat('zh-CN', {
   hour: '2-digit',
   minute: '2-digit',
 }).format(lastUpdatedAt.value))
+
+/**
+ * 计划执行率展示文案。
+ *
+ * ⚠️ 没有已审批成果时后端返回 `null`（**不是 0**）——
+ * 0 会被理解成「完全没干活」，而「还没提交」是另一回事，所以这里显示 `--`。
+ */
+const executionRateText = computed(() => {
+  const rate = stats.planExecutionRate
+  if (rate === null || rate === undefined) return '--'
+  return `${rate.toFixed(1)}%`
+})
 
 async function loadStats() {
   loading.value = true
