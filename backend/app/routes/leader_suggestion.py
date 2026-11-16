@@ -21,11 +21,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
+from ..dependencies import get_current_user
 from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/leader", tags=["leader-suggestion-package"])
+router = APIRouter(prefix="/v1/leader", tags=["leader-suggestion-package"], dependencies=[Depends(get_current_user)])
 
 
 def _ok(data: Any) -> dict:

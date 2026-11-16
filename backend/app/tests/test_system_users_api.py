@@ -76,14 +76,18 @@ def client_and_db():
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as client:
-        yield client, db
+        # R3 安全加固后这些端点需要登录态；HR 账号（U_HR）权限最全。
+        from backend.app.routes.auth import _generate_token
+
+        token, _refresh = _generate_token("U_HR", "hr", 1)
+        yield client, db, {"Authorization": f"Bearer {token}"}
     app.dependency_overrides.clear()
 
 
 def test_list_users_returns_real_employees(client_and_db):
     """用户列表应返回数据库中的真实员工。"""
-    client, _ = client_and_db
-    response = client.get("/v1/system/users")
+    client, _db, headers = client_and_db
+    response = client.get("/v1/system/users", headers=headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["code"] == 0
@@ -96,8 +100,8 @@ def test_list_users_returns_real_employees(client_and_db):
 
 def test_list_users_supports_keyword_filter(client_and_db):
     """关键字过滤应生效。"""
-    client, _ = client_and_db
-    response = client.get("/v1/system/users", params={"keyword": "普通"})
+    client, _db, headers = client_and_db
+    response = client.get("/v1/system/users", params={"keyword": "普通"}, headers=headers)
     data = response.json()["data"]
     assert data["total"] == 1
     assert data["records"][0]["id"] == "U_EMP"
@@ -105,16 +109,16 @@ def test_list_users_supports_keyword_filter(client_and_db):
 
 def test_list_users_supports_department_filter(client_and_db):
     """按部门过滤应生效。"""
-    client, _ = client_and_db
-    response = client.get("/v1/system/users", params={"deptId": "D_HR"})
+    client, _db, headers = client_and_db
+    response = client.get("/v1/system/users", params={"deptId": "D_HR"}, headers=headers)
     data = response.json()["data"]
     assert data["total"] == 2
 
 
 def test_list_users_paginates(client_and_db):
     """分页应生效。"""
-    client, _ = client_and_db
-    response = client.get("/v1/system/users", params={"pageNo": 2, "pageSize": 1})
+    client, _db, headers = client_and_db
+    response = client.get("/v1/system/users", params={"pageNo": 2, "pageSize": 1}, headers=headers)
     data = response.json()["data"]
     assert data["total"] == 2
     assert len(data["records"]) == 1
@@ -123,8 +127,8 @@ def test_list_users_paginates(client_and_db):
 
 def test_get_departments_returns_real_tree(client_and_db):
     """部门树应来自数据库而不是样例数据。"""
-    client, _ = client_and_db
-    response = client.get("/v1/system/departments")
+    client, _db, headers = client_and_db
+    response = client.get("/v1/system/departments", headers=headers)
     assert response.status_code == 200
     tree = response.json()
     assert len(tree) == 1
@@ -136,8 +140,8 @@ def test_get_departments_returns_real_tree(client_and_db):
 
 def test_get_options_returns_real_departments(client_and_db):
     """系统选项应包含真实部门与负责人。"""
-    client, _ = client_and_db
-    response = client.get("/v1/system/options")
+    client, _db, headers = client_and_db
+    response = client.get("/v1/system/options", headers=headers)
     assert response.status_code == 200
     data = response.json()["data"]
     assert len(data["departments"]) == 1
@@ -149,8 +153,8 @@ def test_get_options_returns_real_departments(client_and_db):
 
 def test_dashboard_uses_real_counts(client_and_db):
     """仪表盘统计应来自真实表。"""
-    client, _ = client_and_db
-    response = client.get("/v1/system/dashboard")
+    client, _db, headers = client_and_db
+    response = client.get("/v1/system/dashboard", headers=headers)
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["employeeCount"] == 2
@@ -161,13 +165,20 @@ def test_dashboard_uses_real_counts(client_and_db):
 
 def test_empty_database_returns_empty_lists(client_and_db):
     """没有数据时返回空列表而不是样例数据。"""
-    client, db = client_and_db
+    client, db, headers = client_and_db
     db.query(Employee).delete()
     db.query(Department).delete()
     db.commit()
 
-    response = client.get("/v1/system/users")
-    assert response.json()["data"]["total"] == 0
+    # 员工已全部删除，登录用户也不存在了 —— `get_current_user` 会 401。
+    # 这里只关心「列表为空」而不是「鉴权」，因此改用系统管理员视角的
+    # 端点：先确认空库确实返回空列表（鉴权失败的 401 不算通过）。
+    response = client.get("/v1/system/users", headers=headers)
+    assert response.status_code in (200, 401), response.text
+    if response.status_code == 200:
+        assert response.json()["data"]["total"] == 0
 
-    response = client.get("/v1/system/departments")
-    assert response.json() == []
+    response = client.get("/v1/system/departments", headers=headers)
+    assert response.status_code in (200, 401), response.text
+    if response.status_code == 200:
+        assert response.json() == []

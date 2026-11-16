@@ -169,59 +169,33 @@ def org(db):
 
 
 @pytest.fixture()
-def client(db, org, monkeypatch):
+def client(db, org):
     def override_get_db():
         yield db
 
     app.dependency_overrides[get_db] = override_get_db
-    monkeypatch.setattr("backend.app.core.config.settings.secure_auth", False)
-
-    from backend.app.dependencies import MOCK_TOKENS
-
-    MOCK_TOKENS.clear()
-    MOCK_TOKENS.update(
-        {
-            "hr_token_001": {
-                "employee_id": "E_HR",
-                "name": "HR负责人",
-                "role": "hr",
-                "position": "HR经理",
-                "manager_id": None,
-                "department_id": "D_HR",
-            },
-            "admin_token_001": {
-                "employee_id": "E_ADMIN",
-                "name": "系统管理员",
-                "role": "hr",
-                "position": "管理员",
-                "manager_id": None,
-                "department_id": "D_HR",
-            },
-            "leader_token_001": {
-                "employee_id": "E_LEADER",
-                "name": "部门负责人",
-                "role": "manager",
-                "position": "负责人",
-                "manager_id": None,
-                "department_id": "D_BIZ",
-            },
-            "emp_token_001": {
-                "employee_id": "E_EMP",
-                "name": "普通员工",
-                "role": "ordinary_employee",
-                "position": "员工",
-                "manager_id": "E_LEADER",
-                "department_id": "D_BIZ",
-            },
-        }
-    )
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
 
 
 def auth(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+    """把「角色名」翻译成真实的 HMAC 鉴权头。
+
+    R3 安全加固前，这里靠 `settings.secure_auth=False` + `MOCK_TOKENS`
+    走 Mock 鉴权分支。现在系统只认 `/v1/auth/*` 的 HMAC Token，
+    所以这里按 employee_id 直接签发真实 Token。
+    """
+    from backend.app.routes.auth import _generate_token
+
+    employee_id = {
+        "hr_token_001": "E_HR",
+        "admin_token_001": "E_ADMIN",
+        "leader_token_001": "E_LEADER",
+        "emp_token_001": "E_EMP",
+    }[token]
+    real_token, _refresh = _generate_token(employee_id, employee_id, 1)
+    return {"Authorization": f"Bearer {real_token}"}
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +303,9 @@ def test_period_filter_keeps_non_attendance_evidence(db, org):
 
 def test_record_detail_filters_attendance_by_task_period(client, db, org):
     """评 202611 时，记录详情不能返回 2026-10 的考勤证据。"""
-    resp = client.get(f"/api/records/{org['rec_pending'].id}")
+    resp = client.get(
+        f"/api/records/{org['rec_pending'].id}", headers=auth("emp_token_001")
+    )
     assert resp.status_code == 200
     body = resp.json()
 
@@ -344,7 +320,7 @@ def test_record_detail_filters_attendance_by_task_period(client, db, org):
 
 
 def test_record_detail_404_for_unknown(client):
-    resp = client.get("/api/records/NOPE")
+    resp = client.get("/api/records/NOPE", headers=auth("emp_token_001"))
     assert resp.status_code == 404
 
 

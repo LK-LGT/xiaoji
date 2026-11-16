@@ -29,7 +29,7 @@ from ..services import ai_review_engine, ai_service, planning
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/ai/reviews", tags=["ai-review"])
+router = APIRouter(prefix="/v1/ai/reviews", tags=["ai-review"], dependencies=[Depends(get_current_user)])
 
 
 def _ok(data: Any) -> dict:

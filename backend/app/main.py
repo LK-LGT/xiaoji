@@ -30,6 +30,7 @@ from .domain.models import (
     Score,
 )
 from .services import evidence_service, review_service, qa_service
+from .services import access_control
 from .services.access_control import PermissionAction, build_access_context
 from .services.review_service import AgentClient, InvalidState, NotFound
 from . import schemas, exceptions, dependencies
@@ -454,8 +455,22 @@ def _period_display(period: str | None) -> str | None:
     return to_dashed_period(period)
 
 
+def _require_employee_management(current_user: Employee, db: Session) -> None:
+    """要求「员工管理」权限，否则 403。
+
+    员工增删改属于 HR / 管理员动作，普通员工与主管不应能改别人档案。
+    权限来源与前端菜单一致（`access_control` 唯一事实源）。
+    """
+    access = access_control.build_access_context(db, current_user)
+    if not access.has_permission(PermissionAction.MANAGE_EMPLOYEES):
+        raise HTTPException(status_code=403, detail="无权管理员工信息")
+
+
 @app.get("/api/employees")
-def list_employees(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+def list_employees(
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
     rows = db.execute(select(Employee)).scalars().all()
     return [
         {
@@ -470,7 +485,11 @@ def list_employees(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
 
 
 @app.get("/api/records/{record_id}")
-def get_record(record_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+def get_record(
+    record_id: str,
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     """查一条考核记录的全貌：分数、草稿、证据。
 
     证据按**考核周期**过滤：考勤证据的周期写在 source_ref 里，
@@ -479,6 +498,15 @@ def get_record(record_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     rec = db.get(AssessmentRecord, record_id)
     if rec is None:
         raise HTTPException(status_code=404, detail="考核记录不存在")
+
+    # 数据范围校验：本条记录是**谁的**成绩，只有有权限的人能看。
+    # 之前这里完全没校验，任何登录用户都能查任意人的分数与证据。
+    access = access_control.build_access_context(db, current_user)
+    if not access.can_view_score_of(rec.employee_id):
+        raise HTTPException(
+            status_code=403,
+            detail="无权查看该员工的绩效数据",
+        )
 
     # 取考核任务的周期（紧凑格式 YYYYMM），用于过滤考勤证据
     task = db.get(AssessmentTask, rec.task_id)
@@ -795,7 +823,11 @@ def create_assessment_task(
 
 
 @app.post("/api/tasks")
-def create_task(req: CreateTaskReq, db: Session = Depends(get_db)) -> dict[str, Any]:
+def create_task(
+    req: CreateTaskReq,
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     try:
         task = review_service.create_task(
             db,
@@ -811,7 +843,11 @@ def create_task(req: CreateTaskReq, db: Session = Depends(get_db)) -> dict[str, 
 
 
 @app.post("/api/tasks/{task_id}/open-records")
-def open_records(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+def open_records(
+    task_id: str,
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     try:
         recs = review_service.open_records(db, task_id)
     except NotFound as exc:
@@ -826,8 +862,17 @@ def open_records(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
 
 @app.post("/api/records/{record_id}/self-review")
 def submit_self_review(
-    record_id: str, req: SubmitSelfReviewReq, db: Session = Depends(get_db)
+    record_id: str,
+    req: SubmitSelfReviewReq,
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    # 只能给**自己**的记录写自评。
+    rec = db.get(AssessmentRecord, record_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="考核记录不存在")
+    if rec.employee_id != current_user.id:
+        raise HTTPException(status_code=403, detail="只能为本人提交自评")
     try:
         sr = review_service.submit_self_review(
             db,
@@ -850,8 +895,19 @@ def submit_self_review(
 
 
 @app.post("/api/metric-values")
-def add_metric_value(req: MetricValueReq, db: Session = Depends(get_db)) -> dict[str, Any]:
+def add_metric_value(
+    req: MetricValueReq,
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     """写入指标实测值（算分集唯一入口）。考勤来源会被拒绝。"""
+    # 算分集是绩效的核心，只有 HR / 管理员可以写入他人指标值。
+    access = access_control.build_access_context(db, current_user)
+    if not access.can_view_score_of(req.employee_id):
+        raise HTTPException(
+            status_code=403,
+            detail="无权为该员工写入指标值",
+        )
     try:
         mv = evidence_service.add_metric_value(
             db,
@@ -871,10 +927,20 @@ def add_metric_value(req: MetricValueReq, db: Session = Depends(get_db)) -> dict
 
 
 @app.post("/api/attendance/anomalies")
-def add_anomaly(req: AnomalyReq, db: Session = Depends(get_db)) -> dict[str, Any]:
+def add_anomaly(
+    req: AnomalyReq,
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     """写入考勤异常。全部 reference_only，不进算分集。"""
     from .domain.enums import AttendanceAnomalyType
 
+    access = access_control.build_access_context(db, current_user)
+    if not access.can_view_score_of(req.employee_id):
+        raise HTTPException(
+            status_code=403,
+            detail="无权为该员工写入考勤异常",
+        )
     try:
         atype = AttendanceAnomalyType(req.anomaly_type)
     except ValueError as exc:
@@ -907,11 +973,21 @@ def add_anomaly(req: AnomalyReq, db: Session = Depends(get_db)) -> dict[str, Any
 
 
 @app.post("/api/records/{record_id}/draft")
-def create_draft(record_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+def create_draft(
+    record_id: str,
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     """生成评级建议 + 评语草稿。
 
     智能体不可用时自动降级，**不会失败** —— 流程不中断。
     """
+    rec = db.get(AssessmentRecord, record_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="考核记录不存在")
+    access = access_control.build_access_context(db, current_user)
+    if not access.can_view_score_of(rec.employee_id):
+        raise HTTPException(status_code=403, detail="无权为该员工生成草稿")
     try:
         bundle = review_service.generate_draft(db, record_id=record_id)
     except NotFound as exc:
@@ -933,8 +1009,18 @@ def create_draft(record_id: str, db: Session = Depends(get_db)) -> dict[str, Any
 
 
 @app.post("/api/records/{record_id}/score/recompute")
-def recompute_score(record_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+def recompute_score(
+    record_id: str,
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     """复算分数。**关掉 AI 重跑，结果完全一致**（框架验收第 1 条）。"""
+    rec = db.get(AssessmentRecord, record_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="考核记录不存在")
+    access = access_control.build_access_context(db, current_user)
+    if not access.can_view_score_of(rec.employee_id):
+        raise HTTPException(status_code=403, detail="无权复算该员工的分数")
     try:
         result = review_service.compute_score(db, record_id=record_id)
         review_service.persist_score(db, record_id=record_id, result=result)
@@ -946,13 +1032,26 @@ def recompute_score(record_id: str, db: Session = Depends(get_db)) -> dict[str, 
 
 
 @app.post("/api/records/{record_id}/confirm")
-def confirm(record_id: str, req: ConfirmReq, db: Session = Depends(get_db)) -> dict[str, Any]:
+def confirm(
+    record_id: str,
+    req: ConfirmReq,
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     """人工确认草稿（最后一道闸）。"""
+    rec = db.get(AssessmentRecord, record_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="考核记录不存在")
+    # 确认评级是「上级/HR」的动作，普通员工不能自评自确认。
+    access = access_control.build_access_context(db, current_user)
+    if not access.has_permission(PermissionAction.CONFIRM_RATING):
+        raise HTTPException(status_code=403, detail="无权确认评级")
+    # 确认人强制取当前登录人，不接受客户端传入的 confirmed_by。
     try:
         return review_service.confirm_draft(
             db,
             record_id=record_id,
-            confirmed_by=req.confirmed_by,
+            confirmed_by=current_user.id,
             confirmed_rating=req.confirmed_rating,
         )
     except NotFound as exc:
@@ -961,9 +1060,17 @@ def confirm(record_id: str, req: ConfirmReq, db: Session = Depends(get_db)) -> d
 
 @app.get("/api/records/{record_id}/citations/validate")
 def validate_citations(
-    record_id: str, db: Session = Depends(get_db)
+    record_id: str,
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """校验草稿引用的证据是否有效（存在、属于该员工、可见性允许）。"""
+    rec = db.get(AssessmentRecord, record_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="考核记录不存在")
+    access = access_control.build_access_context(db, current_user)
+    if not access.can_view_score_of(rec.employee_id):
+        raise HTTPException(status_code=403, detail="无权校验该员工的证据引用")
     rating = db.execute(
         select(RatingDraft)
         .where(RatingDraft.record_id == record_id)
@@ -1246,217 +1353,27 @@ def system_info() -> dict[str, Any]:
 
 
 # ============================================================================
-# 认证接口（Auth）—— 前端登录必需
+# 认证接口（Auth）
+# ---------------------------------------------------------------------------
+# ⚠️ 本文件**不再提供**任何登录 / 登出 / 当前用户端点。
+#
+# 历史背景（R3 安全加固）：
+#   这里曾存在一整套 Mock 鉴权 —— `MOCK_USERS` 硬编码 4 个账号、
+#   token 格式为 `token_{username}_{user_id}_{timestamp}`（**无签名**），
+#   并且 `/auth/login` 不带 `/v1` 前缀，直接暴露在公开路径上。
+#   后果：任何人可以伪造 token 访问真实业务端点（已实测
+#   `POST /auth/login` → 200，伪造 token → `GET /v1/performance/tasks` → 200），
+#   属于**越权漏洞**。
+#
+# 现在唯一鉴权链路：
+#   `app/routes/auth.py` → HMAC 签名 Token（`/v1/auth/*`）
+#   `app/dependencies.py::get_current_user` → 解签名 + 查库 + 校验离职/禁用
+#   `app/services/access_control.py` → 统一权限解析（唯一事实源）
+#
+# 保留说明：前端 `api/auth.ts` 仍写 `/auth/login`，是因为 `http.ts` 的
+# `baseURL='/api'` + Vite 代理 `rewrite: /api → /v1`，实际命中
+# `/v1/auth/login`（真实现）。前端路径**无需**改动。
 # ============================================================================
-
-class LoginRequest(BaseModel):
-    """登录请求模型。"""
-    username: str = Field(..., min_length=2, max_length=50)
-    password: str = Field(..., min_length=1)
-
-
-class LoginResponse(BaseModel):
-    """登录响应模型。"""
-    accessToken: str
-    refreshToken: str
-    expiresIn: int = 7200
-    userId: int
-    username: str
-    realName: str
-    forceChangePassword: bool = False
-    roles: list[str]
-    permissions: list[str]
-
-
-class AuthUserResponse(BaseModel):
-    """当前用户信息模型。"""
-    userId: int
-    username: str
-    realName: str
-    mobile: str = ""
-    deptId: str | None = None
-    departmentName: str | None = None
-    groupId: str | None = None
-    status: int | None = None
-    statusSource: str | None = None
-    lastLoginAt: str | None = None
-    forceChangePassword: bool = False
-    roles: list[str]
-    permissions: list[str]
-
-
-# Mock 用户数据库 - 每个账号只有其对应角色的权限
-MOCK_USERS = {
-    "admin": {
-        "password": "admin123",
-        "user_id": 1,
-        "username": "admin",
-        "realName": "系统管理员",
-        "mobile": "13800000001",
-        "dept_id": "DEPT_HR",
-        "department_name": "人力资源部",
-        "roles": ["admin"],
-        "permissions": [
-            "system:dashboard:view",
-            "system:employee:register",
-            "system:employee:view",
-            "system:org:view",
-            "system:role:view",
-            "system:permission:view",
-            "system:workday:view",
-            "system:week-standard:view",
-            "system:audit:view",
-            "system:knowledge:view",
-            "system:feishu-sync:manage",
-        ],
-    },
-    "manager": {
-        "password": "manager123",
-        "user_id": 2,
-        "username": "manager",
-        "realName": "王伟（部门主管）",
-        "mobile": "13800000002",
-        "dept_id": "DEPT_SALES",
-        "department_name": "销售部",
-        "roles": ["manager"],
-        "permissions": [
-            "department:dashboard:view",
-            "department:month-approval:view",
-            "department:result-confirm:view",
-            "department:todo:view",
-            "department:template:view",
-            "department:standard:view",
-            "department:score-rule:view",
-            "department:export-task:view",
-        ],
-    },
-    "leader": {
-        "password": "leader123",
-        "user_id": 4,
-        "username": "leader",
-        "realName": "李明（直属领导）",
-        "mobile": "13800000004",
-        "dept_id": "DEPT_SALES",
-        "department_name": "销售部",
-        "roles": ["leader"],
-        "permissions": [
-            "leader:workbench:view",
-            "leader:month-approval:view",
-            "leader:daily-review:view",
-            "leader:result-suggest:view",
-        ],
-    },
-    "employee": {
-        "password": "employee123",
-        "user_id": 3,
-        "username": "employee",
-        "realName": "刘刚（普通员工）",
-        "mobile": "13800000003",
-        "dept_id": "DEPT_SALES",
-        "department_name": "销售部",
-        "roles": ["employee"],
-        "permissions": [
-            "dashboard:view",
-            "planning:month:view",
-            "planning:day:view",
-            "planning:result:view",
-            "performance:dashboard:view",
-            "performance:self-review:view",
-        ],
-    },
-}
-
-
-@app.post("/auth/login")
-async def login(req: LoginRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """用户登录。
-    
-    测试账号：
-    - admin / admin123
-    - manager / manager123
-    - employee / employee123
-    """
-    
-    # 验证用户名密码
-    user_data = MOCK_USERS.get(req.username)
-    if not user_data or user_data["password"] != req.password:
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
-    
-    # 生成 token
-    access_token = f"token_{req.username}_{user_data['user_id']}_{datetime.now().timestamp()}"
-    refresh_token = f"refresh_{req.username}_{user_data['user_id']}"
-    
-    # 返回前端期望的格式
-    return {
-        "code": 0,
-        "data": {
-            "accessToken": access_token,
-            "refreshToken": refresh_token,
-            "expiresIn": 7200,
-            "userId": user_data["user_id"],
-            "username": user_data["username"],
-            "realName": user_data["realName"],
-            "forceChangePassword": False,
-            "roles": user_data["roles"],
-            "permissions": user_data["permissions"],
-        }
-    }
-
-
-@app.get("/auth/me")
-async def get_current_user_info(
-    authorization: str | None = Header(None),
-    db: Session = Depends(get_db)
-) -> dict[str, Any]:
-    """获取当前登录用户信息。"""
-    
-    if not authorization:
-        raise HTTPException(status_code=401, detail="缺少 Authorization header")
-    
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Authorization header 格式错误")
-    
-    token = parts[1]
-    
-    # 从 token 中提取用户名
-    try:
-        token_parts = token.split("_")
-        if len(token_parts) < 3:
-            raise ValueError("Token 格式错误")
-        username = token_parts[1]
-    except Exception:
-        raise HTTPException(status_code=401, detail="Token 无效")
-    
-    user_data = MOCK_USERS.get(username)
-    if not user_data:
-        raise HTTPException(status_code=401, detail="用户不存在")
-    
-    # 返回前端期望的格式
-    return {
-        "code": 0,
-        "data": {
-            "userId": user_data["user_id"],
-            "username": user_data["username"],
-            "realName": user_data["realName"],
-            "mobile": user_data.get("mobile", ""),
-            "deptId": user_data.get("dept_id"),
-            "departmentName": user_data.get("department_name"),
-            "groupId": None,
-            "status": None,
-            "statusSource": None,
-            "lastLoginAt": datetime.now().isoformat(),
-            "forceChangePassword": False,
-            "roles": user_data["roles"],
-            "permissions": user_data["permissions"],
-        }
-    }
-
-
-@app.post("/auth/logout")
-async def logout(authorization: str | None = Header(None)):
-    """用户登出。"""
-    return {"code": 0, "data": {"message": "登出成功"}}
 
 
 # ============================================================================
@@ -1502,75 +1419,6 @@ class Result(BaseModel):
     status: str
     ownerUserId: int
     deptId: str | None = None
-
-
-@app.get("/system/dashboard")
-async def get_system_dashboard(db: Session = Depends(get_db)):
-    """获取系统管理工作台数据。"""
-    return {
-        "code": 0,
-        "data": {
-            "departmentCount": 8,
-            "employeeCount": 156,
-            "roleCount": 6,
-            "auditCount": 2847,
-            "risks": [
-                {
-                    "code": "NO_WORKDAY_RULE",
-                    "level": "warning",
-                    "title": "未配置工作日规则",
-                    "count": 0,
-                    "route": "/system/workday-rules"
-                },
-                {
-                    "code": "INCOMPLETE_PERMISSIONS",
-                    "level": "error",
-                    "title": "权限配置不完整",
-                    "count": 3,
-                    "route": "/system/permissions"
-                },
-                {
-                    "code": "INACTIVE_EMPLOYEES",
-                    "level": "warning",
-                    "title": "启用员工数量较少",
-                    "count": 12,
-                    "route": "/system/employees"
-                }
-            ],
-            "recentAudits": [
-                {
-                    "createdAt": "2026-11-12 13:45:23",
-                    "action": "LOGIN",
-                    "actionLabel": "用户登录",
-                    "targetType": "User",
-                    "targetSummary": "admin",
-                    "operatorName": "系统管理员",
-                    "username": "admin",
-                    "result": "SUCCESS"
-                },
-                {
-                    "createdAt": "2026-11-12 13:40:15",
-                    "action": "USER_CREATE",
-                    "actionLabel": "创建用户",
-                    "targetType": "User",
-                    "targetSummary": "新员工账号",
-                    "operatorName": "系统管理员",
-                    "username": "admin",
-                    "result": "SUCCESS"
-                },
-                {
-                    "createdAt": "2026-11-12 13:35:42",
-                    "action": "ROLE_UPDATE",
-                    "actionLabel": "修改角色",
-                    "targetType": "Role",
-                    "targetSummary": "销售经理",
-                    "operatorName": "系统管理员",
-                    "username": "admin",
-                    "result": "SUCCESS"
-                }
-            ]
-        }
-    }
 async def get_planning_stats(db: Session = Depends(get_db)):
     """获取仪表板统计数据。"""
     return {
@@ -1584,90 +1432,6 @@ async def get_planning_stats(db: Session = Depends(get_db)):
     }
 
 
-@app.get("/planning/month-plans")
-async def list_month_plans(db: Session = Depends(get_db)):
-    """列出月计划。"""
-    return {
-        "code": 0,
-        "data": [
-            {
-                "id": 1,
-                "title": "2026年11月销售目标",
-                "planMonth": "2026-11",
-                "status": "APPROVED",
-                "ownerUserId": 2,
-                "deptId": "DEPT_SALES",
-            },
-            {
-                "id": 2,
-                "title": "2026年11月运营目标",
-                "planMonth": "2026-11",
-                "status": "PENDING",
-                "ownerUserId": 3,
-                "deptId": "DEPT_OPS",
-            },
-        ]
-    }
-
-
-@app.get("/planning/day-plans")
-async def list_day_plans(db: Session = Depends(get_db)):
-    """列出日计划。"""
-    return {
-        "code": 0,
-        "data": [
-            {
-                "id": 1,
-                "title": "完成第一季度财务预算",
-                "planDate": "2026-11-12",
-                "content": "编制详细的财务预算方案",
-                "status": "APPROVED",
-                "ownerUserId": 1,
-                "deptId": "DEPT_FINANCE",
-            },
-            {
-                "id": 2,
-                "title": "跟进大客户合同",
-                "planDate": "2026-11-12",
-                "content": "与客户沟通合同条款",
-                "status": "PENDING",
-                "ownerUserId": 2,
-                "deptId": "DEPT_SALES",
-            },
-        ]
-    }
-
-
-@app.get("/planning/results")
-async def list_results(db: Session = Depends(get_db)):
-    """列出成果。"""
-    return {
-        "code": 0,
-        "data": [
-            {
-                "id": 1,
-                "title": "完成月度财务汇总",
-                "resultDate": "2026-11-11",
-                "content": "按时完成财务部所有部门的成本统计和分析",
-                "planType": "DAY",
-                "status": "CONFIRMED",
-                "ownerUserId": 1,
-                "deptId": "DEPT_FINANCE",
-            },
-            {
-                "id": 2,
-                "title": "签署新客户合同",
-                "resultDate": "2026-11-10",
-                "content": "成功签署A公司年度服务合同，金额100万",
-                "planType": "MONTH",
-                "status": "PENDING",
-                "ownerUserId": 2,
-                "deptId": "DEPT_SALES",
-            },
-        ]
-    }
-
-
 # ============================================================================
 # 员工管理 API
 # ============================================================================
@@ -1675,59 +1439,18 @@ async def list_results(db: Session = Depends(get_db)):
 from .domain.models import Employee, Department
 
 
-@app.get("/system/employees")
-async def list_employees(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    department_id: str = Query(None),
-    status: str = Query(None),
-    db: Session = Depends(get_db)
-):
-    """获取员工列表。"""
-    query = db.query(Employee)
-    
-    # 筛选
-    if department_id:
-        query = query.filter(Employee.department_id == department_id)
-    if status:
-        query = query.filter(Employee.employment_status == status)
-    
-    # 获取总数
-    total = query.count()
-    
-    # 分页
-    employees = query.offset(skip).limit(limit).all()
-    
-    return {
-        "code": 0,
-        "data": {
-            "list": [{
-                "id": emp.id,
-                "name": emp.name,
-                "email": emp.email,
-                "department_id": emp.department_id,
-                "position": emp.position,
-                "manager_id": emp.manager_id,
-                "employment_status": emp.employment_status,
-                "joined_at": emp.joined_at.isoformat() if emp.joined_at else None,
-            } for emp in employees],
-            "total": total,
-            "page": skip // limit + 1,
-            "pageSize": limit,
-        }
-    }
-
-
 @app.get("/system/employees/{employee_id}")
 async def get_employee(
     employee_id: str,
-    db: Session = Depends(get_db)
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """获取单个员工详情。"""
+    _require_employee_management(current_user, db)
     employee = db.query(Employee).filter(Employee.id == employee_id).first()
     if not employee:
         return {"code": 404, "message": "Employee not found"}
-    
+
     return {
         "code": 0,
         "data": {
@@ -1745,9 +1468,11 @@ async def get_employee(
 @app.post("/system/employees")
 async def create_employee(
     req: dict,
-    db: Session = Depends(get_db)
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """创建新员工。"""
+    _require_employee_management(current_user, db)
     new_employee = Employee(
         name=req.get("name"),
         email=req.get("email"),
@@ -1759,7 +1484,7 @@ async def create_employee(
     db.add(new_employee)
     db.commit()
     db.refresh(new_employee)
-    
+
     return {
         "code": 0,
         "data": {"id": new_employee.id, "name": new_employee.name}
@@ -1770,21 +1495,23 @@ async def create_employee(
 async def update_employee(
     employee_id: str,
     req: dict,
-    db: Session = Depends(get_db)
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """更新员工信息。"""
+    _require_employee_management(current_user, db)
     employee = db.query(Employee).filter(Employee.id == employee_id).first()
     if not employee:
         return {"code": 404, "message": "Employee not found"}
-    
+
     # 允许更新的字段
     for key in ["name", "email", "department_id", "position", "manager_id", "employment_status"]:
         if key in req:
             setattr(employee, key, req[key])
-    
+
     db.commit()
     db.refresh(employee)
-    
+
     return {
         "code": 0,
         "data": {"id": employee.id, "name": employee.name}
@@ -1794,77 +1521,19 @@ async def update_employee(
 @app.delete("/system/employees/{employee_id}")
 async def delete_employee(
     employee_id: str,
-    db: Session = Depends(get_db)
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """删除员工（实际上只是改为禁用状态）。"""
+    _require_employee_management(current_user, db)
     employee = db.query(Employee).filter(Employee.id == employee_id).first()
     if not employee:
         return {"code": 404, "message": "Employee not found"}
-    
+
     employee.employment_status = "inactive"
     db.commit()
-    
+
     return {
         "code": 0,
         "message": "Employee disabled"
-    }
-
-
-@app.get("/system/departments")
-async def list_departments(
-    db: Session = Depends(get_db)
-):
-    """获取部门列表。"""
-    departments = db.query(Department).filter(Department.active == True).all()
-    
-    return {
-        "code": 0,
-        "data": [{
-            "id": dept.id,
-            "name": dept.name,
-            "parent_id": dept.parent_id,
-            "leader_id": dept.leader_id,
-        } for dept in departments]
-    }
-
-
-@app.get("/system/roles")
-async def list_roles():
-    """获取角色列表。"""
-    roles = [
-        {
-            "id": "admin",
-            "name": "系统管理员",
-            "description": "拥有所有系统权限",
-            "permissions": ["system:*"]
-        },
-        {
-            "id": "department",
-            "name": "部门负责人",
-            "description": "管理部门下的计划、成果和员工",
-            "permissions": ["department:*"]
-        },
-        {
-            "id": "leader",
-            "name": "直属领导",
-            "description": "审批下属的计划和成果",
-            "permissions": ["leader:*"]
-        },
-        {
-            "id": "employee",
-            "name": "普通员工",
-            "description": "编制个人计划和提交成果",
-            "permissions": ["employee:*", "planning:*"]
-        },
-        {
-            "id": "reviewer",
-            "name": "评审人员",
-            "description": "处理员工申诉和争议裁决",
-            "permissions": ["dispute:*"]
-        },
-    ]
-    
-    return {
-        "code": 0,
-        "data": roles
     }

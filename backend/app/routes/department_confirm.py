@@ -40,7 +40,7 @@ from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["department-confirm-approval"])
+router = APIRouter(tags=["department-confirm-approval"], dependencies=[Depends(get_current_user)])
 
 
 def _ok(data: Any) -> dict:

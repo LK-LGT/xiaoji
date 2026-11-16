@@ -21,7 +21,7 @@ from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/leader", tags=["leader"])
+router = APIRouter(prefix="/v1/leader", tags=["leader"], dependencies=[Depends(get_current_user)])
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ from ..services import ai_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/employee/ai", tags=["employee-ai"])
+router = APIRouter(prefix="/v1/employee/ai", tags=["employee-ai"], dependencies=[Depends(get_current_user)])
 
 
 # ---------------------------------------------------------------------------

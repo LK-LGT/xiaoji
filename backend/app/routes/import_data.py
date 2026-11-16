@@ -12,10 +12,11 @@ from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..domain.models import Employee, Department
+from ..dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/import", tags=["import"])
+router = APIRouter(prefix="/v1/import", tags=["import"], dependencies=[Depends(get_current_user)])
 
 
 @router.post("/employees-csv")

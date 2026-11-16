@@ -75,8 +75,13 @@ def client_with_departments():
     app.dependency_overrides[get_db] = override_get_db
     # raise_server_exceptions=False：让 500 以响应体形式返回，便于断言状态码。
     client = TestClient(app, raise_server_exceptions=False)
+    # R3 安全加固：端点需要登录态，用已建好的 U_HR 生成合法 Token。
+    from backend.app.routes.auth import _generate_token
+
+    token, _refresh = _generate_token("U_HR", "hr", 1)
+    headers = {"Authorization": f"Bearer {token}"}
     try:
-        yield client
+        yield client, headers
     finally:
         app.dependency_overrides.pop(get_db, None)
         session.close()
@@ -85,13 +90,14 @@ def client_with_departments():
 
 @pytest.mark.parametrize("path", ["/v1/system/orgs", "/v1/system/departments"])
 def test_org_tree_endpoint_returns_200(
-    client_with_departments: TestClient, path: str
+    client_with_departments, path: str
 ) -> None:
     """部门树端点必须返回 200，而不是 500。
 
     回归点：注解写成 `-> dict` 但实际返回 list → ResponseValidationError。
     """
-    resp = client_with_departments.get(path)
+    client, headers = client_with_departments
+    resp = client.get(path, headers=headers)
 
     assert resp.status_code == 200, (
         f"{path} 返回 {resp.status_code}，期望 200。"
@@ -101,14 +107,15 @@ def test_org_tree_endpoint_returns_200(
 
 @pytest.mark.parametrize("path", ["/v1/system/orgs", "/v1/system/departments"])
 def test_org_tree_returns_bare_array(
-    client_with_departments: TestClient, path: str
+    client_with_departments, path: str
 ) -> None:
     """响应体必须是裸数组（不是 `{code, data}` 信封）。
 
     前端 `getDepartments(): DeptNode[]` 直接把结果当数组用，
     套信封会导致 `.map()` / `flattenDepartments` 直接抛错。
     """
-    resp = client_with_departments.get(path)
+    client, headers = client_with_departments
+    resp = client.get(path, headers=headers)
     body = resp.json()
 
     assert isinstance(body, list), f"{path} 应返回数组，实际返回 {type(body).__name__}"
@@ -116,13 +123,14 @@ def test_org_tree_returns_bare_array(
 
 @pytest.mark.parametrize("path", ["/v1/system/orgs", "/v1/system/departments"])
 def test_org_tree_node_matches_frontend_contract(
-    client_with_departments: TestClient, path: str
+    client_with_departments, path: str
 ) -> None:
     """每个部门节点必须满足前端 `DeptNode` 契约。
 
     缺字段在前端不会立刻报错，而是渲染成空列 —— 属于难查的静默 bug。
     """
-    resp = client_with_departments.get(path)
+    client, headers = client_with_departments
+    resp = client.get(path, headers=headers)
     nodes = resp.json()
 
     assert nodes, "部门树为空，无法校验节点契约"

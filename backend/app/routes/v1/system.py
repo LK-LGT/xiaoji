@@ -13,8 +13,9 @@ from sqlalchemy.orm import Session
 from ...core.db import get_db
 from ...services import system_views, workday_rule
 from ..shared import JsonBody
+from ...dependencies import get_current_user
 
-router = APIRouter(prefix="/v1/system", tags=["system"])
+router = APIRouter(prefix="/v1/system", tags=["system"], dependencies=[Depends(get_current_user)])
 
 
 # ─────────────────────────────────────────────────────

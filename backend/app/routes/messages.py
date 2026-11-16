@@ -5,8 +5,9 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
+from ..dependencies import get_current_user
 
-router = APIRouter(prefix="/v1/messages", tags=["消息"])
+router = APIRouter(prefix="/v1/messages", tags=["消息"], dependencies=[Depends(get_current_user)])
 
 
 def _empty_summary() -> dict[str, Any]:

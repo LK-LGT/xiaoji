@@ -18,10 +18,11 @@ from sqlalchemy.orm import Session
 from ...core.db import get_db
 from ...services import system_views
 from ..shared import JsonBody
+from ...dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/system/users", tags=["system-users"])
+router = APIRouter(prefix="/v1/system/users", tags=["system-users"], dependencies=[Depends(get_current_user)])
 
 
 def _ok(data: Any) -> dict:

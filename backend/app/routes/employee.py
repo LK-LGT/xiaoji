@@ -22,7 +22,7 @@ from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/employee", tags=["employee"])
+router = APIRouter(prefix="/v1/employee", tags=["employee"], dependencies=[Depends(get_current_user)])
 
 
 def _ok(data: Any) -> dict:

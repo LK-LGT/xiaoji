@@ -4,6 +4,7 @@
   1. db - 测试数据库会话
   2. mock_employees - 测试员工数据
   3. mock_config - 冻结配置快照
+  4. auth_headers - 鉴权请求头工厂（R3 安全加固后端点需要登录态）
 """
 
 import pytest
@@ -20,6 +21,43 @@ from backend.app.domain.models import (
     ConfigSnapshot,
     AssessmentTask,
 )
+
+
+def make_auth_headers(db: Session, employee_id: str = "HR001", **overrides) -> dict:
+    """生成一个带合法 HMAC Token 的请求头。
+
+    R3 安全加固后，几乎所有业务端点都要求登录态。
+    测试里如果不想关心鉴权细节，用本工厂即可：
+
+    ```python
+    resp = client.get("/v1/system/employees", headers=auth_headers(db))
+    ```
+
+    `employee_id` 必须在 `db` 里真实存在（`get_current_user` 会查库）。
+    """
+    from backend.app.routes.auth import _generate_token
+
+    employee = db.get(Employee, employee_id)
+    if employee is None:
+        employee = Employee(
+            id=employee_id,
+            name=overrides.pop("name", "测试用户"),
+            employment_status="active",
+            account_status="enabled",
+        )
+        db.add(employee)
+        db.flush()
+
+    username = overrides.pop("username", employee.login_account or employee.id)
+    token_version = overrides.pop("token_version", employee.token_version or 1)
+    token, _refresh = _generate_token(employee.id, username, token_version)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def auth_headers(db: Session):
+    """默认 HR001 的鉴权请求头（可直接用，也可传参覆盖）。"""
+    return make_auth_headers(db)
 
 
 @pytest.fixture(scope="function")

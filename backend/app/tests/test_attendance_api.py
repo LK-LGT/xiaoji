@@ -98,53 +98,34 @@ def org(db):
 
 
 @pytest.fixture()
-def client(db, org, monkeypatch):
+def client(db, org):
     # 用 FastAPI 官方的依赖覆盖机制，把所有 get_db 依赖指向内存库
     def override_get_db():
         yield db
 
     app.dependency_overrides[get_db] = override_get_db
-
-    # 认证走 mock token 分支，便于直接构造身份
-    monkeypatch.setattr("backend.app.core.config.settings.secure_auth", False)
-    from backend.app.dependencies import MOCK_TOKENS
-
-    MOCK_TOKENS.clear()
-    MOCK_TOKENS.update(
-        {
-            "hr_token_001": {
-                "employee_id": "E_HR",
-                "name": "HR负责人",
-                "role": "hr",
-                "position": "HR经理",
-                "manager_id": None,
-                "department_id": "D_HR",
-            },
-            "admin_token_001": {
-                "employee_id": "E_ADMIN",
-                "name": "系统管理员",
-                "role": "hr",
-                "position": "管理员",
-                "manager_id": None,
-                "department_id": "D_HR",
-            },
-            "emp_token_001": {
-                "employee_id": "E_EMP",
-                "name": "普通员工",
-                "role": "ordinary_employee",
-                "position": "员工",
-                "manager_id": "E_LEADER",
-                "department_id": "D_BIZ",
-            },
-        }
-    )
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
 
 
 def auth(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+    """把「角色名」翻译成真实的 HMAC 鉴权头。
+
+    R3 安全加固前，这里靠 `settings.secure_auth=False` + `MOCK_TOKENS`
+    走 Mock 鉴权分支。现在系统只认 `/v1/auth/*` 的 HMAC Token，
+    所以这里按 employee_id 直接签发真实 Token。
+    """
+    from backend.app.routes.auth import _generate_token
+
+    employee_id = {
+        "hr_token_001": "E_HR",
+        "admin_token_001": "E_ADMIN",
+        "leader_token_001": "E_LEADER",
+        "emp_token_001": "E_EMP",
+    }[token]
+    real_token, _refresh = _generate_token(employee_id, employee_id, 1)
+    return {"Authorization": f"Bearer {real_token}"}
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +307,7 @@ def test_attendance_source_rejected_by_metric_value_endpoint(client):
             "value": 1.0,
             "source": "attendance",
         },
+        headers=auth("hr_token_001"),
     )
     assert resp.status_code == 400
     assert "不得进入算分集" in resp.json()["detail"]
@@ -340,6 +322,7 @@ def test_evidence_endpoint_returns_reference_only(client):
             "anomaly_type": "late",
             "count": 2,
         },
+        headers=auth("hr_token_001"),
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -356,6 +339,7 @@ def test_evidence_endpoint_rejects_unknown_anomaly_type(client):
             "anomaly_type": "not_a_type",
             "count": 1,
         },
+        headers=auth("hr_token_001"),
     )
     assert resp.status_code == 400
 
@@ -369,6 +353,7 @@ def test_anomalies_endpoint_lists_evidence(client):
             "anomaly_type": "late",
             "count": 3,
         },
+        headers=auth("hr_token_001"),
     )
     resp = client.get(
         "/v1/attendance/anomalies",

@@ -58,6 +58,29 @@ class AccessContext:
     def has_permission(self, permission: str) -> bool:
         return permission in self.permissions
 
+    def can_view_score_of(self, target_employee_id: str) -> bool:
+        """能否查看指定员工的绩效数据。
+
+        规则（与 `PermissionAction` 保持一致）：
+        - 本人 → `VIEW_OWN_SCORE`
+        - 直属下属 / 所管理部门成员 → `VIEW_DIRECT_REPORT_SCORE`
+        - HR → `VIEW_ALL_SCORES`（看全员）
+
+        ⚠️ 管理员**不**自动拥有查看全员成绩的权限 —— 管理权限
+        （系统配置、组织同步）与业务数据权限是两条线，
+        避免「能管系统就能看所有人绩效」的越权。
+        """
+        target = str(target_employee_id)
+        if not target:
+            return False
+        if target == self.employee_id:
+            return self.has_permission(PermissionAction.VIEW_OWN_SCORE)
+        if target in self.direct_report_ids:
+            return self.has_permission(PermissionAction.VIEW_DIRECT_REPORT_SCORE)
+        if self.has_permission(PermissionAction.VIEW_ALL_SCORES):
+            return True
+        return False
+
 
 def _department_descendants(db: Session, root_ids: Iterable[str]) -> set[str]:
     """返回指定部门及其所有下级部门 ID。"""

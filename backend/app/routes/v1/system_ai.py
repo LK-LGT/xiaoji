@@ -19,10 +19,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
+from ...dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/system/ai", tags=["system-ai"])
+router = APIRouter(prefix="/v1/system/ai", tags=["system-ai"], dependencies=[Depends(get_current_user)])
 
 
 # ---------------------------------------------------------------------------
