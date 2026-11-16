@@ -62,11 +62,36 @@ def validate_config(
     2. 指标 ID 唯一
     3. 口径字段非空（calculation / data_source）
     4. 权重引用的指标必须已定义
+    5. 权重必须为正数（负值 / 零值都不合法）
+    6. 有权重的指标必须配置等级区间（rubric）
+
+    ⚠️ 第 5 项：只校验「合计 = 100」是不够的。
+       ``-70 + 170 = 100`` 能通过合计校验，但归一化后会产生**负权重**，
+       把好指标扣成负贡献、把差指标放大成 >100 的贡献，
+       最终总分跑到 0~100 之外（实测能算出 128）。
+       `scoring.score_record` 已在运行时兜底阻断，这里是**第一道保险** ——
+       两道门保持一致，配置阶段就拦下，不让坏配置进入快照。
+
+    ⚠️ 第 6 项：有权重却没配等级区间的指标，算分时会因"定不了级"而
+       **不参与**（P0 口径）—— 权重会被重新归一到其它指标上。
+       也就是说配置漏了 rubric = 分数被悄悄改变。必须在冻结前拦下。
     """
     errors: list[str] = []
 
-    # 1. 权重合计
-    total_weight = sum(float(w.get("weight", 0)) for w in weights)
+    # ── 权重解析（先解析一次，后面合计与合法性检查共用）──
+    # ⚠️ 不能直接 `float(w.get("weight"))`：非数字权重会抛 ValueError，
+    #    而这里要的是「收集所有违规后一次性报出」，不是抛异常中断。
+    parsed_weights: list[tuple[str | None, float | None, object]] = []
+    for w in weights:
+        code = w.get("metric_code")
+        raw = w.get("weight", 0)
+        try:
+            parsed_weights.append((code, float(raw), raw))
+        except (TypeError, ValueError):
+            parsed_weights.append((code, None, raw))
+
+    # 1. 权重合计（只累加能解析出来的）
+    total_weight = sum(v for _, v, _ in parsed_weights if v is not None)
     if abs(total_weight - 100.0) > 1e-6:
         errors.append(f"权重合计必须等于 100，当前为 {total_weight}")
 
@@ -89,6 +114,29 @@ def validate_config(
         code = w.get("metric_code")
         if code not in defined:
             errors.append(f"权重引用了未定义的指标 {code}")
+
+    # 5. 权重必须为正数
+    for code, weight, raw in parsed_weights:
+        if weight is None:
+            errors.append(f"指标 {code} 的权重不是数字：{raw!r}")
+            continue
+        if weight < 0:
+            errors.append(f"指标 {code} 的权重不得为负：{weight}")
+        elif weight == 0:
+            errors.append(f"指标 {code} 的权重不得为 0")
+
+    # 6. 有权重的指标必须配置等级区间
+    rubric_by_code = {r.get("metric_code"): r for r in rubric}
+    for w in weights:
+        code = w.get("metric_code")
+        if code not in defined:
+            continue  # 已在第 4 项报过
+        entry = rubric_by_code.get(code)
+        levels = None
+        if isinstance(entry, dict):
+            levels = entry.get("levels_json") or entry.get("levels")
+        if not levels:
+            errors.append(f"指标 {code} 有权重但未配置等级区间（rubric）")
 
     if errors:
         raise ConfigValidationError("；".join(errors))
