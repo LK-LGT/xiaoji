@@ -75,7 +75,14 @@ class Employee(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     email: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    feishu_open_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # ⚠️ 四个飞书身份列**都**要唯一。
+    #    `migrations/versions/0002_phase2_feishu.py` 明确声明了
+    #    uq_employee_feishu_user_id / uq_employee_feishu_union_id /
+    #    uq_employee_login_account / uq_employee_feishu_open_id 四个约束，
+    #    但 ORM 这里原先只声明了三个 —— 漏了 feishu_open_id。
+    #    后果：`feishu_approval_sync.resolve_employee_by_feishu_id` 用
+    #    ``scalar_one_or_none()`` 按 open_id 查人，重复行会直接抛 500。
+    feishu_open_id: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
     feishu_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     feishu_union_id: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
     login_account: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
@@ -638,6 +645,11 @@ class AssessmentRecord(Base):
     """员工考核记录（一次考核 × 一个员工）。"""
 
     __tablename__ = "assessment_record"
+    # ⚠️ 一次考核 × 一个员工只能有一条记录 —— 迁移 0001_baseline.py 已声明
+    #    uq_assessmentrecord_task_employee，但 ORM 漏了 → 两条建库路径分叉。
+    __table_args__ = (
+        UniqueConstraint("task_id", "employee_id", name="uq_assessmentrecord_task_employee"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     task_id: Mapped[str] = mapped_column(String(64), ForeignKey("assessment_task.id"), nullable=False, index=True)
@@ -666,6 +678,12 @@ class SelfReview(Base):
     """自评。answers_json 落标准表（两个入口共用）。"""
 
     __tablename__ = "self_review"
+    # ⚠️ 迁移 0001_baseline.py 声明了 uq_self_review_record（record_id 唯一），
+    #    ORM 漏了 → 两条建库路径分叉。重复自评行会让按 record_id 的
+    #    `scalar_one_or_none()` 查询直接 500。
+    __table_args__ = (
+        UniqueConstraint("record_id", name="uq_self_review_record"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     record_id: Mapped[str] = mapped_column(String(64), ForeignKey("assessment_record.id"), nullable=False, index=True)
@@ -681,6 +699,11 @@ class ManagerReview(Base):
     """主管评分 + 部门负责人复核意见（决策①：复核是评分审批的第二级节点）。"""
 
     __tablename__ = "manager_review"
+    # ⚠️ 迁移 0001_baseline.py 声明了 uq_manager_review_record（record_id 唯一），
+    #    ORM 漏了 → 两条建库路径分叉。
+    __table_args__ = (
+        UniqueConstraint("record_id", name="uq_manager_review_record"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     record_id: Mapped[str] = mapped_column(String(64), ForeignKey("assessment_record.id"), nullable=False, index=True)
@@ -888,6 +911,11 @@ class RatingDraft(Base):
     """AI 评级建议草稿。必须人工确认后才可生效。"""
 
     __tablename__ = "rating_draft"
+    # ⚠️ 迁移 0001_baseline.py 声明了 uq_rating_draft_record（record_id 唯一），
+    #    ORM 漏了 → 两条建库路径分叉。
+    __table_args__ = (
+        UniqueConstraint("record_id", name="uq_rating_draft_record"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     record_id: Mapped[str] = mapped_column(String(64), ForeignKey("assessment_record.id"), nullable=False, index=True)
@@ -905,6 +933,11 @@ class CommentDraft(Base):
     """AI 评语草稿。citations 可回溯到 Evidence。"""
 
     __tablename__ = "comment_draft"
+    # ⚠️ 迁移 0001_baseline.py 声明了 uq_comment_draft_record（record_id 唯一），
+    #    ORM 漏了 → 两条建库路径分叉。
+    __table_args__ = (
+        UniqueConstraint("record_id", name="uq_comment_draft_record"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     record_id: Mapped[str] = mapped_column(String(64), ForeignKey("assessment_record.id"), nullable=False, index=True)
@@ -920,6 +953,11 @@ class Rollup(Base):
     """汇总（员工 → 部门 → 公司）。数字部分全部来自 Score。"""
 
     __tablename__ = "rollup"
+    # ⚠️ 迁移 0001_baseline.py 声明了 uq_rollup_scope_period
+    #    (scope, scope_id, period) 唯一，ORM 漏了 → 两条建库路径分叉。
+    __table_args__ = (
+        UniqueConstraint("scope", "scope_id", "period", name="uq_rollup_scope_period"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     scope: Mapped[str] = mapped_column(String(32), nullable=False)

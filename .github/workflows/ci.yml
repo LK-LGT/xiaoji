@@ -94,6 +94,21 @@ jobs:
       - name: 数据库 schema 校验（阶段三 9 张新表）
         run: python backend/scripts/verify_phase3_schema.py "${{ github.workspace }}/data/_ci_backend.db"
 
+      - name: Schema 漂移检测（ORM 模型 ↔ 迁移）
+        # ⚠️ 为什么需要这一步：
+        #   本仓库有两条建库路径 —— alembic upgrade head（按迁移建）
+        #   与 Base.metadata.create_all()（按 ORM 模型建）。
+        #   ORM 模型漏声明某个 UniqueConstraint 时，两条路径会分叉，
+        #   而 CI 只验了 alembic 那条 → **天然看不见漂移**。
+        #
+        #   这真的发生过：0001_baseline.py 早已声明 uq_score_record，
+        #   但 ORM 的 Score 模型漏了 → 真实运行库（create_all 建的）
+        #   一直没有这个约束 → 并发算分写出重复 Score 行 →
+        #   之后所有 scalar_one_or_none() 读路径（算分/详情/结果页）全 500。
+        #
+        #   本步骤用 ORM 建一个临时库，与迁移建的库逐表比对唯一约束。
+        run: python backend/scripts/check_schema_drift.py "${{ github.workspace }}/data/_ci_backend.db"
+
       - name: Python 静态检查（ruff）
         # 只做基础规范检查（未定义名 / 语法错误级），不阻断业务迭代；
         # 如需更严格，可在 pyproject.toml 里配置 ruff 规则集。
