@@ -402,6 +402,26 @@ def _startup() -> None:
         logging.getLogger(__name__).exception("启动飞书定时同步失败")
 
 
+@app.on_event("shutdown")
+def _shutdown() -> None:
+    """停掉定时同步线程。
+
+    ⚠️ 为什么必须有：``feishu_scheduler`` 的线程是 **daemon**，
+    没有显式停止的话，它会在进程里一直跑 —— 开发期热重载、
+    测试里反复创建 app、容器滚动更新时，都可能留下
+    「旧 app 的线程还在跑、同时新 app 又起了一个」的重复调度。
+
+    停线程只置停止事件并短暂等待；**不**强制 join 到超时，
+    因为当前这一轮同步可能正在执行（可能要几十秒），
+    强杀会打断批次落库。daemon 线程在进程退出时会被自动回收。
+    """
+    try:
+        from .services.feishu_scheduler import stop_scheduler
+        stop_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("停止飞书定时同步失败")
+
+
 # ---------------------------------------------------------------------------
 # 请求/响应模型
 # ---------------------------------------------------------------------------

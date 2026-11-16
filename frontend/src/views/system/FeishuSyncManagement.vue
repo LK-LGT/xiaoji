@@ -49,7 +49,7 @@
       <div class="metric">
         <span>链路状态</span>
         <strong>{{ status?.running ? '运行中' : status?.configured ? '就绪' : '未配置' }}</strong>
-        <small>{{ status?.scheduledEnabled ? `定时同步已开启（每 ${Math.round((status.scheduleIntervalSeconds || 0) / 60)} 分钟）` : '定时同步未开启' }}</small>
+        <small>{{ schedulerSummary }}</small>
       </div>
       <div class="metric success">
         <span>上次成功</span>
@@ -67,6 +67,22 @@
         <small>{{ reconciliationSummary.detail }}</small>
       </div>
     </div>
+
+    <!--
+      ⚠️ 「配了但没跑」是最容易漏的坑：
+      .env 里 FEISHU_SYNC_ENABLED=true（配置开关），
+      但调度线程没起来（进程内 running=false）——
+      前者读配置，后者读线程，两者不一致时只有这里能看出来。
+    -->
+    <el-alert
+      v-if="schedulerMisconfigured"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="定时同步已配置，但调度线程未运行"
+      description="请确认 .env 中 FEISHU_SYNC_ENABLED=true 后已重启服务进程；配置改动需要重启才会生效。"
+      class="mt16"
+    />
 
     <div class="section-card mt16">
       <div class="section-header">
@@ -364,12 +380,14 @@ import { ArrowDown, Refresh, RefreshRight } from '@element-plus/icons-vue'
 import {
   getLatestReconciliation,
   getOrganizationSyncStatus,
+  getSyncSchedulerStatus,
   listSyncBatches,
   listSyncErrors,
   recoverStaleSyncBatches,
   retryFailedSyncItems,
   triggerOrganizationSync,
   type PageResult,
+  type SchedulerStatus,
   type SyncBatch,
   type SyncBatchStatus,
   type SyncErrorCategory,
@@ -387,6 +405,7 @@ const batchLoading = ref(false)
 const errorLoading = ref(false)
 
 const status = ref<SyncStatus | null>(null)
+const scheduler = ref<SchedulerStatus | null>(null)
 const reconciliation = ref<SyncReconciliation | null>(null)
 const detailVisible = ref(false)
 const detailBatch = ref<SyncBatch | null>(null)
@@ -498,6 +517,51 @@ async function loadStatus() {
   status.value = await getOrganizationSyncStatus()
 }
 
+/**
+ * 调度器状态单独拉一次。
+ *
+ * ⚠️ 为什么不能用 `status.scheduledEnabled` 代替：
+ * 那个字段读的是**配置**（.env 里的开关），
+ * 而这里读的是**进程内线程**是否真的活着。
+ * 「配了但没跑」只有两者对比才能发现。
+ */
+async function loadScheduler() {
+  try {
+    scheduler.value = await getSyncSchedulerStatus()
+  } catch {
+    // 调度器端点不可用不应拖垮整个同步控制台。
+    scheduler.value = null
+  }
+}
+
+/** 定时同步的一句话描述。 */
+const schedulerSummary = computed(() => {
+  const s = scheduler.value
+  if (!s) {
+    return status.value?.scheduledEnabled
+      ? `定时同步已开启（每 ${Math.round((status.value?.scheduleIntervalSeconds || 0) / 60)} 分钟）`
+      : '定时同步未开启'
+  }
+  if (!s.enabled) return '定时同步未开启'
+  if (!s.running) return '定时同步已配置，但调度线程未运行'
+
+  const parts = [`每 ${Math.round((s.intervalSeconds || 0) / 60)} 分钟`]
+  if (s.nextRunAt) parts.push(`下次 ${formatTime(s.nextRunAt)}`)
+  if (s.consecutiveFailures > 0) parts.push(`连续失败 ${s.consecutiveFailures} 次`)
+  return `定时同步运行中（${parts.join(' · ')}）`
+})
+
+/**
+ * 「配置了但线程没跑」——最容易被漏掉的坑。
+ *
+ * 典型触发：改了 .env 但没重启进程。
+ */
+const schedulerMisconfigured = computed(() => {
+  const s = scheduler.value
+  if (!s) return false
+  return s.enabled && !s.running
+})
+
 async function loadReconciliation() {
   const result = await getLatestReconciliation()
   reconciliation.value = result?.reconciliation ?? null
@@ -530,7 +594,7 @@ async function loadErrors() {
 async function refreshAll() {
   refreshing.value = true
   try {
-    await Promise.all([loadStatus(), loadReconciliation(), loadBatches(), loadErrors()])
+    await Promise.all([loadStatus(), loadScheduler(), loadReconciliation(), loadBatches(), loadErrors()])
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '同步数据加载失败')
   } finally {

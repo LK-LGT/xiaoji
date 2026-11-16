@@ -1268,7 +1268,7 @@ async def get_department_employee_month_plan(
     }
 
 
-@router.get("/project-result-packages/{group_id}", response_model=ProjectResultPackageDetail)
+@router.get("/project-result-packages/{group_id}")
 async def get_project_result_package(
     group_id: str,
     plan_month: Optional[str] = Query(None, alias="planMonth"),

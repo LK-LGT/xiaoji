@@ -127,6 +127,39 @@ export interface SyncStatus {
   cursors: SyncCursor[]
 }
 
+/**
+ * 定时调度器运行态。
+ *
+ * ⚠️ 与 `SyncStatus.scheduledEnabled` 的区别（别混用）：
+ * - `scheduledEnabled` = **配置开关**读到了什么值（.env 里的 FEISHU_SYNC_ENABLED）；
+ * - `enabled` / `running` = **进程内线程**实际状态。
+ *
+ * ⚠️ 两者不一致就是「配了但没跑」——最常见的坑：
+ * 开关是 true 但 `running` 是 false，说明调度线程没起来
+ * （比如配置改了但进程没重启）。
+ */
+export interface SchedulerStatus {
+  /** 配置开关（来自 settings.feishu_sync_enabled）。 */
+  enabled: boolean
+  /** 调度线程当前是否存活。 */
+  running: boolean
+  /** 实际生效的间隔（秒），最小 60。 */
+  intervalSeconds: number
+  /** 是否已经启动过（进程内状态）。 */
+  started: boolean
+  lastRunAt: string | null
+  lastFinishedAt: string | null
+  /** 上一轮结果：submitted / skipped_already_running / skipped_not_configured / error。 */
+  lastResult: string | null
+  /** 连续失败次数（成功会清零）。 */
+  consecutiveFailures: number
+  nextRunAt: string | null
+  /** 成功提交的轮次数。 */
+  runCount: number
+  /** 因「已有同步在运行」而跳过的轮次数。 */
+  skipCount: number
+}
+
 /** 同步审计记录。 */
 export interface SyncAudit {
   id: string
@@ -182,6 +215,19 @@ export const triggerOrganizationSync = (mode: SyncMode = 'full', idempotencyKey?
 /** 查询同步链路状态。 */
 export const getOrganizationSyncStatus = () =>
   http.get<unknown, SyncStatus>('/feishu/sync-organization/status')
+
+/**
+ * 查询定时调度器运行态。
+ *
+ * ⚠️ 这与 `getOrganizationSyncStatus()` **不是一回事**：
+ * 前者返回**配置 + 批次**维度的状态，
+ * 这个返回**调度线程**维度的状态（线程是否活着、上次跑没跑、连续失败几次）。
+ *
+ * 「定时同步配了但没跑」只能靠这个端点看出来 ——
+ * 配置开关是 true、但 `running` 是 false，就说明线程没起来。
+ */
+export const getSyncSchedulerStatus = () =>
+  http.get<unknown, SchedulerStatus>('/feishu/sync-organization/scheduler')
 
 /** 查询同步批次列表。 */
 export const listSyncBatches = (params: {
