@@ -147,7 +147,7 @@ const detail = ref<WeekPlanDetail>()
 const formRef = ref<FormInstance>()
 const departments = ref<Awaited<ReturnType<typeof getSystemOptions>>['departments']>([])
 const page = reactive<PageResult<WeekPlanStandardSupplementRow>>({ records: [], total: 0, pageNo: 1, pageSize: 20 })
-const filters = reactive<{ keyword: string; deptId?: number; weekStart: string; pageNo: number; pageSize: number }>({
+const filters = reactive<{ keyword: string; deptId?: string; weekStart: string; pageNo: number; pageSize: number }>({
   keyword: '',
   deptId: undefined,
   weekStart: '',

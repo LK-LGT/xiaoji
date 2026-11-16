@@ -104,7 +104,7 @@ const departmentOrgScope = useDepartmentOrgScope(false)
 const orgOptions = computed(() => isDepartmentMode.value
   ? departmentOrgScope.orgOptions.value
   : leaderOrgScope.orgOptions.value)
-const scopeOrgId = computed<number | undefined>({
+const scopeOrgId = computed<string | undefined>({
   get: () => isDepartmentMode.value
     ? departmentOrgScope.selectedOrgId.value
     : leaderOrgScope.scopeOrgId.value,

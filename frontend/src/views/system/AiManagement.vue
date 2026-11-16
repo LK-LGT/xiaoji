@@ -58,8 +58,8 @@
             <el-option label="成功" value="true" />
             <el-option label="失败" value="false" />
           </el-select>
-          <el-input-number v-model="logFilters.userId" :controls="false" :min="1" placeholder="用户 ID" />
-          <el-input-number v-model="logFilters.orgId" :controls="false" :min="1" placeholder="组织 ID" />
+          <el-input v-model="logFilters.userId" clearable placeholder="用户 ID" />
+          <el-input v-model="logFilters.orgId" clearable placeholder="组织 ID" />
           <el-input v-model="logFilters.requestId" clearable placeholder="Request ID" />
           <el-input v-model="logFilters.suggestionId" clearable placeholder="Suggestion ID" />
           <el-button type="primary" :icon="Search" @click="searchLogs">查询</el-button>
@@ -297,7 +297,7 @@ const cachedTokenLabel = computed(() => {
 })
 const activeQuickRange = ref('7d')
 const logPage = reactive<AiCallLogPage>({ items: [], total: 0, pageNo: 1, pageSize: 20 })
-const logFilters = reactive<{ range: string[]; sceneCode: string; success: string; userId?: number; orgId?: number; requestId: string; suggestionId: string; pageNo: number; pageSize: number }>({
+const logFilters = reactive<{ range: string[]; sceneCode: string; success: string; userId?: string; orgId?: string; requestId: string; suggestionId: string; pageNo: number; pageSize: number }>({
   range: rangeFor('7d'), sceneCode: '', success: '', userId: undefined, orgId: undefined, requestId: '', suggestionId: '', pageNo: 1, pageSize: 20,
 })
 const logsLoaded = ref(false)

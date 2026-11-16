@@ -409,11 +409,11 @@ const weekPackages = ref<ProjectWeekPlanPackage[]>([])
 const weekResultPackages = ref<ProjectWeekResultPackage[]>([])
 const printPackage = ref<ProjectWeekPlanPackageDetail | ProjectWeekResultPackageDetail | null>(null)
 const dayPrintPackage = ref<ProjectDayPlanPackageDetail | null>(null)
-const dayPrintLoadingGroupId = ref<number | null>(null)
-const printLoadingGroupId = ref<number | null>(null)
-const resultPrintLoadingGroupId = ref<number | null>(null)
-const planExcelLoadingGroupId = ref<number | null>(null)
-const resultExcelLoadingGroupId = ref<number | null>(null)
+const dayPrintLoadingGroupId = ref<string | null>(null)
+const printLoadingGroupId = ref<string | null>(null)
+const resultPrintLoadingGroupId = ref<string | null>(null)
+const planExcelLoadingGroupId = ref<string | null>(null)
+const resultExcelLoadingGroupId = ref<string | null>(null)
 const hasFilter = computed(() => scopeOrgId.value != null || Boolean(keyword.value.trim()))
 const selectedWeekRange = computed(() => weekRange(packageWeekStart.value, shiftDate(packageWeekStart.value, 6)))
 const printWeekPeriod = computed(() => {
@@ -745,9 +745,10 @@ function printRemarkText(row: ProjectWeekPlanPrintRow | ProjectWeekResultPrintRo
 onMounted(async () => {
   try {
     await loadOrgScope()
-    const requestedOrgId = Number(route.query.org)
-    scopeOrgId.value = Number.isFinite(requestedOrgId)
-      && orgOptions.value.some((item) => item.value === requestedOrgId)
+    // ⚠️ 不能用 Number() 强转：飞书部门 ID 是长十六进制字符串，
+    // Number() 会丢精度，导致深链接 /org=<hex> 匹配失败。
+    const requestedOrgId = typeof route.query.org === 'string' ? route.query.org : ''
+    scopeOrgId.value = orgOptions.value.some((item) => item.value === requestedOrgId)
       ? requestedOrgId
       : undefined
     await Promise.all([loadEmployees(false), loadDayPackages(false), loadWeekPackages(false), loadWeekResultPackages(false)])

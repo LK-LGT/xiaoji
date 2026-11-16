@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
+from ...services import system_views
 from ..shared import JsonBody
 
 logger = logging.getLogger(__name__)
@@ -38,24 +39,28 @@ def _ok(data: Any) -> dict:
 @router.get("")
 async def list_users(
     keyword: Optional[str] = Query(None),
-    deptId: Optional[int] = Query(None),
+    deptId: Optional[str] = Query(None),
     status: Optional[int] = Query(None),
-    roleId: Optional[int] = Query(None),
+    roleId: Optional[str] = Query(None),
     pageNo: int = Query(1, ge=1),
-    pageSize: int = Query(20, ge=1, le=100),
+    pageSize: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> dict:
-    """获取用户列表。
+    """获取用户列表（真实数据）。
 
     响应结构：PageResult<UserItem> = { records, total, pageNo, pageSize }
+
+    数据来源：飞书同步落库的 employee 表。
     """
     return _ok(
-        {
-            "records": [],
-            "total": 0,
-            "pageNo": pageNo,
-            "pageSize": pageSize,
-        }
+        system_views.list_user_items(
+            db,
+            keyword=keyword,
+            dept_id=deptId,
+            status=status,
+            page_no=pageNo,
+            page_size=pageSize,
+        )
     )
 
 
@@ -85,7 +90,7 @@ async def register_employee(
 
 @router.put("/{user_id}")
 async def update_user(
-    user_id: int,
+    user_id: str,
     payload: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
@@ -98,7 +103,7 @@ async def update_user(
 
 @router.post("/{user_id}/status")
 async def change_user_status(
-    user_id: int,
+    user_id: str,
     payload: JsonBody,
     db: Session = Depends(get_db),
 ) -> dict:
@@ -112,7 +117,7 @@ async def change_user_status(
 
 @router.post("/{user_id}/reset-password")
 async def reset_user_password(
-    user_id: int,
+    user_id: str,
     db: Session = Depends(get_db),
 ) -> dict:
     """重置用户密码。
@@ -172,8 +177,11 @@ async def export_users(
     raise HTTPException(status_code=404, detail="暂无可导出的用户数据")
 
 
-def _empty_user_item(user_id: int) -> dict:
-    """构造 UserItem，字段与 frontend/src/api/system.ts 保持一致。"""
+def _empty_user_item(user_id: str) -> dict:
+    """构造 UserItem，字段与 frontend/src/api/system.ts 保持一致。
+
+    ⚠️ `id` 是员工 ID（飞书 `user_id`，长十六进制字符串），故为 string。
+    """
     return {
         "id": user_id,
         "username": "",

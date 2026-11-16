@@ -2,7 +2,8 @@ import { AI_OPERATION_TIMEOUT_MS, http } from './http'
 
 export interface AiPlanContext {
   id?: number
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   planMonth: string
   departmentGoal: string
@@ -62,8 +63,8 @@ export interface AiCallLogFilters {
   end?: string
   sceneCode?: string
   success?: boolean
-  userId?: number
-  orgId?: number
+  userId?: string
+  orgId?: string
   requestId?: string
   suggestionId?: string
   pageNo?: number
@@ -75,8 +76,9 @@ export interface AiCallLogRow {
   createdAt: string
   sceneCode: string
   success: boolean
-  userId: number
-  orgId?: number
+  /** 操作人 ID（飞书 user_id，string）。 */
+  userId: string
+  orgId?: string
   bizType?: string
   bizId?: number
   providerCode?: string
@@ -121,7 +123,7 @@ export interface AiCallLogPage {
   pageSize: number
 }
 
-export function getLeaderAiContextApi(planMonth: string, orgId: number) {
+export function getLeaderAiContextApi(planMonth: string, orgId: string) {
   return http.get<unknown, AiPlanContext>('/leader/ai/month-plan-context', { params: { planMonth, orgId } })
 }
 

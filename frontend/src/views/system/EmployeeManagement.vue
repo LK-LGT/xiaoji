@@ -82,8 +82,8 @@ const loading = ref(false), saving = ref(false), drawerVisible = ref(false), imp
 const editFormRef = ref<FormInstance>()
 const options = reactive<SystemOptions>({ departments: [], leaders: [], roles: [] })
 const page = reactive<PageResult<UserItem>>({ records: [], total: 0, pageNo: 1, pageSize: 20 })
-const filters = reactive<{ keyword: string; deptId?: number; status?: number; pageNo: number; pageSize: number }>({ keyword: '', pageNo: 1, pageSize: 20 })
-const editForm = reactive<{ id?: number; realName: string; mobile: string; positionName: string; deptId?: number; directLeaderId?: number; roleId?: number; status: number }>({ realName: '', mobile: '', positionName: '', status: 1 })
+const filters = reactive<{ keyword: string; deptId?: string; status?: number; pageNo: number; pageSize: number }>({ keyword: '', pageNo: 1, pageSize: 20 })
+const editForm = reactive<{ id?: string; realName: string; mobile: string; positionName: string; deptId?: string; directLeaderId?: string; roleId?: string; status: number }>({ realName: '', mobile: '', positionName: '', status: 1 })
 const importResult = reactive({ total: 0, success: 0, failed: 0, errors: [] as string[] })
 const editRules: FormRules = { realName: [{ required: true, message: '请输入姓名' }], mobile: [{ required: true, pattern: /^1\d{10}$/, message: '手机号格式不正确' }], deptId: [{ required: true, message: '请选择归属组织' }], roleId: [{ required: true, message: '请选择角色' }] }
 const flatDepartments = computed(() => flattenDepartments(options.departments))

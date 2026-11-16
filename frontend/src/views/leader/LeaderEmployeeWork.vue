@@ -249,7 +249,9 @@ type TagTone = 'info' | 'warning' | 'success' | 'danger' | 'primary'
 
 const route = useRoute()
 const router = useRouter()
-const ownerId = Number(route.params.ownerId)
+// ⚠️ 不能用 Number() 强转：飞书员工 ID 是长十六进制字符串（ou_xxx），
+// Number() 会丢精度，导致 /employees/<hex> 深链接取不到人。
+const ownerId = typeof route.params.ownerId === 'string' ? route.params.ownerId : ''
 const loading = ref(false)
 const pageData = ref<LeaderEmployeeWorkPage | null>(null)
 const monthPlanDrawerVisible = ref(false)
@@ -325,7 +327,7 @@ function collapseMonthPlanRows(items: LeaderEmployeeWorkItem[]) {
 }
 
 async function loadWork(showMessage = false) {
-  if (!Number.isFinite(ownerId) || ownerId <= 0) return
+  if (!ownerId) return
   loading.value = true
   try {
     const requestApi = isDepartmentMode.value ? getDepartmentEmployeeWorkApi : getLeaderEmployeeWorkApi

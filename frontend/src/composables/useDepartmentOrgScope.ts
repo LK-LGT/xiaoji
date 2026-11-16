@@ -3,7 +3,7 @@ import { getDepartmentOrgTreeApi } from '@/api/department'
 import type { OrgNode } from '@/api/performance'
 
 interface DepartmentOrgOption {
-  value: number
+  value: string
   label: string
 }
 
@@ -19,7 +19,7 @@ function flattenOrgTree(nodes: OrgNode[], parents: string[] = []): DepartmentOrg
 
 export function useDepartmentOrgScope(selectFirst = true) {
   const orgTree = ref<OrgNode[]>([])
-  const selectedOrgId = ref<number>()
+  const selectedOrgId = ref<string>()
   const orgLoading = ref(false)
   const orgOptions = computed(() => flattenOrgTree(orgTree.value))
 

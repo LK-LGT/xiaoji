@@ -16,7 +16,8 @@ export interface MetricItem {
 }
 
 export interface OrgNode {
-  id: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  id: string
   label: string
   orgType: string
   children: OrgNode[]
@@ -40,10 +41,12 @@ export interface ActionResult {
 
 export interface LedgerItem {
   id: string
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   periodType: string
   periodStart?: string

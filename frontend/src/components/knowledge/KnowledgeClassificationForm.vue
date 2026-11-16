@@ -64,7 +64,7 @@ import { computed } from 'vue'
 import type { KnowledgeScopeType, KnowledgeUploadMetadata } from '@/api/knowledge'
 
 interface OrgOption {
-  id: number
+  id: string | number
   name?: string
   label?: string
   orgType: string

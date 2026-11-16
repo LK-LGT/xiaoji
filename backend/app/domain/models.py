@@ -176,6 +176,11 @@ class OrganizationSyncBatch(Base):
     status: Mapped[str] = mapped_column(String(32), default="running", nullable=False, index=True)
     mode: Mapped[str] = mapped_column(String(32), default="full", nullable=False)
     trigger_type: Mapped[str] = mapped_column(String(32), default="manual", nullable=False)
+    # 幂等键：相同 key 的重复触发直接复用同一批次，避免重复同步。
+    # 形如 manual:{actor}:{mode}:{window} / scheduled:{window}。
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(160), nullable=True, unique=True, index=True
+    )
     departments_synced: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     departments_skipped: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     departments_failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -188,6 +193,13 @@ class OrganizationSyncBatch(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reconciliation_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # 异步执行时的阶段标记，供前端展示进度：
+    # pending / running / finished。
+    phase: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    # 人类可读的当前阶段描述（如「正在拉取部门树」）。
+    phase_detail: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # 错误分级：retryable / config / manual / permanent / unknown。
+    error_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class OrganizationSyncCursor(Base):
@@ -200,6 +212,11 @@ class OrganizationSyncCursor(Base):
     cursor_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
     page_token: Mapped[str | None] = mapped_column(String(512), nullable=True)
     last_batch_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("organization_sync_batch.id"), nullable=True)
+    # 上次成功推进的逻辑位置（部门 ID / 员工 ID）。
+    # 拉取按位置续传时从这里恢复；为空表示从头开始。
+    checkpoint_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # 上次全量快照是否完整。完整快照才能判定「远端已删除」。
+    snapshot_complete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
 
 
@@ -217,6 +234,10 @@ class OrganizationSyncItemError(Base):
     resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 错误分级，决定是否自动重试：
+    # retryable（限流/5xx/超时）/ config（权限或配置）/
+    # manual（身份冲突、需人工介入）/ permanent（数据非法）/ unknown。
+    error_category: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

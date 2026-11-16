@@ -43,8 +43,8 @@ def _ok(data: Any) -> dict:
 @router.get("/result-suggestions")
 async def list_result_suggestions(
     status: Optional[str] = Query(None),
-    orgId: Optional[int] = Query(None),
-    ownerId: Optional[int] = Query(None),
+    orgId: Optional[str] = Query(None),
+    ownerId: Optional[str] = Query(None),
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -156,7 +156,7 @@ async def open_leader_result_evidence_archive_entry(
 
 @router.get("/project-day-plan-packages")
 async def list_leader_project_day_plan_packages(
-    scopeOrgId: Optional[int] = Query(None),
+    scopeOrgId: Optional[str] = Query(None),
     planDate: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -169,7 +169,7 @@ async def list_leader_project_day_plan_packages(
 
 @router.get("/project-day-plan-packages/{group_id}")
 async def get_leader_project_day_plan_package(
-    group_id: int,
+    group_id: str,
     planDate: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -194,7 +194,7 @@ async def get_leader_project_day_plan_package(
 
 @router.get("/project-week-plan-packages")
 async def list_leader_project_week_plan_packages(
-    scopeOrgId: Optional[int] = Query(None),
+    scopeOrgId: Optional[str] = Query(None),
     weekStart: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -207,7 +207,7 @@ async def list_leader_project_week_plan_packages(
 
 @router.get("/project-week-plan-packages/{group_id}")
 async def get_leader_project_week_plan_package(
-    group_id: int,
+    group_id: str,
     weekStart: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -225,7 +225,7 @@ async def get_leader_project_week_plan_package(
 
 @router.get("/project-week-plan-packages/{group_id}/excel")
 async def download_leader_project_week_plan_excel(
-    group_id: int,
+    group_id: str,
     weekStart: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ) -> Any:
@@ -246,7 +246,7 @@ async def download_leader_project_week_plan_excel(
 
 @router.get("/project-week-result-packages")
 async def list_leader_project_week_result_packages(
-    scopeOrgId: Optional[int] = Query(None),
+    scopeOrgId: Optional[str] = Query(None),
     weekStart: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -259,7 +259,7 @@ async def list_leader_project_week_result_packages(
 
 @router.get("/project-week-result-packages/{group_id}")
 async def get_leader_project_week_result_package(
-    group_id: int,
+    group_id: str,
     weekStart: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -277,7 +277,7 @@ async def get_leader_project_week_result_package(
 
 @router.get("/project-week-result-packages/{group_id}/excel")
 async def download_leader_project_week_result_excel(
-    group_id: int,
+    group_id: str,
     weekStart: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ) -> Any:
@@ -327,7 +327,7 @@ def _empty_result_suggestion(suggestion_id: str) -> dict:
     }
 
 
-def _empty_day_plan_package(group_id: int) -> dict:
+def _empty_day_plan_package(group_id: str) -> dict:
     """构造 ProjectDayPlanPackage，字段与 frontend/src/api/leader.ts 保持一致。"""
     return {
         "groupId": group_id,
@@ -342,7 +342,7 @@ def _empty_day_plan_package(group_id: int) -> dict:
     }
 
 
-def _empty_week_plan_package(group_id: int) -> dict:
+def _empty_week_plan_package(group_id: str) -> dict:
     """构造 ProjectWeekPlanPackage，字段与 frontend/src/api/weekPlan.ts 保持一致。"""
     return {
         "groupId": group_id,
@@ -358,7 +358,7 @@ def _empty_week_plan_package(group_id: int) -> dict:
     }
 
 
-def _empty_week_result_package(group_id: int) -> dict:
+def _empty_week_result_package(group_id: str) -> dict:
     """构造 ProjectWeekResultPackage，字段与 frontend/src/api/weekResult.ts 保持一致。"""
     return {
         "groupId": group_id,

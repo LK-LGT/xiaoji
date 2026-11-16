@@ -6,16 +6,20 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import time
 
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..core.config import settings
-from ..domain.models import Employee, Department, FeishuIdentity
+from ..domain.models import Employee, Department, FeishuIdentity, SystemAdmin
 from ..services.access_control import build_access_context
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/auth", tags=["认证"])
 
@@ -30,73 +34,54 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=100)
 
 
-# 测试账号 - 每个账号只有其对应角色的权限
+# ─────────────────────────────────────────────────────────────
+# 测试账号
+#
+# ⚠️ 重要设计（R5 修复）：
+#   这里**不再硬编码权限列表**。过去每个测试账号带一份写死的
+#   `permissions`，导致出现「前端显示菜单、点进去后端 403」的
+#   不一致 —— 因为前端看的是这份硬编码列表，后端判的是
+#   `access_control` 的动作级权限，两者不是同一套东西。
+#
+#   现在测试账号与真实员工走**完全相同**的解析路径：
+#   `access_control.build_access_context()` 实时按
+#   （system_admin 表 / 部门负责人 / 直属下属 / HR 部门配置）解析。
+#   权限只有一个事实源，前端菜单与后端鉴权必然一致。
+#
+#   因此 `id` 必须是**真实员工 ID**（能在 employee 表查到），
+#   否则解析不出角色，只会得到「普通员工」权限。
+#
+#   账号对照（真实员工，来自飞书同步落库）：
+#     admin   → b8663c7c  林雅静   人事主管（system_admin 表内，全能账号）
+#     manager → g426c684  杨飞     总经理（总经办负责人 + 有直属下属）
+#     leader  → 939931ba  别嘧咪   总经理（部门负责人）
+#     employee→ 2aaf32ea  李凯     FDE（普通员工）
+#
+#   ⚠️ admin 账号映射的是**真实管理员**，因此它会同时带有
+#   admin / hr / manager / department_leader 多个角色 —— 这是
+#   真实情况，不是 bug。
+# ─────────────────────────────────────────────────────────────
+
 TEST_USERS = {
     "admin": {
         "password": "admin123",
-        "id": "8d5c97gb",
+        "id": "b8663c7c",
         "name": "管理员",
-        "roles": ["admin"],
-        "permissions": [
-            # System permissions only - 系统管理员
-            "system:dashboard:view",
-            "system:employee:register",
-            "system:employee:view",
-            "system:org:view",
-            "system:role:view",
-            "system:permission:view",
-            "system:workday:view",
-            "system:week-standard:view",
-            "system:audit:view",
-            "system:knowledge:view",
-        ],
     },
     "manager": {
         "password": "manager123",
         "id": "g426c684",
         "name": "部门主管",
-        "roles": ["manager"],
-        "permissions": [
-            # Department permissions only - 部门负责人
-            "department:dashboard:view",
-            "department:month-approval:view",
-            "department:result-confirm:view",
-            "department:todo:view",
-            "department:template:view",
-            "department:standard:view",
-            "department:score-rule:view",
-            "department:export-task:view",
-            # 主管评分页
-            "performance:manager-review:view",
-        ],
     },
     "leader": {
         "password": "leader123",
-        "id": "leader001",
+        "id": "939931ba",
         "name": "直属领导",
-        "roles": ["leader"],
-        "permissions": [
-            # Leader permissions only - 直属领导
-            "leader:workbench:view",
-            "leader:month-approval:view",
-            "leader:daily-review:view",
-            "leader:result-suggest:view",
-        ],
     },
     "employee": {
         "password": "employee123",
         "id": "2aaf32ea",
         "name": "普通员工",
-        "roles": ["employee"],
-        "permissions": [
-            # Employee permissions only - 员工
-            "dashboard:view",
-            "planning:month:view",
-            "planning:day:view",
-            "planning:result:view",
-            "performance:dashboard:view",
-            "performance:self-review:view",
-        ],
     },
 }
 
@@ -155,6 +140,8 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "system:week-standard:view",
         "system:audit:view",
         "system:knowledge:view",
+        # 飞书组织同步管理（触发同步 / 查看批次、失败、对账）
+        "system:feishu-sync:manage",
         "dispute:dashboard:view",
         "dispute:case:view",
         # HR 可查看全部考核记录
@@ -171,6 +158,8 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "system:week-standard:view",
         "system:audit:view",
         "system:knowledge:view",
+        # 飞书组织同步管理（触发同步 / 查看批次、失败、对账）
+        "system:feishu-sync:manage",
     ],
 }
 
@@ -190,6 +179,63 @@ def _resolve_permissions(db: Session, employee: Employee) -> tuple[list[str], li
     # 后端动作权限原样透出，便于前端/客户端按需判断。
     backend_permissions = set(context.permissions)
     return sorted(ui_permissions), sorted(backend_permissions)
+
+
+def _resolve_test_user(
+    db: Session, username: str
+) -> tuple[Employee | None, dict[str, Any]]:
+    """解析测试账号 → (真实员工对象, 权限信息)。
+
+    测试账号不再是「凭空捏造的用户」：它们映射到**真实员工**，
+    权限一律由 `access_control` 实时解析，与真实登录完全同路。
+
+    这样保证：
+    - 前端菜单权限 与 后端动作鉴权 来自同一套解析，不会再出现
+      「前端显示菜单、点进去 403」的分裂；
+    - `TEST_USERS` 里删掉的硬编码权限列表不会与真实授权表脱节。
+
+    降级策略（按顺序）：
+    1. 映射的 employee 在库中 → 正常解析；
+    2. employee 不存在，但 `system_admin` 表里有任一启用管理员
+       → 用该管理员解析（覆盖「换环境/独立测试库，真实员工 ID 不存在」）；
+    3. 都没有 → 返回最小权限（仅 employee 角色）。
+    """
+    user_info = TEST_USERS[username]
+    employee = db.get(Employee, user_info["id"])
+
+    if employee is None:
+        # 降级 2：从 system_admin 表找一个启用中的管理员。
+        # 独立测试库 / 新环境里真实员工 ID 可能不存在，但管理员授权表通常有。
+        admin_employee_id = db.execute(
+            select(SystemAdmin.employee_id).where(SystemAdmin.active.is_(True)).limit(1)
+        ).scalar_one_or_none()
+        if admin_employee_id:
+            employee = db.get(Employee, admin_employee_id)
+            if employee is not None:
+                logger.info(
+                    "测试账号 %s 映射的员工 %s 不在库中，改用管理员 %s 解析权限",
+                    username,
+                    user_info["id"],
+                    admin_employee_id,
+                )
+
+    if employee is None:
+        logger.warning(
+            "测试账号 %s 无法定位员工，降级为最小权限", username
+        )
+        return None, {
+            "roles": ["employee"],
+            "permissions": list(ROLE_UI_PERMISSIONS.get("employee", [])),
+            "backendPermissions": [],
+        }
+
+    context = build_access_context(db, employee)
+    permissions, backend_permissions = _resolve_permissions(db, employee)
+    return employee, {
+        "roles": sorted(context.roles),
+        "permissions": permissions,
+        "backendPermissions": backend_permissions,
+    }
 
 
 def _generate_token(user_id: str, username: str, token_version: int = 1) -> tuple[str, str]:
@@ -279,7 +325,11 @@ async def login(
             )
         
         access_token, refresh_token = _generate_token(user_info["id"], username)
-        
+
+        # 测试账号的权限同样走 access_control 实时解析（R5 修复）：
+        # 不再返回硬编码权限串，杜绝「前端有菜单、后端 403」的分裂。
+        employee, resolved = _resolve_test_user(db, username)
+
         return {
             "code": 0,
             "data": {
@@ -288,10 +338,11 @@ async def login(
                 "expiresIn": 7 * 24 * 3600,  # 7 天
                 "userId": user_info["id"],
                 "username": username,
-                "realName": user_info["name"],
+                "realName": employee.name if employee else user_info["name"],
                 "forceChangePassword": False,
-                "roles": user_info["roles"],
-                "permissions": user_info["permissions"],
+                "roles": resolved["roles"],
+                "permissions": resolved["permissions"],
+                "backendPermissions": resolved["backendPermissions"],
             },
         }
     
@@ -394,15 +445,18 @@ async def get_me(request: Request, db: Session = Depends(get_db)) -> dict:
 
     if username in TEST_USERS:
         user_info = TEST_USERS[username]
+        # 与登录接口保持一致：测试账号权限也走 access_control 实时解析（R5 修复）。
+        _, resolved = _resolve_test_user(db, username)
         return {
             "code": 0,
             "data": {
                 "userId": user_info["id"],
                 "username": username,
-                "realName": user_info["name"],
+                "realName": employee.name if employee else user_info["name"],
                 "forceChangePassword": False,
-                "roles": user_info["roles"],
-                "permissions": user_info["permissions"],
+                "roles": resolved["roles"],
+                "permissions": resolved["permissions"],
+                "backendPermissions": resolved["backendPermissions"],
             },
         }
     if not employee:

@@ -514,7 +514,7 @@ async def download_week_result_approval_evidence(
 @router.get("/v1/leader/ai/month-plan-context")
 async def get_leader_ai_month_plan_context(
     planMonth: str = Query(..., description="计划月份 YYYY-MM"),
-    orgId: int = Query(..., description="组织 ID"),
+    orgId: str = Query(..., description="组织 ID（飞书部门 ID，字符串）"),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取领导侧月计划 AI 上下文配置。
@@ -536,7 +536,8 @@ async def update_leader_ai_month_plan_context(
     return _ok(
         _empty_ai_plan_context(
             payload.get("planMonth", ""),
-            int(payload.get("orgId", 0) or 0),
+            # 组织 ID 是飞书部门 ID（长十六进制字符串），不能 int() 强转。
+            str(payload.get("orgId", "0") or "0"),
         )
     )
 
@@ -627,8 +628,11 @@ def _empty_week_result_action(result_id: int, status: str) -> dict:
     }
 
 
-def _empty_ai_plan_context(plan_month: str, org_id: int) -> dict:
-    """构造 AiPlanContext，字段与 frontend/src/api/aiManagement.ts 保持一致。"""
+def _empty_ai_plan_context(plan_month: str, org_id: str) -> dict:
+    """构造 AiPlanContext，字段与 frontend/src/api/aiManagement.ts 保持一致。
+
+    ⚠️ `orgId` 是飞书部门 ID（长十六进制字符串），故为 string。
+    """
     return {
         "id": 0,
         "orgId": org_id,

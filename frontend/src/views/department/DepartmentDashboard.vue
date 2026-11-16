@@ -361,11 +361,11 @@ const packageDetail = ref<ProjectMonthPlanPackageDetail>()
 const activePlanNames = ref<string[]>([])
 
 const organizationEmployeeCounts = computed(() => {
-  const directCounts = new Map<number, number>()
+  const directCounts = new Map<string, number>()
   allEmployees.value.forEach((employee) => {
     directCounts.set(employee.orgId, (directCounts.get(employee.orgId) || 0) + 1)
   })
-  const totals = new Map<number, number>()
+  const totals = new Map<string, number>()
   const countNode = (node: OrgNode): number => {
     const total = (directCounts.get(node.id) || 0)
       + (node.children || []).reduce((sum, child) => sum + countNode(child), 0)
@@ -379,8 +379,8 @@ const organizationEmployeeCounts = computed(() => {
 const selectedOrganizationIds = computed(() => {
   if (selectedOrgId.value == null) return null
   const selected = findOrganization(orgTree.value, selectedOrgId.value)
-  if (!selected) return new Set<number>()
-  const ids = new Set<number>()
+  if (!selected) return new Set<string>()
+  const ids = new Set<string>()
   collectOrganizationIds(selected, ids)
   return ids
 })
@@ -574,7 +574,7 @@ function openEmployee(row: DepartmentEmployeeSummary) {
   })
 }
 
-function findOrganization(nodes: OrgNode[], id: number): OrgNode | undefined {
+function findOrganization(nodes: OrgNode[], id: string): OrgNode | undefined {
   for (const node of nodes) {
     if (node.id === id) return node
     const child = findOrganization(node.children || [], id)
@@ -583,7 +583,7 @@ function findOrganization(nodes: OrgNode[], id: number): OrgNode | undefined {
   return undefined
 }
 
-function collectOrganizationIds(node: OrgNode, result: Set<number>) {
+function collectOrganizationIds(node: OrgNode, result: Set<string>) {
   result.add(node.id)
   for (const child of node.children || []) {
     collectOrganizationIds(child, result)
@@ -611,9 +611,10 @@ function currentMonth() {
 onMounted(async () => {
   try {
     await loadOrgScope()
-    const requestedOrgId = Number(route.query.org)
-    selectedOrgId.value = Number.isFinite(requestedOrgId)
-      && orgOptions.value.some((item) => item.value === requestedOrgId)
+    // ⚠️ 不能用 Number() 强转：飞书部门 ID 是长十六进制字符串，
+    // Number() 会丢精度，导致深链接 /org=<hex> 匹配失败。
+    const requestedOrgId = typeof route.query.org === 'string' ? route.query.org : ''
+    selectedOrgId.value = orgOptions.value.some((item) => item.value === requestedOrgId)
       ? requestedOrgId
       : undefined
     keyword.value = typeof route.query.keyword === 'string' ? route.query.keyword : ''

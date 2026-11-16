@@ -393,7 +393,7 @@ const departmentScope = useDepartmentOrgScope(false)
 const leaderScope = useLeaderOrgScope()
 const orgOptions = computed(() => isLeader.value ? leaderScope.orgOptions.value : departmentScope.orgOptions.value)
 const orgLoading = computed(() => isLeader.value ? leaderScope.orgLoading.value : departmentScope.orgLoading.value)
-const selectedOrgId = computed<number | undefined>({
+const selectedOrgId = computed<string | undefined>({
   get: () => isLeader.value ? leaderScope.scopeOrgId.value : departmentScope.selectedOrgId.value,
   set: (value) => {
     if (isLeader.value) leaderScope.scopeOrgId.value = value

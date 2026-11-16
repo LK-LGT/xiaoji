@@ -1307,6 +1307,7 @@ MOCK_USERS = {
             "system:week-standard:view",
             "system:audit:view",
             "system:knowledge:view",
+            "system:feishu-sync:manage",
         ],
     },
     "manager": {

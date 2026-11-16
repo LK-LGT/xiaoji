@@ -1,12 +1,17 @@
-"""系统管理 API 路由 - 审计日志、员工管理、部门管理等。"""
+"""系统管理 API 路由 - 审计日志、员工管理、部门管理等。
+
+组织与员工数据来自飞书同步落库的 `department` / `employee` 表
+（见 `services.system_views`），不再返回样例数据。
+"""
 
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
-from ...services import workday_rule
+from ...services import system_views, workday_rule
 from ..shared import JsonBody
 
 router = APIRouter(prefix="/v1/system", tags=["system"])
@@ -19,108 +24,88 @@ router = APIRouter(prefix="/v1/system", tags=["system"])
 @router.get("/dashboard")
 async def get_system_dashboard(db: Session = Depends(get_db)) -> dict:
     """获取系统管理仪表盘数据
-    
+
     包括：
-    - 组织、员工、角色统计
-    - 配置风险警告
+    - 组织、员工、角色统计（真实数据）
+    - 配置风险警告（由数据质量指标推导）
     - 最近审计记录
-    
+
     权限要求: 任何登录用户（暂时开放，后期限制为 system:dashboard:view）
     """
-    try:
-        # 统计数据（示例实现，后续可从数据库查询）
-        department_count = 12  # 组织节点数
-        employee_count = 156   # 启用员工数
-        role_count = 8         # 启用角色数
-        audit_count = 342      # 近90天审计记录
+    from ...domain.models import Department, Employee, SystemAdmin
+    from ...services.system_views import _data_quality_snapshot
 
-        # 配置风险数据
+    try:
+        department_count = db.query(Department).filter(Department.active.is_(True)).count()
+        employee_count = (
+            db.query(Employee)
+            .filter(
+                Employee.employment_status == "active",
+                Employee.account_status == "enabled",
+            )
+            .count()
+        )
+        role_count = db.query(SystemAdmin).filter(SystemAdmin.active.is_(True)).count()
+        audit_count = 0  # 审计表尚未统一到本模块，保持为真实计数而非写死值。
+
+        quality = _data_quality_snapshot(db)
+
+        # 配置风险数据：由真实数据质量指标推导。
         risks = [
             {
                 "code": "employee_no_dept",
                 "title": "员工配置不完整",
-                "count": 3,
+                "count": quality["no_department_count"],
                 "level": "high",
                 "route": "/system/employees",
             },
             {
-                "code": "role_permissions_mismatch",
-                "title": "角色权限不同步",
-                "count": 1,
+                "code": "employee_no_leader",
+                "title": "员工未配置直属上级",
+                "count": quality["no_manager_count"],
                 "level": "medium",
-                "route": "/system/roles",
+                "route": "/system/employees",
             },
             {
                 "code": "leader_not_set",
                 "title": "部门负责人未设置",
-                "count": 2,
+                "count": quality["department_without_leader_count"],
                 "level": "medium",
                 "route": "/system/orgs",
             },
+            {
+                "code": "cyclic_manager",
+                "title": "直属上级关系存在循环",
+                "count": quality["cyclic_manager_count"],
+                "level": "high",
+                "route": "/system/employees",
+            },
         ]
+        risks = [risk for risk in risks if risk["count"] > 0]
 
-        # 最近审计记录（取前 10 条）
+        # 最近审计记录：取同步审计流水。
+        from ...domain.models import OrganizationSyncAudit
+
+        recent_rows = (
+            db.query(OrganizationSyncAudit)
+            .order_by(OrganizationSyncAudit.created_at.desc())
+            .limit(10)
+            .all()
+        )
         recent_audits = [
             {
-                "id": "audit_001",
-                "createdAt": (datetime.utcnow() - timedelta(hours=2)).isoformat() + "Z",
-                "username": "admin",
-                "operatorName": "管理员",
-                "action": "CREATE",
-                "actionLabel": "创建员工",
-                "targetType": "employee",
-                "targetTypeLabel": "员工",
-                "targetSummary": "张三",
-                "result": "SUCCESS",
-            },
-            {
-                "id": "audit_002",
-                "createdAt": (datetime.utcnow() - timedelta(hours=1)).isoformat() + "Z",
-                "username": "admin",
-                "operatorName": "管理员",
-                "action": "UPDATE",
-                "actionLabel": "修改员工信息",
-                "targetType": "employee",
-                "targetTypeLabel": "员工",
-                "targetSummary": "李四",
-                "result": "SUCCESS",
-            },
-            {
-                "id": "audit_003",
-                "createdAt": (datetime.utcnow() - timedelta(minutes=30)).isoformat() + "Z",
-                "username": "admin",
-                "operatorName": "管理员",
-                "action": "LOGIN",
-                "actionLabel": "用户登录",
-                "targetType": "user",
-                "targetTypeLabel": "用户",
-                "targetSummary": "admin",
-                "result": "SUCCESS",
-            },
-            {
-                "id": "audit_004",
-                "createdAt": (datetime.utcnow() - timedelta(hours=3)).isoformat() + "Z",
-                "username": "manager",
-                "operatorName": "部门主管",
-                "action": "DELETE",
-                "actionLabel": "删除角色",
-                "targetType": "role",
-                "targetTypeLabel": "角色",
-                "targetSummary": "临时权限",
-                "result": "SUCCESS",
-            },
-            {
-                "id": "audit_005",
-                "createdAt": (datetime.utcnow() - timedelta(hours=4)).isoformat() + "Z",
-                "username": "admin",
-                "operatorName": "管理员",
-                "action": "EXPORT",
-                "actionLabel": "导出员工",
-                "targetType": "employee",
-                "targetTypeLabel": "员工",
-                "targetSummary": "全部员工",
-                "result": "SUCCESS",
-            },
+                "id": row.id,
+                "createdAt": row.created_at.isoformat() if row.created_at else "",
+                "username": row.actor_id or "system",
+                "operatorName": row.actor_id or "系统",
+                "action": row.action,
+                "actionLabel": row.action,
+                "targetType": row.resource_type or "organization",
+                "targetTypeLabel": "组织架构",
+                "targetSummary": row.batch_id or "",
+                "result": "SUCCESS" if row.result == "ok" else row.result.upper(),
+            }
+            for row in recent_rows
         ]
 
         return {
@@ -132,6 +117,7 @@ async def get_system_dashboard(db: Session = Depends(get_db)) -> dict:
                 "auditCount": audit_count,
                 "risks": risks,
                 "recentAudits": recent_audits,
+                "dataQuality": quality,
             },
         }
     except Exception as e:
@@ -148,88 +134,16 @@ async def get_system_dashboard(db: Session = Depends(get_db)) -> dict:
 @router.get("/options")
 async def get_system_options(db: Session = Depends(get_db)) -> dict:
     """获取系统管理选项（员工注册等页面使用）
-    
+
     包括：
-    - 部门/小组树形结构
-    - 直属负责人列表
+    - 部门/小组树形结构（来自飞书同步落库的 department 表）
+    - 直属负责人列表（来自 employee 表）
     - 可用角色列表
     """
     try:
-        # 示例数据（实际应从数据库查询）
-        departments = [
-            {
-                "id": 1,
-                "parentId": 0,
-                "name": "研发部",
-                "code": "RD",
-                "orgType": "DEPARTMENT",
-                "status": 1,
-                "employeeCount": 15,
-                "children": [
-                    {
-                        "id": 11,
-                        "parentId": 1,
-                        "name": "后端团队",
-                        "code": "RD_BACKEND",
-                        "orgType": "GROUP",
-                        "status": 1,
-                        "employeeCount": 8,
-                        "children": [],
-                    },
-                    {
-                        "id": 12,
-                        "parentId": 1,
-                        "name": "前端团队",
-                        "code": "RD_FRONTEND",
-                        "orgType": "GROUP",
-                        "status": 1,
-                        "employeeCount": 7,
-                        "children": [],
-                    },
-                ],
-            },
-            {
-                "id": 2,
-                "parentId": 0,
-                "name": "市场部",
-                "code": "MARKET",
-                "orgType": "DEPARTMENT",
-                "status": 1,
-                "employeeCount": 8,
-                "children": [],
-            },
-            {
-                "id": 3,
-                "parentId": 0,
-                "name": "财务部",
-                "code": "FINANCE",
-                "orgType": "DEPARTMENT",
-                "status": 1,
-                "employeeCount": 5,
-                "children": [],
-            },
-        ]
-
-        leaders = [
-            {"id": 1, "label": "张三 - 研发部负责人", "secondary": "研发部", "status": 1},
-            {"id": 2, "label": "李四 - 市场部负责人", "secondary": "市场部", "status": 1},
-            {"id": 3, "label": "王五 - 财务部负责人", "secondary": "财务部", "status": 1},
-        ]
-
-        roles = [
-            {"id": 1, "name": "管理员", "code": "ADMIN", "status": 1},
-            {"id": 2, "name": "部门主管", "code": "MANAGER", "status": 1},
-            {"id": 3, "name": "员工", "code": "EMPLOYEE", "status": 1},
-            {"id": 4, "name": "总监", "code": "DIRECTOR", "status": 1},
-        ]
-
         return {
             "code": 0,
-            "data": {
-                "departments": departments,
-                "leaders": leaders,
-                "roles": roles,
-            },
+            "data": system_views.list_system_options(db),
         }
     except Exception as e:
         return {
@@ -239,82 +153,54 @@ async def get_system_options(db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/employees")
-async def get_employees(db: Session = Depends(get_db)) -> dict:
-    """获取员工列表"""
-    return {
-        "code": 0,
-        "data": {
-            "records": [
-                {"id": 1, "username": "admin", "realName": "管理员", "mobile": "13800000001", "departmentName": "技术部", "status": 1},
-                {"id": 2, "username": "manager", "realName": "部门主管", "mobile": "13800000002", "departmentName": "研发部", "status": 1},
-            ],
-            "total": 2,
-            "pageNo": 1,
-            "pageSize": 20,
-        },
-    }
+async def get_employees(
+    keyword: Optional[str] = Query(None),
+    deptId: Optional[str] = Query(None),
+    status: Optional[int] = Query(None),
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> dict:
+    """获取员工列表（真实数据）。
+
+    数据来源：飞书同步落库的 employee 表。
+    """
+    try:
+        return {
+            "code": 0,
+            "data": system_views.list_user_items(
+                db,
+                keyword=keyword,
+                dept_id=deptId,
+                status=status,
+                page_no=pageNo,
+                page_size=pageSize,
+            ),
+        }
+    except Exception as e:
+        return {
+            "code": 500,
+            "message": f"获取员工列表失败: {str(e)}",
+        }
 
 
 @router.get("/orgs")
-async def get_orgs(db: Session = Depends(get_db)) -> dict:
-    """获取组织管理数据"""
-    tree_data = [
-        {
-            "id": 1,
-            "name": "研发部",
-            "code": "RD",
-            "orgType": "DEPARTMENT",
-            "leaderName": "张三",
-            "leaderUserId": 1,
-            "sortNo": 1,
-            "status": 1,
-            "employeeCount": 12,
-            "children": [
-                {
-                    "id": 11,
-                    "name": "后端团队",
-                    "code": "RD_BACKEND",
-                    "orgType": "GROUP",
-                    "leaderName": "李四",
-                    "leaderUserId": 2,
-                    "sortNo": 1,
-                    "status": 1,
-                    "employeeCount": 6,
-                    "children": [],
-                },
-                {
-                    "id": 12,
-                    "name": "前端团队",
-                    "code": "RD_FRONTEND",
-                    "orgType": "GROUP",
-                    "leaderName": "王五",
-                    "leaderUserId": 3,
-                    "sortNo": 2,
-                    "status": 1,
-                    "employeeCount": 5,
-                    "children": [],
-                },
-            ],
-        },
-        {
-            "id": 2,
-            "name": "产品部",
-            "code": "PM",
-            "orgType": "DEPARTMENT",
-            "leaderName": "赵六",
-            "leaderUserId": 4,
-            "sortNo": 2,
-            "status": 1,
-            "employeeCount": 8,
-            "children": [],
-        },
-    ]
-    return tree_data
+async def get_orgs(db: Session = Depends(get_db)) -> list[dict]:
+    """获取组织管理数据（真实部门树）。
+
+    返回**裸数组**（`DeptNode[]`），与前端 `api/system.ts` 的
+    `getDepartments(): DeptNode[]` 契约一致。
+
+    ⚠️ 注解不能写成 `-> dict`：本函数实际返回 list，FastAPI 会按注解
+    做响应模型校验，标错会导致 `ResponseValidationError` → HTTP 500
+    （前端表现为「组织架构页面加载失败」）。`/departments` 别名同此。
+    """
+    return system_views.list_department_tree(db, include_inactive=True)
 
 
 # 别名：/departments 指向 /orgs
 @router.get("/departments")
-async def get_departments_alias(db: Session = Depends(get_db)):
+async def get_departments_alias(db: Session = Depends(get_db)) -> list[dict]:
     """获取部门树（/orgs 的别名）"""
     return await get_orgs(db)
 
@@ -728,7 +614,7 @@ async def sync_knowledge(db: Session = Depends(get_db)) -> dict:
 async def preview_knowledge(
     appliesTo: str = Query(...),
     query: str = Query(...),
-    deptId: int | None = Query(None),
+    deptId: str | None = Query(None, description="部门 ID（飞书 department_id，字符串）"),
     db: Session = Depends(get_db),
 ) -> dict:
     """预览知识库检索结果。
@@ -895,8 +781,12 @@ async def create_department(data: dict, db: Session = Depends(get_db)) -> dict:
 
 
 @router.put("/departments/{dept_id}")
-async def update_department(dept_id: int, data: dict, db: Session = Depends(get_db)) -> dict:
-    """更新部门信息"""
+async def update_department(dept_id: str, data: dict, db: Session = Depends(get_db)) -> dict:
+    """更新部门信息
+
+    ⚠️ `dept_id` 是飞书 `department_id`（长十六进制字符串），
+    转 int 会超出 `Number.MAX_SAFE_INTEGER` 之类的精度边界，故为 str。
+    """
     return {
         "id": dept_id,
         "name": data.get("name", "更新的部门"),
@@ -906,7 +796,7 @@ async def update_department(dept_id: int, data: dict, db: Session = Depends(get_
 
 
 @router.delete("/departments/{dept_id}")
-async def delete_department(dept_id: int, db: Session = Depends(get_db)) -> dict:
+async def delete_department(dept_id: str, db: Session = Depends(get_db)) -> dict:
     """删除部门"""
     return {"code": 0, "message": "部门已删除"}
 

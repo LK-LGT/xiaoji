@@ -350,7 +350,7 @@ async def list_leader_employees(
 
 @router.get("/employees/{owner_id}/work-items")
 async def list_leader_employee_work_items(
-    owner_id: int,
+    owner_id: str,
     page_no: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     work_type: Optional[str] = Query(None),
@@ -374,7 +374,7 @@ async def list_leader_employee_work_items(
 
 @router.get("/employees/{owner_id}/month-plans/{plan_id}")
 async def get_leader_employee_month_plan(
-    owner_id: int,
+    owner_id: str,
     plan_id: int,
     db: Session = Depends(get_db),
 ) -> dict:
@@ -394,13 +394,17 @@ async def get_leader_employee_month_plan(
     )
 
 
-def _empty_leader_employee_summary(owner_id: int) -> dict:
-    """构造空 LeaderEmployeeSummary，字段与 frontend/src/api/leader.ts 保持一致。"""
+def _empty_leader_employee_summary(owner_id: str) -> dict:
+    """构造空 LeaderEmployeeSummary，字段与 frontend/src/api/leader.ts 保持一致。
+
+    ⚠️ `ownerId` / `orgId` 是飞书稳定 ID（长十六进制字符串），故为 string。
+    """
     return {
         "ownerId": owner_id,
         "employeeNo": "",
         "employeeName": "",
-        "orgId": 0,
+        # 根节点哨兵值是字符串 "0"，不能写成数字 0。
+        "orgId": "0",
         "orgName": "",
         "monthPlanCount": 0,
         "weekPlanCount": 0,

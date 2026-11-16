@@ -21,7 +21,8 @@ import type {
 import type { PageResponse } from './performance'
 
 export interface DepartmentSummary {
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   monthPlanCount: number
   approvedPlanCount: number
@@ -71,10 +72,12 @@ export interface DepartmentAppeal {
 
 export interface DepartmentDayPlanReview {
   id: string
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   planDate: string
   submittedAt?: string
@@ -107,10 +110,12 @@ export type DepartmentEmployeeWorkPage = LeaderEmployeeWorkPage
 export interface MonthPlanApprovalItem {
   id: string
   planNo: string
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   planYear: number
   planMonth: number
@@ -186,7 +191,8 @@ export interface DepartmentLedgerPage extends PageResponse<LedgerItem> {
 }
 
 export interface ProjectMonthPlanMemberProgress {
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
   positionName: string
@@ -197,7 +203,8 @@ export interface ProjectMonthPlanMemberProgress {
 }
 
 export interface ProjectMonthPlanPackage {
-  groupId: number
+  /** 项目组 ID（飞书 department_id，string）。 */
+  groupId: string
   groupName: string
   departmentName: string
   planMonth: string
@@ -215,7 +222,8 @@ export interface ProjectMonthPlanPackageDetail {
 }
 
 export interface ProjectResultMemberProgress {
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
   positionName: string
@@ -226,7 +234,8 @@ export interface ProjectResultMemberProgress {
 }
 
 export interface ProjectResultPackage {
-  groupId: number
+  /** 项目组 ID（飞书 department_id，string）。 */
+  groupId: string
   groupName: string
   departmentName: string
   planMonth: string
@@ -246,10 +255,12 @@ export interface ProjectResultPackageDetail {
 export interface ResultConfirmItem {
   id: string
   resultNo: string
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   planType: string
   planId: number
@@ -268,7 +279,8 @@ export interface ResultConfirmItem {
 
 export interface DeliverableTemplate {
   id: number
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   templateName: string
   evidenceType: string
@@ -293,7 +305,8 @@ export interface AcceptanceStandard {
 
 export interface ScoreRule {
   id: number
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   ruleName: string
   status: string
@@ -310,7 +323,8 @@ export interface ScoreSimulation {
 }
 
 export interface DeliverableTemplatePayload {
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   templateName: string
   evidenceType: string
   required: boolean
@@ -326,7 +340,8 @@ export interface AcceptanceStandardPayload {
 }
 
 export interface ScoreRulePayload {
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   ruleName: string
   effectiveStart?: string
   effectiveEnd?: string
@@ -355,7 +370,7 @@ export function listProjectMonthPlanPackagesApi(params?: Record<string, unknown>
   return http.get<unknown, ProjectMonthPlanPackage[]>('/department/project-month-plan-packages', { params })
 }
 
-export function getProjectMonthPlanPackageApi(groupId: number, params?: Record<string, unknown>) {
+export function getProjectMonthPlanPackageApi(groupId: string, params?: Record<string, unknown>) {
   return http.get<unknown, ProjectMonthPlanPackageDetail>(`/department/project-month-plan-packages/${groupId}`, { params })
 }
 
@@ -363,7 +378,7 @@ export function listProjectResultPackagesApi(params?: Record<string, unknown>) {
   return http.get<unknown, ProjectResultPackage[]>('/department/project-result-packages', { params })
 }
 
-export function getProjectResultPackageApi(groupId: number, params?: Record<string, unknown>) {
+export function getProjectResultPackageApi(groupId: string, params?: Record<string, unknown>) {
   return http.get<unknown, ProjectResultPackageDetail>(`/department/project-result-packages/${groupId}`, { params })
 }
 
@@ -371,11 +386,11 @@ export function listDepartmentEmployeesApi(params?: Record<string, unknown>) {
   return http.get<unknown, DepartmentEmployeeSummary[]>('/department/employees', { params })
 }
 
-export function getDepartmentEmployeeWorkApi(ownerId: number, params?: Record<string, unknown>) {
+export function getDepartmentEmployeeWorkApi(ownerId: string, params?: Record<string, unknown>) {
   return http.get<unknown, DepartmentEmployeeWorkPage>(`/department/employees/${ownerId}/work-items`, { params })
 }
 
-export function getDepartmentEmployeeMonthPlanApi(ownerId: number, planId: number) {
+export function getDepartmentEmployeeMonthPlanApi(ownerId: string, planId: number) {
   return http.get<unknown, LeaderEmployeeMonthPlanDetail>(`/department/employees/${ownerId}/month-plans/${planId}`)
 }
 

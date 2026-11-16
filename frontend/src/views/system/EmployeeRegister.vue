@@ -27,7 +27,7 @@
             </el-form-item>
             <el-form-item class="span-two" label="角色" prop="roleId">
               <el-select v-model="form.roleId" placeholder="请选择角色">
-                <el-option v-for="role in options.roles" :key="role.id" :label="role.name" :value="role.id" :disabled="role.status !== 1" />
+                <el-option v-for="role in options.roles" :key="role.id" :label="role.name" :value="String(role.id)" :disabled="role.status !== 1" />
               </el-select>
             </el-form-item>
           </div>
@@ -72,7 +72,7 @@ const loading = ref(false)
 const saving = ref(false)
 const result = ref<RegistrationResult>()
 const options = reactive<SystemOptions>({ departments: [], leaders: [], roles: [] })
-const form = reactive<{ realName: string; mobile: string; positionName: string; deptId?: number; directLeaderId?: number; roleId?: number }>({ realName: '', mobile: '', positionName: '' })
+const form = reactive<{ realName: string; mobile: string; positionName: string; deptId?: string; directLeaderId?: string; roleId?: number }>({ realName: '', mobile: '', positionName: '' })
 const rules: FormRules = {
   realName: [{ required: true, message: '请输入员工姓名', trigger: 'blur' }],
   mobile: [{ required: true, pattern: /^1\d{10}$/, message: '请输入正确的11位手机号', trigger: 'blur' }],
@@ -81,7 +81,7 @@ const rules: FormRules = {
 }
 const departmentOptions = computed(() => mapDepartments(options.departments))
 
-function mapDepartments(nodes: SystemOptions['departments']): Array<{ value: number; label: string; disabled: boolean; children: ReturnType<typeof mapDepartments> }> {
+function mapDepartments(nodes: SystemOptions['departments']): Array<{ value: string; label: string; disabled: boolean; children: ReturnType<typeof mapDepartments> }> {
   return nodes.map((node) => ({ value: node.id, label: node.name, disabled: node.status !== 1, children: mapDepartments(node.children || []) }))
 }
 async function load() {
@@ -110,7 +110,8 @@ function reset(clearResult = true) {
 }
 function defaultRoleId() {
   const employeeRole = options.roles.find((role) => role.code === 'EMPLOYEE' && role.status === 1)
-  return employeeRole?.id
+  // 角色主键是自增数字（后端 role_id 为 int），不能转字符串。
+  return employeeRole ? employeeRole.id : undefined
 }
 async function copy(value: string) {
   await navigator.clipboard.writeText(value)

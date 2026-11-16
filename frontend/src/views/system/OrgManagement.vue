@@ -52,23 +52,32 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { createDepartment, deleteDepartment, flattenDepartments, getDepartments, getSystemOptions, updateDepartment, type DeptNode, type SystemOptions } from '@/api/system'
+import { ROOT_DEPARTMENT_ID, createDepartment, deleteDepartment, flattenDepartments, getDepartments, getSystemOptions, updateDepartment, type DeptNode, type SystemOptions } from '@/api/system'
 
 const loading = ref(false), saving = ref(false), drawerVisible = ref(false)
 const departments = ref<DeptNode[]>([]), selected = ref<(DeptNode & { depth?: number })>()
 const options = reactive<SystemOptions>({ departments: [], leaders: [], roles: [] })
 const formRef = ref<FormInstance>()
-const form = reactive<{ id?: number; name: string; code: string; orgType: string; parentId: number; leaderUserId?: number; sortNo: number; status: number }>({ name: '', code: '', orgType: 'DEPARTMENT', parentId: 0, sortNo: 0, status: 1 })
+const form = reactive<{ id?: string; name: string; code: string; orgType: string; parentId: string; leaderUserId?: string; sortNo: number; status: number }>({ name: '', code: '', orgType: 'DEPARTMENT', parentId: ROOT_DEPARTMENT_ID, sortNo: 0, status: 1 })
 const rules: FormRules = { name: [{ required: true, message: '请输入节点名称' }], code: [{ required: true, pattern: /^[A-Z][A-Z0-9_]{1,49}$/, message: '请输入大写编码' }], orgType: [{ required: true }], parentId: [{ required: true }] }
 const rows = computed(() => flattenDepartments(departments.value))
 const visibleRows = computed(() => selected.value ? rows.value.filter((row) => row.id === selected.value?.id || isDescendant(row, selected.value!.id)) : rows.value)
-const parentOptions = computed(() => [{ value: 0, label: '根节点', children: [] as any[] }, ...mapTree(departments.value.filter((node) => node.id !== form.id))])
+const parentOptions = computed(() => [{ value: ROOT_DEPARTMENT_ID, label: '根节点', children: [] as any[] }, ...mapTree(departments.value.filter((node) => node.id !== form.id))])
 function mapTree(nodes: DeptNode[]): any[] { return nodes.filter((node) => node.id !== form.id).map((node) => ({ value: node.id, label: node.name, disabled: node.status !== 1, children: mapTree(node.children || []) })) }
-function isDescendant(row: DeptNode & { depth: number }, parentId: number) { let current = row.parentId; const map = new Map(rows.value.map((item) => [item.id, item.parentId])); while (current) { if (current === parentId) return true; current = map.get(current) || 0 } return false }
+function isDescendant(row: DeptNode & { depth: number }, parentId: string) {
+  // ⚠️ 哨兵值必须是字符串 "0"，不能写成数字 0，否则 `===` 严格比较静默失效。
+  let current = row.parentId
+  const map = new Map(rows.value.map((item) => [item.id, item.parentId]))
+  while (current && current !== ROOT_DEPARTMENT_ID) {
+    if (current === parentId) return true
+    current = map.get(current) || ROOT_DEPARTMENT_ID
+  }
+  return false
+}
 function typeLabel(type: string) { return ({ DEPARTMENT: '部门', GROUP: '小组', PROJECT_GROUP: '项目组' } as Record<string, string>)[type] || type }
 function selectNode(node: DeptNode) { selected.value = node }
 async function load() { loading.value = true; try { const [tree, base] = await Promise.all([getDepartments(), getSystemOptions()]); departments.value = tree; Object.assign(options, base) } catch (error) { ElMessage.error(error instanceof Error ? error.message : '组织数据加载失败') } finally { loading.value = false } }
-function openCreate() { Object.assign(form, { id: undefined, name: '', code: '', orgType: 'DEPARTMENT', parentId: selected.value?.id || 0, leaderUserId: undefined, sortNo: rows.value.length + 1, status: 1 }); drawerVisible.value = true }
+function openCreate() { Object.assign(form, { id: undefined, name: '', code: '', orgType: 'DEPARTMENT', parentId: selected.value?.id || ROOT_DEPARTMENT_ID, leaderUserId: undefined, sortNo: rows.value.length + 1, status: 1 }); drawerVisible.value = true }
 function openEdit(row: DeptNode & { depth?: number }) { Object.assign(form, { id: row.id, name: row.name, code: row.code, orgType: row.orgType, parentId: row.parentId, leaderUserId: row.leaderUserId, sortNo: row.sortNo, status: row.status }); drawerVisible.value = true }
 async function save() { if (!await formRef.value?.validate()) return; saving.value = true; try { form.id ? await updateDepartment(form.id, form) : await createDepartment(form); ElMessage.success('组织节点已保存'); drawerVisible.value = false; await load() } catch (error) { ElMessage.error(error instanceof Error ? error.message : '保存失败') } finally { saving.value = false } }
 async function removeDepartment(row: DeptNode & { depth?: number }) {

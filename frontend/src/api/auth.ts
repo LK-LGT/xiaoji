@@ -4,7 +4,8 @@ export interface LoginResp {
   accessToken: string
   refreshToken: string
   expiresIn: number
-  userId: number
+  /** 员工 ID（飞书 user_id，string）。 */
+  userId: string
   username: string
   realName: string
   forceChangePassword: boolean
@@ -13,13 +14,16 @@ export interface LoginResp {
 }
 
 export interface AuthUser {
-  userId: number
+  /** 员工 ID（飞书 user_id，string）。 */
+  userId: string
   username: string
   realName: string
   mobile: string
-  deptId?: number
+  /** 部门 ID（飞书 department_id，string）。 */
+  deptId?: string
   departmentName?: string
-  groupId?: number
+  /** 项目组 ID（飞书 department_id，string）。 */
+  groupId?: string
   status?: number
   statusSource?: string
   lastLoginAt?: string

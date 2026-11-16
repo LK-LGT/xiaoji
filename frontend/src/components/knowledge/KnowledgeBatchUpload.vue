@@ -150,7 +150,7 @@ import {
 } from '@/utils/knowledgeBatchUpload'
 
 interface OrgOption {
-  id: number
+  id: string | number
   name?: string
   label?: string
   orgType: string

@@ -22,7 +22,8 @@ export interface DisputeCase {
 }
 export interface DisputeReviewer {
   id: number
-  userId: number
+  /** 员工 ID（飞书 user_id，string）。 */
+  userId: string
   userName: string
   sourceType: string
   recusalStatus: string
@@ -30,10 +31,12 @@ export interface DisputeReviewer {
   currentUser: boolean
 }
 export interface DisputeReviewerCandidate {
-  userId: number
+  /** 员工 ID（飞书 user_id，string）。 */
+  userId: string
   employeeNo: string
   userName: string
-  deptId?: number
+  /** 部门 ID（飞书 department_id，string）。 */
+  deptId?: string
 }
 export interface DisputeOpinionRecord {
   id: number
@@ -73,8 +76,8 @@ export const getDisputeReviewerCandidatesApi = (id: number, keyword?: string) =>
   })
 export const downloadDisputePackageApi = (id: number) =>
   http.get<unknown, Blob>(`/dispute/cases/${id}/package`, { responseType: 'blob' })
-export const addDisputeReviewerApi = (id: number, userId: number) =>
-  http.post<{ userId: number }, DisputeReviewer>(`/dispute/cases/${id}/reviewers`, { userId })
+export const addDisputeReviewerApi = (id: number, userId: string) =>
+  http.post<{ userId: string }, DisputeReviewer>(`/dispute/cases/${id}/reviewers`, { userId })
 export const removeDisputeReviewerApi = (id: number, reviewerId: number) =>
   http.delete<unknown, void>(`/dispute/cases/${id}/reviewers/${reviewerId}`)
 export const recuseDisputeApi = (id: number, reason: string) =>

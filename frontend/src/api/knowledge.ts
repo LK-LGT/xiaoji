@@ -44,7 +44,7 @@ export interface KnowledgeDocument {
   appliesTo: string[]
   audienceCodes: KnowledgeAudience[]
   scopeType: KnowledgeScopeType
-  scopeOrgId: number | null
+  scopeOrgId: string | null
   scopeOrgName: string | null
   effectiveDate: string | null
   expiryDate: string | null
@@ -162,7 +162,7 @@ export type KnowledgeScopeType = 'GLOBAL' | 'DEPARTMENT' | 'PROJECT'
 export interface KnowledgeUploadMetadata {
   audienceCodes: KnowledgeAudience[]
   scopeType: KnowledgeScopeType
-  scopeOrgId?: number
+  scopeOrgId?: string
   knowledgeType: string
   appliesTo: string[]
   bindingLevel: string
@@ -208,7 +208,7 @@ export function syncKnowledgeApi() {
   return http.post<undefined, KnowledgeSyncResult>('/system/knowledge/sync')
 }
 
-export function previewKnowledgeApi(params: { appliesTo: string; query: string; deptId?: number }) {
+export function previewKnowledgeApi(params: { appliesTo: string; query: string; deptId?: string }) {
   return http.get<unknown, KnowledgeHit[]>('/system/knowledge/preview', { params })
 }
 

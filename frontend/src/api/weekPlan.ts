@@ -39,7 +39,8 @@ export interface WeekPlanSummary {
   versionNo: number
   ownerUserId: number
   employeeName: string
-  deptId?: number
+  /** 部门 ID（飞书 department_id，string）。 */
+  deptId?: string
   departmentName: string
   itemCount: number
   submitAt?: string
@@ -55,7 +56,8 @@ export interface WeekPlanDetail {
 }
 
 export interface ProjectWeekPlanMemberProgress {
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
   positionName: string
@@ -65,7 +67,8 @@ export interface ProjectWeekPlanMemberProgress {
 }
 
 export interface ProjectWeekPlanPackage {
-  groupId: number
+  /** 项目组 ID（飞书 department_id，string）。 */
+  groupId: string
   groupName: string
   weekStart: string
   weekEnd: string
@@ -78,7 +81,8 @@ export interface ProjectWeekPlanPackage {
 }
 
 export interface ProjectWeekPlanPrintRow {
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
   workContent: string
@@ -117,7 +121,8 @@ export interface WeekPlanAction {
 export interface WeekPlanListQuery {
   status?: WeekPlanStatus | ''
   weekStart?: string
-  deptId?: number
+  /** 部门 ID（飞书 department_id，string）。 */
+  deptId?: string
   pageNo?: number
   pageSize?: number
 }
@@ -170,15 +175,15 @@ export function rejectLeaderWeekPlanApi(id: number, versionNo: number, comment: 
   return http.post<unknown, WeekPlanAction>(`/leader/week-plan-approvals/${id}/reject`, { versionNo, comment })
 }
 
-export function listLeaderProjectWeekPlanPackagesApi(params?: { scopeOrgId?: number; weekStart?: string }) {
+export function listLeaderProjectWeekPlanPackagesApi(params?: { scopeOrgId?: string; weekStart?: string }) {
   return http.get<unknown, ProjectWeekPlanPackage[]>('/leader/project-week-plan-packages', { params })
 }
 
-export function getLeaderProjectWeekPlanPackageApi(groupId: number, params?: { weekStart?: string }) {
+export function getLeaderProjectWeekPlanPackageApi(groupId: string, params?: { weekStart?: string }) {
   return http.get<unknown, ProjectWeekPlanPackageDetail>(`/leader/project-week-plan-packages/${groupId}`, { params })
 }
 
-export function downloadLeaderProjectWeekPlanExcelApi(groupId: number, params?: { weekStart?: string }) {
+export function downloadLeaderProjectWeekPlanExcelApi(groupId: string, params?: { weekStart?: string }) {
   return http.get<unknown, Blob>(`/leader/project-week-plan-packages/${groupId}/excel`, {
     params,
     responseType: 'blob',

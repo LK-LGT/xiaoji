@@ -82,6 +82,7 @@ import WeekPlanStandardSupplement from '@/views/system/WeekPlanStandardSupplemen
 import AuditLog from '@/views/system/AuditLog.vue'
 import AiManagement from '@/views/system/AiManagement.vue'
 import EnterpriseKnowledge from '@/views/system/EnterpriseKnowledge.vue'
+import FeishuSyncManagement from '@/views/system/FeishuSyncManagement.vue'
 
 import PerformanceDashboard from '@/views/performance/PerformanceDashboard.vue'
 import EmployeeSelfReview from '@/views/performance/EmployeeSelfReview.vue'
@@ -217,6 +218,7 @@ const router = createRouter({
     withAppShell('/system/audits', AuditLog, { permission: 'system:audit:view' }),
     withAppShell('/system/ai', AiManagement, { permission: 'system:dashboard:view' }),
     withAppShell('/system/knowledge', EnterpriseKnowledge, { permission: 'system:knowledge:view' }),
+    withAppShell('/system/feishu-sync', FeishuSyncManagement, { permission: 'system:feishu-sync:manage' }),
 
     // --- 争议处理 ---
     withAppShell('/dispute/dashboard', DisputeDashboard, { permission: 'dispute:dashboard:view' }),

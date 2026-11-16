@@ -103,7 +103,8 @@ export interface WeekResultApprovalItem {
 }
 
 export interface ProjectWeekResultMemberProgress {
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
   positionName: string
@@ -113,7 +114,8 @@ export interface ProjectWeekResultMemberProgress {
 }
 
 export interface ProjectWeekResultPackage {
-  groupId: number
+  /** 项目组 ID（飞书 department_id，string）。 */
+  groupId: string
   groupName: string
   weekStart: string
   weekEnd: string
@@ -126,7 +128,8 @@ export interface ProjectWeekResultPackage {
 }
 
 export interface ProjectWeekResultPrintRow {
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
   workContent: string
@@ -202,15 +205,15 @@ export function downloadWeekResultApprovalEvidenceApi(
   })
 }
 
-export function listLeaderProjectWeekResultPackagesApi(params?: { scopeOrgId?: number; weekStart?: string }) {
+export function listLeaderProjectWeekResultPackagesApi(params?: { scopeOrgId?: string; weekStart?: string }) {
   return http.get<unknown, ProjectWeekResultPackage[]>('/leader/project-week-result-packages', { params })
 }
 
-export function getLeaderProjectWeekResultPackageApi(groupId: number, params?: { weekStart?: string }) {
+export function getLeaderProjectWeekResultPackageApi(groupId: string, params?: { weekStart?: string }) {
   return http.get<unknown, ProjectWeekResultPackageDetail>(`/leader/project-week-result-packages/${groupId}`, { params })
 }
 
-export function downloadLeaderProjectWeekResultExcelApi(groupId: number, params?: { weekStart?: string }) {
+export function downloadLeaderProjectWeekResultExcelApi(groupId: string, params?: { weekStart?: string }) {
   return http.get<unknown, Blob>(`/leader/project-week-result-packages/${groupId}/excel`, {
     params,
     responseType: 'blob',

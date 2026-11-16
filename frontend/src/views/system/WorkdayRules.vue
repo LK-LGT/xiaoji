@@ -59,7 +59,7 @@ import { useAutoQuery } from '@/composables/useAutoQuery'
 const loading = ref(false), saving = ref(false), dialogVisible = ref(false), items = ref<WorkdayRule[]>([]), formRef = ref<FormInstance>()
 const now = new Date(), currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 const filters = reactive<{ month: string; ruleType?: string; status?: number; scope: string; employeeId?: string }>({ month: currentMonth, scope: 'global' })
-const employees = ref<Array<{ userId: number; realName: string }>>([])
+const employees = ref<Array<{ userId: string; realName: string }>>([])
 const form = reactive<{ id?: number; ruleDate: string; ruleType: string; forceReport: boolean; description: string; enabled: boolean; employeeId?: string }>({ ruleDate: '', ruleType: 'WORKDAY', forceReport: true, description: '', enabled: true })
 const formRules: FormRules = { ruleDate: [{ required: true, message: '请选择日期' }], ruleType: [{ required: true, message: '请选择规则类型' }] }
 const ruleTypes = [
@@ -76,7 +76,7 @@ function typeTag(value: string) { if (value === 'WORKDAY' || value === 'SPECIAL_
 function isPersonal(value: string) { return PERSONAL_TYPES.includes(value) }
 async function loadEmployees() {
   if (employees.value.length) return
-  try { const res = await listEmployees(0, 200); employees.value = (res?.list ?? []) as Array<{ userId: number; realName: string }> } catch { employees.value = [] }
+  try { const res = await listEmployees(0, 200); employees.value = (res?.list ?? []) as Array<{ userId: string; realName: string }> } catch { employees.value = [] }
 }
 async function load() { loading.value = true; try { const page = await getWorkdayRules(filters); items.value = page?.records ?? [] } catch (error) { ElMessage.error(error instanceof Error ? error.message : '工作日规则加载失败') } finally { loading.value = false } }
 async function resetFilters() { autoQuery.pause(); filters.month = currentMonth; filters.ruleType = undefined; filters.status = undefined; filters.scope = 'global'; filters.employeeId = undefined; await load(); autoQuery.resume() }

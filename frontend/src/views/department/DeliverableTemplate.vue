@@ -133,7 +133,7 @@ const editingId = ref<number | null>(null)
 const loading = ref(false)
 const saving = ref(false)
 const operatingId = ref<number | null>(null)
-const formOrgId = ref<number>()
+const formOrgId = ref<string>()
 const form = reactive({
   name: '',
   evidenceType: 'DOCUMENT',

@@ -2,6 +2,9 @@
 
 多实例部署时通过数据库分布式锁（app.services.job_lock_service）保证同一时刻
 只有一个实例执行同步。进程内锁仅用于避免同一进程重复并发。
+
+人工触发与定时触发共用同一把锁与同一套执行逻辑
+（见 `app.services.feishu_sync_tasks`），避免出现两套行为。
 """
 
 from __future__ import annotations
@@ -11,18 +14,13 @@ import threading
 
 from ..core.config import settings
 from ..core.db import get_sessionmaker
-from ..services.feishu_client import FeishuClient
-from ..services.job_lock_service import (
-    acquire_job_lock,
-    current_holder_id,
-    release_job_lock,
+from ..services.feishu_sync_tasks import (
+    JOB_NAME,
+    SyncAlreadyRunningError,
+    start_async_sync,
 )
-from ..services.organization_sync import OrganizationSyncService
 
 logger = logging.getLogger(__name__)
-
-# 分布式锁中的任务名
-JOB_NAME = "feishu_organization_sync"
 
 _scheduler_thread: threading.Thread | None = None
 _stop_event = threading.Event()
@@ -30,52 +28,28 @@ _lock = threading.Lock()
 
 
 def run_scheduled_sync() -> None:
-    """执行一次定时同步。多实例下由分布式锁保证单实例执行。"""
+    """执行一次定时同步。
+
+    与人工触发走同一条路径：创建批次 → 抢分布式锁 → 后台执行。
+    已有同步在运行时直接跳过（而不是排队），避免任务堆积。
+    """
     if not settings.feishu_app_id or not settings.feishu_app_secret:
         logger.warning("定时同步已跳过：飞书应用配置缺失")
         return
 
-    holder_id = current_holder_id()
     db = get_sessionmaker()()
-    locked = False
     try:
-        # TTL 需大于同步任务最坏耗时，否则慢任务会被其他实例抢占。
-        if not acquire_job_lock(db, JOB_NAME, holder_id):
-            logger.info("定时同步跳过：其他实例已持有锁, holder=%s", holder_id)
-            return
-        locked = True
-
-        client = FeishuClient(
-            app_id=settings.feishu_app_id,
-            app_secret=settings.feishu_app_secret,
-            tenant_id=settings.feishu_tenant_id,
+        batch, created = start_async_sync(
+            db, mode="incremental", trigger_type="scheduled", actor_id=None
         )
-        try:
-            service = OrganizationSyncService(
-                db,
-                client,
-                mode="incremental",
-                triggered_by=None,
-                trigger_type="scheduled",
-            )
-            recovered = service.recover_stale_batches()
-            if recovered:
-                logger.warning("已恢复 %s 个超时同步批次", recovered)
-            result = service.sync_all()
-            logger.info(
-                "定时飞书同步完成, batch_id=%s status=%s",
-                result.get("batch_id"),
-                result.get("status"),
-            )
-        finally:
-            client.close()
+        if not created:
+            logger.info("定时同步跳过：已有批次在运行或幂等命中, batch_id=%s", batch.id)
+    except SyncAlreadyRunningError as exc:
+        logger.info("定时同步跳过：已有同步在运行, batch_id=%s", exc.batch_id)
     except Exception as exc:
-        # 脱敏后再写日志：原始异常可能包含 App Secret / Access Token。
-        safe_message = OrganizationSyncService._safe_error(exc)
-        logger.error("定时飞书同步异常: %s", safe_message)
+        safe_message = str(exc)[:500]
+        logger.error("定时同步异常: %s", safe_message)
     finally:
-        if locked:
-            release_job_lock(db, JOB_NAME, holder_id)
         db.close()
 
 
@@ -107,3 +81,6 @@ def start_scheduler() -> None:
 
 def stop_scheduler() -> None:
     _stop_event.set()
+
+
+__all__ = ["JOB_NAME", "run_scheduled_sync", "start_scheduler", "stop_scheduler"]

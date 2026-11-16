@@ -35,6 +35,7 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
       { label: '审计日志', path: '/system/audits', icon: '≡', permission: 'system:audit:view' },
       { label: 'AI 配置', path: '/system/ai', icon: '✦', permission: 'system:dashboard:view' },
       { label: '企业知识', path: '/system/knowledge', icon: '◎', permission: 'system:knowledge:view' },
+      { label: '飞书同步', path: '/system/feishu-sync', icon: '⇄', permission: 'system:feishu-sync:manage' },
     ],
   },
   {

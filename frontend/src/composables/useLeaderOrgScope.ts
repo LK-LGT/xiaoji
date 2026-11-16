@@ -3,7 +3,7 @@ import { getLeaderOrgTreeApi } from '@/api/leader'
 import type { OrgNode } from '@/api/performance'
 
 interface LeaderOrgOption {
-  value: number
+  value: string
   label: string
 }
 
@@ -19,7 +19,7 @@ function flattenOrgTree(nodes: OrgNode[], parents: string[] = []): LeaderOrgOpti
 
 export function useLeaderOrgScope(selectFirstByDefault = false) {
   const orgTree = ref<OrgNode[]>([])
-  const scopeOrgId = ref<number>()
+  const scopeOrgId = ref<string>()
   const orgLoading = ref(false)
   const orgOptions = computed(() => flattenOrgTree(orgTree.value))
 

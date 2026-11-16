@@ -61,13 +61,23 @@ export interface HealthStatus {
   time: string
 }
 
+/**
+ * 根节点哨兵值。
+ *
+ * 飞书根部门的 parent_id 就是字符串 "0"，全链路必须统一用字符串。
+ * ⚠️ 不能写成数字 0：前端若用 `===` 严格比较，number 与 string 永不相等，
+ * 会导致树节点选中 / 父级判断静默失效。
+ */
+export const ROOT_DEPARTMENT_ID = '0'
+
 export interface DeptNode {
-  id: number
-  parentId: number
+  /** 飞书部门 ID（字符串）。 */
+  id: string
+  parentId: string
   name: string
   code: string
   orgType: 'DEPARTMENT' | 'GROUP' | 'PROJECT_GROUP'
-  leaderUserId?: number
+  leaderUserId?: string
   leaderName?: string
   sortNo: number
   status: number
@@ -76,6 +86,7 @@ export interface DeptNode {
 }
 
 export interface RoleItem {
+  /** 角色 ID（自增数字主键，后端 role_id 为 int）。 */
   id: number
   name: string
   code: string
@@ -87,11 +98,11 @@ export interface RoleItem {
   permissionCount: number
 }
 
-export interface OptionItem { id: number; label: string; secondary?: string; status: number }
+export interface OptionItem { id: string; label: string; secondary?: string; status: number }
 export interface SystemOptions { departments: DeptNode[]; leaders: OptionItem[]; roles: RoleItem[] }
 
 export interface RegistrationResult {
-  userId: number
+  userId: string
   username: string
   employeeNo: string
   initialPassword: string
@@ -102,27 +113,36 @@ export interface RegistrationResult {
 }
 
 export interface UserItem {
-  id: number
+  /** 员工 ID（飞书 user_id，字符串）。 */
+  id: string
   username: string
   employeeNo: string
   realName: string
   positionName?: string
   mobile: string
-  deptId?: number
+  email?: string
+  deptId?: string
   departmentName: string
-  groupId?: number
-  directLeaderId?: number
+  groupId?: string
+  directLeaderId?: string
   directLeaderName: string
-  roleIds: number[]
+  roleIds: string[]
   roleNames: string[]
+  /** 兼容字段：1 启用 / 0 禁用（等于 accountStatus 的数字化）。 */
   status: number
+  /** 账号状态：enabled / disabled。 */
+  accountStatus: 'enabled' | 'disabled'
+  /** 在职状态：active / inactive / exited。 */
+  employmentStatus: 'active' | 'inactive' | 'exited'
   forceChangePassword: boolean
   lastLoginAt?: string
   createdAt: string
 }
 
 export interface PermissionNode {
+  /** 权限 ID（自增数字主键，按约定保持 number）。 */
   id: number
+  /** 父权限 ID（自增数字主键，按约定保持 number）。 */
   parentId: number
   name: string
   code: string
@@ -150,9 +170,11 @@ export interface WeekPlanStandardSupplementRow {
   weekStart: string
   weekEnd: string
   versionNo: number
-  ownerUserId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerUserId: string
   employeeName: string
-  deptId?: number
+  /** 部门 ID（飞书 department_id，string）。 */
+  deptId?: string
   departmentName: string
   content: string
   deliverable?: string
@@ -170,12 +192,12 @@ export interface WeekPlanStandardSupplementAction {
 export const getHealth = () => http.get<unknown, HealthStatus>('/health', { timeout: 5000 })
 export const getSystemDashboard = () => http.get<unknown, DashboardData>('/system/dashboard')
 export const getSystemOptions = () => http.get<unknown, SystemOptions>('/system/options')
-export const registerEmployee = (data: { realName: string; mobile: string; deptId: number; directLeaderId?: number; roleId: number; positionName?: string }) =>
+export const registerEmployee = (data: { realName: string; mobile: string; deptId: string; directLeaderId?: string; roleId: number; positionName?: string }) =>
   http.post<unknown, RegistrationResult>('/system/users/register', data)
 export const getUsers = (params: Record<string, unknown>) => http.get<unknown, PageResult<UserItem>>('/system/users', { params })
-export const updateUser = (id: number, data: Record<string, unknown>) => http.put<unknown, UserItem>(`/system/users/${id}`, data)
-export const changeUserStatus = (id: number, status: number) => http.post(`/system/users/${id}/status`, { status })
-export const resetUserPassword = (id: number) => http.post(`/system/users/${id}/reset-password`)
+export const updateUser = (id: string, data: Record<string, unknown>) => http.put<unknown, UserItem>(`/system/users/${id}`, data)
+export const changeUserStatus = (id: string, status: number) => http.post(`/system/users/${id}/status`, { status })
+export const resetUserPassword = (id: string) => http.post(`/system/users/${id}/reset-password`)
 export const importUsers = (file: File) => {
   const form = new FormData()
   form.append('file', file)
@@ -186,8 +208,8 @@ export const exportUsers = () => http.get<unknown, Blob>('/system/users/export',
 
 export const getDepartments = () => http.get<unknown, DeptNode[]>('/system/departments')
 export const createDepartment = (data: Record<string, unknown>) => http.post<unknown, DeptNode>('/system/departments', data)
-export const updateDepartment = (id: number, data: Record<string, unknown>) => http.put<unknown, DeptNode>(`/system/departments/${id}`, data)
-export const deleteDepartment = (id: number) => http.delete(`/system/departments/${id}`)
+export const updateDepartment = (id: string, data: Record<string, unknown>) => http.put<unknown, DeptNode>(`/system/departments/${id}`, data)
+export const deleteDepartment = (id: string) => http.delete(`/system/departments/${id}`)
 
 export const getRoles = () => http.get<unknown, RoleItem[]>('/system/roles')
 export const createRole = (data: Record<string, unknown>) => http.post<unknown, RoleItem>('/system/roles', data)
@@ -217,7 +239,7 @@ export const exportAudits = (params: Record<string, unknown>) => http.get<unknow
 
 // 员工管理 API
 export interface Employee {
-  userId: number
+  userId: string
   username: string
   realName: string
   email: string
@@ -225,7 +247,7 @@ export interface Employee {
   departmentId: string
   departmentName: string
   position: string
-  manager_id?: number
+  manager_id?: string
   status: 'active' | 'inactive'
   joinDate: string
   roles: string[]
@@ -241,7 +263,7 @@ export interface EmployeeListResult {
 export interface Department {
   id: string
   name: string
-  manager_id?: number
+  manager_id?: string
   parentId?: string
 }
 
@@ -255,16 +277,16 @@ export interface Role {
 export const listEmployees = (skip: number = 0, limit: number = 20, filters?: Record<string, unknown>) =>
   http.get<unknown, EmployeeListResult>('/system/employees', { params: { skip, limit, ...filters } })
 
-export const getEmployee = (userId: number) =>
+export const getEmployee = (userId: string) =>
   http.get<unknown, Employee>(`/system/employees/${userId}`)
 
 export const createEmployee = (data: Partial<Employee>) =>
   http.post<unknown, Employee>('/system/employees', data)
 
-export const updateEmployee = (userId: number, data: Partial<Employee>) =>
+export const updateEmployee = (userId: string, data: Partial<Employee>) =>
   http.put<unknown, Employee>(`/system/employees/${userId}`, data)
 
-export const deleteEmployee = (userId: number) =>
+export const deleteEmployee = (userId: string) =>
   http.delete(`/system/employees/${userId}`)
 
 export const listDepartments = () =>

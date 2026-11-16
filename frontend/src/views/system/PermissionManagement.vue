@@ -44,8 +44,9 @@ async function load() {
   try {
     const [roleData, permissionData] = await Promise.all([getRoles(), getPermissions()])
     roles.value = roleData; permissions.value = permissionData
-    const queryId = Number(route.query.roleId)
-    await selectRole(roles.value.find((role) => role.id === queryId) || roles.value.find((role) => role.code === 'SYS_ADMIN') || roles.value[0])
+    const queryId = typeof route.query.roleId === 'string' ? Number(route.query.roleId) : NaN
+    const byQuery = Number.isFinite(queryId) ? roles.value.find((role) => role.id === queryId) : undefined
+    await selectRole(byQuery || roles.value.find((role) => role.code === 'SYS_ADMIN') || roles.value[0])
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '权限数据加载失败') }
   finally { loading.value = false }
 }
@@ -60,8 +61,8 @@ async function save() {
   if (!selectedRole.value || selectedRole.value.code === 'SUPER_ADMIN') return
   saving.value = true
   try {
-    const checked = treeRef.value?.getCheckedKeys(false) as number[] || []
-    const half = treeRef.value?.getHalfCheckedKeys() as number[] || []
+    const checked = (treeRef.value?.getCheckedKeys(false) as number[]) || []
+    const half = (treeRef.value?.getHalfCheckedKeys() as number[]) || []
     await saveRolePermissions(selectedRole.value.id, [...new Set([...checked, ...half])])
     ElMessage.success('角色权限已保存')
     roles.value = await getRoles()

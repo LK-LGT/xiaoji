@@ -10,7 +10,8 @@ export interface MonthPlan {
   completionRate?: number
   versionNo?: string
   ownerUserId: number
-  deptId?: number
+  /** 部门 ID（飞书 department_id，string）。 */
+  deptId?: string
   status: PlanStatus
   submitAt?: string
   approverId?: number
@@ -28,7 +29,8 @@ export interface DayPlan {
   content: string
   monthPlanId?: number
   ownerUserId: number
-  deptId?: number
+  /** 部门 ID（飞书 department_id，string）。 */
+  deptId?: string
   status: PlanStatus
   submitAt?: string
   approverId?: number
@@ -50,7 +52,8 @@ export interface ResultItem {
   temporary: boolean
   temporaryReason?: string
   ownerUserId: number
-  deptId?: number
+  /** 部门 ID（飞书 department_id，string）。 */
+  deptId?: string
   status: ResultStatus
   submitAt?: string
   confirmerId?: number

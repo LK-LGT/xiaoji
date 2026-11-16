@@ -15,7 +15,8 @@ import type { LeaderMonthPlanApprovalDetail, MonthPlanApprovalItem } from './dep
 
 export interface LeaderDateStatus {
   date: string
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   pendingReviewCount: number
   pendingSuggestCount: number
@@ -25,10 +26,12 @@ export interface LeaderDateStatus {
 
 export interface DailyReviewItem {
   id: string
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   planDate: string
   submittedAt?: string
@@ -52,10 +55,12 @@ export interface LeaderWorkbench {
 }
 
 export interface LeaderEmployeeSummary {
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   monthPlanCount: number
   weekPlanCount: number
@@ -142,10 +147,12 @@ export interface LeaderMonthPlanApprovalPage {
 
 export interface ResultSuggestionItem {
   id: string
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
-  orgId: number
+  /** 组织 ID（飞书 department_id，string）。 */
+  orgId: string
   orgName: string
   resultNo: string
   resultTitle: string
@@ -165,7 +172,8 @@ export interface ResultSuggestionItem {
 }
 
 export interface ProjectDayPlanMemberProgress {
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
   positionName: string
@@ -175,7 +183,8 @@ export interface ProjectDayPlanMemberProgress {
 }
 
 export interface ProjectDayPlanPackage {
-  groupId: number
+  /** 项目组 ID（飞书 department_id，string）。 */
+  groupId: string
   groupName: string
   planDate: string
   submittedCount: number
@@ -187,7 +196,8 @@ export interface ProjectDayPlanPackage {
 }
 
 export interface ProjectDayPlanPrintRow {
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeNo: string
   employeeName: string
   workContent: string
@@ -223,7 +233,8 @@ export interface PlanAdjustmentItem {
   newPlanType: string
   newPlanId: number
   newPlanNo: string
-  ownerId: number
+  /** 归属人 ID（飞书 user_id，string）。 */
+  ownerId: string
   employeeName: string
   adjustmentType: string
   reason: string
@@ -251,15 +262,15 @@ export function listLeaderProjectDayPlanPackagesApi(params?: Record<string, unkn
   return http.get<unknown, ProjectDayPlanPackage[]>('/leader/project-day-plan-packages', { params })
 }
 
-export function getLeaderProjectDayPlanPackageApi(groupId: number, params?: Record<string, unknown>) {
+export function getLeaderProjectDayPlanPackageApi(groupId: string, params?: Record<string, unknown>) {
   return http.get<unknown, ProjectDayPlanPackageDetail>(`/leader/project-day-plan-packages/${groupId}`, { params })
 }
 
-export function getLeaderEmployeeWorkApi(ownerId: number, params?: Record<string, unknown>) {
+export function getLeaderEmployeeWorkApi(ownerId: string, params?: Record<string, unknown>) {
   return http.get<unknown, LeaderEmployeeWorkPage>(`/leader/employees/${ownerId}/work-items`, { params })
 }
 
-export function getLeaderEmployeeMonthPlanApi(ownerId: number, planId: number) {
+export function getLeaderEmployeeMonthPlanApi(ownerId: string, planId: number) {
   return http.get<unknown, LeaderEmployeeMonthPlanDetail>(`/leader/employees/${ownerId}/month-plans/${planId}`)
 }
 

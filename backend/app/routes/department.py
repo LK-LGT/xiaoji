@@ -219,7 +219,8 @@ class DepartmentEmployeeSummary(BaseModel):
     ownerId: str
     employeeName: str
     employeeNo: Optional[str] = None
-    orgId: int
+    # 飞书部门 ID 是长十六进制字符串。
+    orgId: str
     orgName: str
     monthPlanCount: int = 0
     weekPlanCount: int = 0
@@ -241,7 +242,9 @@ class PendingMember(BaseModel):
 
 class ProjectMonthPlanPackage(BaseModel):
     """项目组月计划包"""
-    groupId: int
+
+    # 飞书部门/项目组 ID 是长十六进制字符串，不能转 int。
+    groupId: str
     groupName: str
     departmentName: Optional[str] = None
     planMonth: str
@@ -288,7 +291,8 @@ class ProjectMonthPlanPackageDetail(BaseModel):
 
 class ProjectResultPackage(BaseModel):
     """项目组成果包"""
-    groupId: int
+    # 飞书部门/项目组 ID 是长十六进制字符串。
+    groupId: str
     groupName: str
     planMonth: str
     totalResultCount: int = 0
@@ -305,7 +309,7 @@ class ProjectResultPackage(BaseModel):
 @router.get("/employees", response_model=list[DepartmentEmployeeSummary])
 async def list_department_employees(
     db: Session = Depends(get_db),
-    org_id: Optional[int] = Query(None),
+    org_id: Optional[str] = Query(None),
 ):
     """获取部门员工及其工作统计"""
     try:
@@ -358,7 +362,7 @@ async def list_department_employees(
 async def list_project_month_plan_packages(
     db: Session = Depends(get_db),
     plan_month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
-    org_id: Optional[int] = Query(None),
+    org_id: Optional[str] = Query(None),
 ):
     """获取项目组月计划包
     
@@ -416,7 +420,7 @@ async def list_project_month_plan_packages(
 
 @router.get("/project-month-plan-packages/{group_id}", response_model=ProjectMonthPlanPackageDetail)
 async def get_project_month_plan_package(
-    group_id: int,
+    group_id: str,
     db: Session = Depends(get_db),
     plan_month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
 ):
@@ -530,7 +534,7 @@ async def get_project_month_plan_package(
 async def list_project_result_packages(
     db: Session = Depends(get_db),
     plan_month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
-    org_id: Optional[int] = Query(None),
+    org_id: Optional[str] = Query(None),
 ):
     """获取项目组成果包"""
     try:
@@ -971,7 +975,7 @@ async def get_department_org_tree(db: Session = Depends(get_db)) -> dict:
 
 @router.get("/employees/{owner_id}/work-items")
 async def list_department_employee_work_items(
-    owner_id: int,
+    owner_id: str,
     page_no: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     work_type: Optional[str] = Query(None),
@@ -995,7 +999,7 @@ async def list_department_employee_work_items(
 
 @router.get("/employees/{owner_id}/month-plans/{plan_id}")
 async def get_department_employee_month_plan(
-    owner_id: int,
+    owner_id: str,
     plan_id: int,
     db: Session = Depends(get_db),
 ) -> dict:
@@ -1018,7 +1022,7 @@ async def get_department_employee_month_plan(
 
 @router.get("/project-result-packages/{group_id}")
 async def get_project_result_package(
-    group_id: int,
+    group_id: str,
     plan_month: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -1290,13 +1294,17 @@ def _empty_score_rule(data: dict) -> dict:
     }
 
 
-def _empty_leader_employee_summary(owner_id: int) -> dict:
-    """构造 LeaderEmployeeSummary，字段与 frontend/src/api/leader.ts 保持一致。"""
+def _empty_leader_employee_summary(owner_id: str) -> dict:
+    """构造 LeaderEmployeeSummary，字段与 frontend/src/api/leader.ts 保持一致。
+
+    ⚠️ `ownerId` / `orgId` 是飞书稳定 ID（长十六进制字符串），故为 string。
+    """
     return {
         "ownerId": owner_id,
         "employeeNo": "",
         "employeeName": "",
-        "orgId": 0,
+        # 根节点哨兵值是字符串 "0"，不能写成数字 0。
+        "orgId": "0",
         "orgName": "",
         "monthPlanCount": 0,
         "weekPlanCount": 0,
