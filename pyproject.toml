@@ -23,7 +23,6 @@ ignore = [
     "E501",    # 行长度由 formatter 管
     "B008",    # FastAPI 的 Depends() 在默认值里是标准写法
     "B904",    # raise ... from 在本项目不是强制
-    "UP038",   # isinstance 元组写法不强制
 ]
 
 [tool.ruff.lint.per-file-ignores]
