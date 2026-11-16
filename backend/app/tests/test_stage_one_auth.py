@@ -123,8 +123,8 @@ def test_base_app_error_handler_maps_to_http_status():
     """BaseAppError 必须被全局处理器转成对应状态码，而不是 500。"""
     from fastapi.testclient import TestClient
 
-    from backend.app.main import app
     from backend.app.exceptions import PermissionDenied
+    from backend.app.main import app
 
     @app.get("/__test_raise_permission__")
     def _raise():

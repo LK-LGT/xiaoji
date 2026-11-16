@@ -205,16 +205,74 @@
         </div>
       </template>
     </el-drawer>
+
+    <!--
+      自评详情弹窗
+      ⚠️ BUG-R6-43：过去「查看」按钮跳转到
+      `/performance/self-reviews/{recordId}`，但**该路由未注册**，
+      点「查看」直接白屏。现在改为弹窗 + 真实接口取数。
+    -->
+    <el-dialog
+      v-model="showDetailDialog"
+      title="自评详情"
+      width="720px"
+      destroy-on-close
+    >
+      <div v-if="detailLoading" class="loading-state">
+        <el-skeleton :rows="6" animated />
+      </div>
+      <div v-else-if="detailContent">
+        <el-descriptions :column="2" border size="small" class="mb16">
+          <el-descriptions-item label="记录 ID">{{ detailContent.record_id }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ getStatusLabel(detailContent.status) }}</el-descriptions-item>
+          <el-descriptions-item label="提交时间">
+            {{ detailContent.submitted_at ? formatDateTime(detailContent.submitted_at) : '—' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="员工 ID">{{ detailContent.employee_id }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-divider content-position="left">自评正文</el-divider>
+        <div class="detail-block">
+          <h4>业绩总结</h4>
+          <p>{{ detailField('performance_summary') || '—' }}</p>
+        </div>
+        <div class="detail-block">
+          <h4>主要成就</h4>
+          <p>{{ detailField('achievements') || '—' }}</p>
+        </div>
+        <div class="detail-block">
+          <h4>遇到的挑战</h4>
+          <p>{{ detailField('challenges') || '—' }}</p>
+        </div>
+        <div class="detail-block">
+          <h4>改进方向</h4>
+          <p>{{ detailField('improvements') || '—' }}</p>
+        </div>
+        <div class="detail-block">
+          <h4>其他说明</h4>
+          <p>{{ detailField('remarks') || '—' }}</p>
+        </div>
+      </div>
+      <el-empty v-else :image-size="80" description="未找到自评内容" />
+    </el-dialog>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
+import {
+  buildDedupKey,
+  buildSelfReviewComment,
+  fetchMySelfReviewRecords,
+  fetchSelfReviewDetail,
+  normalizeSelfReviewText,
+  submitSelfReview,
+} from '@/api/selfReview'
+import type { SelfReviewDetail } from '@/api/selfReview'
+import type { PendingAssessmentRecord } from '@/api/attendance'
 
-const router = useRouter()
 const loading = ref(false)
 const saving = ref(false)
 const submitting = ref(false)
@@ -223,37 +281,54 @@ const showEditDrawer = ref(false)
 const editingRecordId = ref('')
 const editingTaskId = ref('')
 
-// 模拟数据
-const allRecords = ref<any[]>([
-  {
-    id: 'R001',
-    taskId: 'T001',
-    taskName: '2026年Q4绩效考核',
-    periodStart: '2026-10-01',
-    periodEnd: '2026-12-31',
-    deadline: '2027-01-10',
-    status: 'not_started',
-    selfReview: null,
-    submittedAt: null,
-  },
-  {
-    id: 'R002',
-    taskId: 'T001',
-    taskName: '2026年Q3绩效考核',
-    periodStart: '2026-07-01',
-    periodEnd: '2026-09-30',
-    deadline: '2026-10-10',
-    status: 'submitted',
-    selfReview: {
-      performanceSummary: '本期主要完成了...',
-      achievements: '完成了X项工作...',
-      challenges: '遇到的主要困难是...',
-      improvements: '下一步计划...',
-      remarks: '',
-    },
-    submittedAt: '2026-10-08 14:30:00',
-  },
-])
+// 自评详情弹窗（BUG-R6-43）
+const showDetailDialog = ref(false)
+const detailLoading = ref(false)
+const detailContent = ref<SelfReviewDetail | null>(null)
+
+/**
+ * ⚠️ BUG-R6-41：这里过去是一段写死的 mock 数组
+ * （`R001` / `T001` / "2026年Q4绩效考核"），
+ * `loadRecords` / `saveDraft` / `submitReview` 里也只有
+ * "这里应该调用后端 API ..." 的 TODO 注释 —— **一个请求都没发**。
+ *
+ * 后果：员工填完自评点「提交自评」，页面弹「自评已提交」，
+ * 但数据库里**什么都没变**；主管那边永远看不到这条自评，
+ * 绩效闭环在第一步就断了（而页面看起来一切正常，极难排查）。
+ *
+ * 现在改为真实数据源：``GET /v1/assessment/records/pending``
+ * （权限过滤后普通员工只看得到自己的记录）。
+ */
+const allRecords = ref<PendingAssessmentRecord[]>([])
+
+/** 把后端记录映射成页面用的视图模型。 */
+function toViewModel(record: PendingAssessmentRecord) {
+  const period = record.period || ''
+  const dashed = /^\d{6}$/.test(period)
+    ? `${period.slice(0, 4)}-${period.slice(4)}`
+    : period
+  const start = dashed ? `${dashed}-01` : ''
+  const end = dashed
+    ? (() => {
+        const [y, m] = dashed.split('-').map(Number)
+        const last = new Date(y, m, 0).getDate()
+        return `${dashed}-${String(last).padStart(2, '0')}`
+      })()
+    : ''
+  return {
+    id: record.record_id,
+    taskId: record.task_id,
+    taskName: record.task_name || '未命名考核任务',
+    periodStart: start,
+    periodEnd: end,
+    deadline: record.updated_at || '',
+    status: record.status,
+    managerComment: record.manager_comment || '',
+    submittedAt: record.updated_at || '',
+  }
+}
+
+const records = computed(() => allRecords.value.map(toViewModel))
 
 const reviewForm = reactive({
   performanceSummary: '',
@@ -264,24 +339,33 @@ const reviewForm = reactive({
 })
 
 const editingRecord = computed(() => {
-  return allRecords.value.find((r) => r.id === editingRecordId.value)
+  return records.value.find((r) => r.id === editingRecordId.value)
 })
 
 // 待自评的任务
 const pendingRecords = computed(() => {
-  return allRecords.value.filter((r) => r.status === 'not_started')
+  return records.value.filter((r) => r.status === 'not_started')
 })
 
-// 已提交的自评
+// 已提交的自评（后端状态：self_review_submitted / manager_review_submitted / confirmed）
 const submittedRecords = computed(() => {
-  return allRecords.value.filter((r) => r.status === 'submitted')
+  return records.value.filter((r) =>
+    ['self_review_submitted', 'manager_review_submitted', 'confirmed'].includes(r.status),
+  )
 })
 
 function getStatusLabel(status: string): string {
+  // ⚠️ BUG-R6-43：这里过去的映射表只覆盖了
+  // ``not_started / in_progress / submitted / confirmed``，
+  // 但后端真实状态是
+  // ``not_started / self_review_submitted / manager_review_submitted / confirmed``。
+  // 结果是「已提交的自评」表里状态列直接显示英文 ``self_review_submitted``。
   const statusMap: Record<string, string> = {
     not_started: '未开始',
     in_progress: '进行中',
     submitted: '已提交',
+    self_review_submitted: '已提交自评',
+    manager_review_submitted: '主管已评分',
     confirmed: '已确认',
   }
   return statusMap[status] || status
@@ -292,6 +376,8 @@ function getStatusType(status: string): string {
     not_started: 'info',
     in_progress: 'warning',
     submitted: 'success',
+    self_review_submitted: 'success',
+    manager_review_submitted: 'success',
     confirmed: 'success',
   }
   return typeMap[status] || 'info'
@@ -309,15 +395,17 @@ function formatDateTime(dateTime: string): string {
   return dayjs(dateTime).format('YYYY-MM-DD HH:mm')
 }
 
-function loadRecords() {
+async function loadRecords() {
   loading.value = true
   error.value = ''
   try {
-    // 这里应该调用后端 API 加载记录
-    loading.value = false
+    // ⚠️ BUG-R6-41：真正去后端拉「属于我」的考核记录。
+    // 后端按 token 解析身份并做 ACL 过滤，普通员工只会拿到自己的记录。
+    allRecords.value = await fetchMySelfReviewRecords()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '未知错误'
     ElMessage.error(error.value)
+  } finally {
     loading.value = false
   }
 }
@@ -326,16 +414,11 @@ function editSelfReview(recordId: string, taskId: string) {
   editingRecordId.value = recordId
   editingTaskId.value = taskId
 
-  const record = allRecords.value.find((r) => r.id === recordId)
-  if (record?.selfReview) {
-    Object.assign(reviewForm, record.selfReview)
-  } else {
-    reviewForm.performanceSummary = ''
-    reviewForm.achievements = ''
-    reviewForm.challenges = ''
-    reviewForm.improvements = ''
-    reviewForm.remarks = ''
-  }
+  reviewForm.performanceSummary = ''
+  reviewForm.achievements = ''
+  reviewForm.challenges = ''
+  reviewForm.improvements = ''
+  reviewForm.remarks = ''
 
   showEditDrawer.value = true
 }
@@ -346,18 +429,41 @@ function handleDrawerClose() {
   editingTaskId.value = ''
 }
 
+/**
+ * 组装提交体。
+ * 后端契约见 ``backend/app/schemas_self_review.py``：
+ * - ``self_comment`` 必填且 >= 10 字 → 用五段文本拼成正文；
+ * - ``self_score`` 必填 1–5 → 页面没采集分数，按"达成预期"给 4；
+ * - ``answers`` 存结构化五段，便于后续按字段做 AI 引用与审核。
+ */
+function buildPayload(recordId: string) {
+  const comment = buildSelfReviewComment(reviewForm)
+  return {
+    self_score: 4,
+    self_comment: comment,
+    highlights: reviewForm.achievements.trim() || null,
+    improvement_areas: reviewForm.improvements.trim() || null,
+    answers: [
+      { field_key: 'performance_summary', text: reviewForm.performanceSummary.trim() },
+      { field_key: 'achievements', text: reviewForm.achievements.trim() },
+      { field_key: 'challenges', text: reviewForm.challenges.trim() },
+      { field_key: 'improvements', text: reviewForm.improvements.trim() },
+      { field_key: 'remarks', text: reviewForm.remarks.trim() },
+    ],
+    dedup_key: buildDedupKey(recordId, reviewForm),
+  }
+}
+
 async function saveDraft() {
   if (!editingRecord.value) return
 
   saving.value = true
   try {
-    // 这里应该调用后端 API 保存草稿
-    const record = allRecords.value.find((r) => r.id === editingRecordId.value)
-    if (record) {
-      record.selfReview = { ...reviewForm }
-      record.status = 'in_progress'
-    }
-    ElMessage.success('草稿已保存')
+    // 后端自评提交接口没有单独的"草稿"入口，
+    // 且草稿状态（in_progress）会被后端视为非法中间态，
+    // 因此这里只做本地留痕 —— **不**伪造"已保存到服务端"的假象。
+    // 真正落库请点「提交自评」。
+    ElMessage.info('草稿仅保留在当前页面，提交后才会保存到服务器')
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '保存失败')
   } finally {
@@ -378,18 +484,19 @@ async function submitReview() {
     ElMessage.warning('请填写遇到的挑战')
     return
   }
+  if (!editingRecord.value) {
+    ElMessage.warning('未找到要提交的自评记录')
+    return
+  }
 
   submitting.value = true
   try {
-    // 这里应该调用后端 API 提交自评
-    const record = allRecords.value.find((r) => r.id === editingRecordId.value)
-    if (record) {
-      record.selfReview = { ...reviewForm }
-      record.status = 'submitted'
-      record.submittedAt = dayjs().format('YYYY-MM-DD HH:mm:ss')
-    }
+    // ⚠️ BUG-R6-41：真正提交到后端。
+    // 成功后重新拉列表，页面上"待自评"会消失、"已提交"会出现。
+    await submitSelfReview(editingRecordId.value, buildPayload(editingRecordId.value))
     ElMessage.success('自评已提交')
     showEditDrawer.value = false
+    await loadRecords()
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '提交失败')
   } finally {
@@ -397,8 +504,40 @@ async function submitReview() {
   }
 }
 
-function viewSelfReview(recordId: string) {
-  router.push(`/performance/self-reviews/${recordId}`)
+/**
+ * 取自评正文的某个字段并归一成可展示文本。
+ *
+ * ⚠️ BUG-R6-44：后端历史数据里 ``achievements`` / ``challenges``
+ * 是**字符串数组**，``performance_summary`` 是**字符串**；
+ * 直接插值数组会渲染成 ``[object Object]``。
+ */
+function detailField(key: string): string {
+  const content = detailContent.value?.self_review
+  if (!content) return ''
+  return normalizeSelfReviewText(content[key])
+}
+
+/**
+ * 查看已提交的自评。
+ *
+ * ⚠️ BUG-R6-43：过去这里是 ``router.push(`/performance/self-reviews/${recordId}`)``，
+ * 但**该路由在 router/index.ts 里没有注册** —— Vue Router 匹配不到，
+ * 整页渲染成空白，用户点「查看」只看到白屏，没有任何提示。
+ *
+ * 现在改为：当前页弹窗 + 真实接口 ``GET /performance/records/{id}/self-review``。
+ */
+async function viewSelfReview(recordId: string) {
+  showDetailDialog.value = true
+  detailLoading.value = true
+  detailContent.value = null
+  try {
+    detailContent.value = await fetchSelfReviewDetail(recordId)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '加载自评详情失败'
+    ElMessage.error(message)
+  } finally {
+    detailLoading.value = false
+  }
 }
 
 onMounted(loadRecords)
@@ -567,5 +706,30 @@ onMounted(loadRecords)
 
 .mt20 {
   margin-top: 20px;
+}
+
+/* 自评详情弹窗（BUG-R6-43） */
+.mb16 {
+  margin-bottom: 16px;
+}
+
+.detail-block {
+  margin-bottom: 18px;
+}
+
+.detail-block h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #606266;
+}
+
+.detail-block p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #303133;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

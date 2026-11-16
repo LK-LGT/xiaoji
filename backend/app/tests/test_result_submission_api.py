@@ -348,6 +348,49 @@ def test_validate_evidence_accepts_extension_when_mime_is_wrong():
     )
 
 
+def test_validate_evidence_rejects_conflicting_mime_and_extension():
+    """⚠️ 扩展名与**已知** MIME 冲突时必须拒绝。
+
+    回归点：``.pdf`` 声明成 ``image/png``（或 ``text/plain``）
+    属于「伪装」—— 内容类型与后缀对不上。
+    原实现里这段判定**根本没写**，只记了条日志就放行
+    （死变量 ``allowed_for_ext`` 就是那段缺失逻辑的残留），
+    实际拦不住任何伪装文件。
+
+    判定规则：MIME 已知 → 它对应的扩展名集合里必须包含本文件扩展名。
+    """
+    # .pdf 却声明成 PNG —— 冲突，拒绝。
+    with pytest.raises(result_submission.ResultConflict):
+        result_submission.validate_evidence(
+            "伪装.pdf", "image/png", 128
+        )
+
+    # .txt 却声明成 PDF —— 冲突，拒绝。
+    with pytest.raises(result_submission.ResultConflict):
+        result_submission.validate_evidence(
+            "伪装.txt", "application/pdf", 128
+        )
+
+    # .jpg / .jpeg 都属于 image/png 的合法伴生扩展名 → 不冲突，放行。
+    result_submission.validate_evidence(
+        "照片.jpg", "image/jpeg", 128
+    )
+
+
+def test_validate_evidence_accepts_unknown_mime_with_valid_extension():
+    """MIME **未知**（不在映射表里）且扩展名合法 → 放行。
+
+    未知 MIME 可能来自各平台/浏览器的怪癖，
+    不应误杀合法文件；但「已知且冲突」必须拦（见上一条测试）。
+    """
+    result_submission.validate_evidence(
+        "交付物.pdf", "text/html", 128
+    )
+    result_submission.validate_evidence(
+        "交付物.pdf", "application/x-custom", 128
+    )
+
+
 def test_validate_evidence_accepts_mime_when_extension_is_odd():
     """扩展名异常但 MIME 合法时也应放行。"""
     result_submission.validate_evidence(

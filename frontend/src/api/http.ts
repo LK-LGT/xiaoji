@@ -13,6 +13,25 @@ function isLogoutRequest(url?: string) {
   return url === '/auth/logout'
 }
 
+/**
+ * ⚠️ BUG-R6-38：这些接口**不能**在 401 时全局跳登录页。
+ *
+ * 场景：用户在「首次登录，请修改密码」页输入旧密码时输错，
+ * 后端返回 401（"旧密码不正确"）。
+ * 过去的拦截器逻辑是「任何非登录请求 401 → 清凭证 + `location.href='/login'`」，
+ * 于是：
+ *   1. 用户**看不到**"旧密码不正确"的提示（错误被跳转吃掉了）；
+ *   2. 刚输入的新密码**全部丢失**，得从头再输一遍；
+ *   3. 更糟的是改密接口的 401 语义是「口令不对」，
+ *      而不是「登录态失效」—— 把它当成会话过期处理本身就是**语义错误**。
+ *
+ * 现在：改密 / 登出之外的「凭证型 401」才跳登录；
+ * 改密接口的 401 原样抛给调用方（页面自己展示错误）。
+ */
+function isPasswordChangeRequest(url?: string) {
+  return url === '/auth/change-password'
+}
+
 function clearLocalSession() {
   localStorage.removeItem('planning_access_token')
   localStorage.removeItem('planning_refresh_token')
@@ -71,6 +90,25 @@ http.interceptors.response.use((response) => {
       clearLocalSession()
       return Promise.reject(error)
     }
+    if (isPasswordChangeRequest(error?.config?.url)) {
+      // ⚠️ BUG-R6-38：改密接口的 401 = "旧密码不正确"，
+      // 不是"登录态失效"。直接抛给页面展示，**不要**跳转登录页，
+      // 否则用户输入的旧/新密码会被整页刷新清空。
+      //
+      // ⚠️ 后端 FastAPI 的 HTTPException 体是 ``{"detail": "..."}``，
+      //   而本项目**自定义**的业务错误体是 ``{"code": ..., "message": ...}``。
+      //   只读 message 会拿到 undefined → 前端只能显示
+      //   "Request failed with status code 401" 这种天书。
+      //   这里两个字段都兜住。
+      const data = error?.response?.data
+      const message =
+        data?.message || data?.detail || '旧密码不正确，请重新输入'
+      const requestError = new Error(
+        typeof message === 'string' ? message : '旧密码不正确，请重新输入',
+      ) as Error & { code?: number }
+      requestError.code = data?.code
+      return Promise.reject(requestError)
+    }
     if (Number(error?.response?.data?.code) === SESSION_REPLACED_CODE) {
       handleSessionReplaced()
     } else {
@@ -78,8 +116,13 @@ http.interceptors.response.use((response) => {
       window.location.href = '/login'
     }
   }
-  const message = error?.response?.data?.message || error?.message || '请求失败'
+  // ⚠️ 同上：FastAPI HTTPException 的错误体是 ``{"detail": "..."}``，
+  //   本项目自定义错误体是 ``{"code": ..., "message": ...}``。
+  //   两个都兜住，否则用户看到的是 "Request failed with status code XXX"。
+  const data = error?.response?.data
+  const rawMessage = data?.message || data?.detail || error?.message || '请求失败'
+  const message = typeof rawMessage === 'string' ? rawMessage : '请求失败'
   const requestError = new Error(message) as Error & { code?: number }
-  requestError.code = error?.response?.data?.code
+  requestError.code = data?.code
   return Promise.reject(requestError)
 })

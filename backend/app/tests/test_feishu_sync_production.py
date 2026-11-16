@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -203,7 +203,7 @@ def test_retry_failed_schedules_backoff_for_retryable(db):
     row = db.query(OrganizationSyncItemError).one()
     assert row.status == "pending"
     assert row.next_retry_at is not None
-    assert row.next_retry_at > datetime.now(timezone.utc).replace(tzinfo=None)
+    assert row.next_retry_at > datetime.now(UTC).replace(tzinfo=None)
 
 
 def test_retry_count_beyond_max_goes_to_dead_letter(db):
@@ -447,7 +447,7 @@ def test_get_sync_status_reports_configuration(db):
 
 def test_recover_stale_batches_marks_failed(db):
     """超时的 running 批次应被标记为 failed。"""
-    stale_started = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2)
+    stale_started = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=2)
     db.add(
         OrganizationSyncBatch(
             batch_no="ORG-STALE",

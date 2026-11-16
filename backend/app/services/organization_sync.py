@@ -29,7 +29,7 @@ import inspect
 import logging
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -53,6 +53,7 @@ from .feishu_sync_errors import (
     classify_item_failure,
     is_auto_retryable,
 )
+from .offboarding_policy import should_disable_identity
 from .sync_cursor import RESOURCE_DEPARTMENT, RESOURCE_EMPLOYEE, CursorManager
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ _FINAL_COMMIT_BACKOFF_SECONDS = 0.5
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _resolve_employment_status(status: dict[str, Any] | None) -> str:
@@ -119,6 +120,35 @@ def _retry_backoff_seconds(attempt: int) -> int:
     """按重试次数返回退避秒数（超出上限取最大值）。"""
     index = max(0, min(attempt - 1, len(RETRY_BACKOFF_SECONDS) - 1))
     return RETRY_BACKOFF_SECONDS[index]
+
+
+def create_sync_batch(
+    db: Session,
+    *,
+    mode: str,
+    triggered_by: str | None = None,
+    trigger_type: str = "manual",
+    phase_detail: str = "正在初始化同步",
+) -> OrganizationSyncBatch:
+    """创建一条同步批次。
+
+    ⚠️ 抽成模块级函数是为了让**事件驱动增量**（R18）与
+    常规同步共用同一套批次号格式与初始化逻辑 ——
+    批次号格式不一致会让运维对账时难以按前缀筛选。
+    """
+    batch = OrganizationSyncBatch(
+        batch_no=f"ORG-{datetime.now(UTC):%Y%m%d}-{uuid.uuid4().hex[:10]}",
+        status="running",
+        mode=mode,
+        trigger_type=trigger_type,
+        triggered_by=triggered_by,
+        phase="running",
+        phase_detail=phase_detail,
+    )
+    db.add(batch)
+    db.commit()
+    db.refresh(batch)
+    return batch
 
 
 class OrganizationSyncService:
@@ -276,17 +306,12 @@ class OrganizationSyncService:
         前端一直转圈，且「已有任务在运行」会把后续触发全部挡住。
         """
         if batch is None:
-            batch = OrganizationSyncBatch(
-                batch_no=f"ORG-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10]}",
-                status="running",
+            batch = create_sync_batch(
+                self.db,
                 mode=self.mode,
-                trigger_type=self.trigger_type,
                 triggered_by=self.triggered_by,
-                phase="running",
-                phase_detail="正在初始化同步",
+                trigger_type=self.trigger_type,
             )
-            self.db.add(batch)
-            self.db.commit()
         else:
             # 复用既有批次：接管它，把状态推进到 running。
             batch.status = "running"
@@ -355,8 +380,20 @@ class OrganizationSyncService:
             self._set_phase(batch, "正在写入员工")
             self._sync_employees(batch, stats)
 
+            # ⚠️ 全库对齐身份可用性。
+            #    只在**全量 + 快照完整**时做 —— 否则可能因为
+            #    「这次没拉到某人」而误判身份状态。
+            #    这一步修的是**历史遗留**：那些本次同步没覆盖到的员工，
+            #    其身份绑定可能一直处于「员工已禁用、身份却 active」的错误状态。
+            identities_fixed = 0
+            if self.mode == "full" and self._snapshot_is_complete():
+                identities_fixed = self._reconcile_identity_activation()
+                if identities_fixed:
+                    logger.info("已对齐身份绑定可用性，修正 %s 条", identities_fixed)
+
             snapshot_complete = self._snapshot_is_complete()
             reconciliation = self._reconcile(departments, self._current_employees)
+            reconciliation["identities_fixed"] = identities_fixed
             batch.reconciliation_json = reconciliation
             batch.status = (
                 "partial_failed"
@@ -367,8 +404,21 @@ class OrganizationSyncService:
             # 推进游标：只在对应资源处理成功后推进，失败保留旧位置以便续传。
             # ⚠️ **有失败时不推进** —— 推进了就等于把失败的数据跳过，
             #    下次增量同步不会再碰它们，缺口就永久留下了。
+            #
+            # ⚠️ 必须传 `to_process`（本轮**真正处理过**的部门），
+            #    不能让 `_advance_cursors` 自己从全量 departments 里取最后一个 ——
+            #    那样 checkpoint 会跑到整棵树的末尾，增量切分恒为空，
+            #    新增/变更的部门永远同步不到（详见 `_advance_cursors` 注释）。
             if not stats["employees_failed"] and not stats["departments_failed"]:
-                self._advance_cursors(batch, departments, snapshot_complete)
+                self._advance_cursors(
+                    batch,
+                    departments,
+                    snapshot_complete,
+                    processed_department_ids={
+                        str(item.get("department_id") or "").strip()
+                        for item in to_process
+                    },
+                )
             else:
                 logger.warning(
                     "本批次存在失败记录，游标不推进（保留断点以便下次续传）, "
@@ -530,36 +580,80 @@ class OrganizationSyncService:
         batch: OrganizationSyncBatch,
         departments: list[dict[str, Any]],
         snapshot_complete: bool,
+        *,
+        processed_department_ids: set[str] | None = None,
     ) -> None:
         """推进部门与员工游标。
 
         规则：
-        - 部门游标：记录本次已处理的最后一个部门 ID；
-        - 员工游标：记录本次已处理的最后一个部门 ID（员工按部门拉取，
+        - 部门游标：记录本次**真正处理过**的最后一个部门 ID；
+        - 员工游标：记录本次**真正处理过**的最后一个部门 ID（员工按部门拉取，
           因此续传单位是部门）；
         - ``snapshot_complete`` 只有在全量且快照完整时才置 True。
           它是「远端缺失 = 离职/删除」这一判定的唯一前提。
 
         ⚠️ **只有处理成功才推进**。批次里有失败时游标不推进 ——
         下次从旧位置重来，失败的数据不会被跳过。
+
+        ⚠️⚠️ **游标语义 = 「切分点」，不是「最后一个部门」**
+        （这是 R6 勘察发现的真实缺陷，详见下方说明）
+
+        游标被 ``CursorManager.departments_to_process()`` 消费时，
+        语义是「把部门列表切成 checkpoint 之前（已处理）/ 之后（待处理）」。
+        因此 checkpoint 必须落在**本轮实际处理范围**的末尾，
+        否则切分点会跑到整个部门树的末尾去。
+
+        反例（本 bug 的实际表现）：
+        旧实现取 ``departments`` 的最后一个 ID 作为 checkpoint。
+        由于 ``departments`` 是**全量**拉回来的部门树（不是本轮处理的子集），
+        checkpoint 永远等于「整棵树最后一个部门」。
+        下一轮增量同步按这个切分点切分 → ``to_process`` 恒为空 →
+        **任何新增/变更的部门永远同步不到**，且 checkpoint 再也追不上。
+
+        正确做法：checkpoint 取「本轮**实际处理过**的最后一个部门」。
+        - 全量模式：本轮处理了全部 → checkpoint = 最后一个部门（切分点正确，
+          下一轮新增的部门会落在它之后被处理）；
+        - 增量模式：本轮只处理了切分点之后的一段 → checkpoint = 这一段的末尾，
+          下一轮继续往后推进（真正的续传）。
         """
+        # 本轮真正处理过的部门集合。调用方没给时，退化为「全部部门都处理了」。
+        if processed_department_ids is None:
+            candidates = departments
+        else:
+            candidates = [
+                dept
+                for dept in departments
+                if str(dept.get("department_id") or "").strip()
+                in processed_department_ids
+            ]
+
         last_dept_id = ""
-        for dept in departments:
+        for dept in candidates:
             dept_id = str(dept.get("department_id") or "").strip()
             if dept_id:
                 last_dept_id = dept_id
+
+        # ⚠️ 本轮一个部门都没处理（增量模式切分后 to_process 为空）时，
+        #    **不能**推进游标 —— 否则 checkpoint 会被推到不该到的位置。
+        if not last_dept_id:
+            logger.info(
+                "本轮没有实际处理任何部门，游标保持不变: batch_id=%s mode=%s",
+                batch.id,
+                self.mode,
+            )
+            return
 
         complete = bool(snapshot_complete and self.mode == "full")
         try:
             self.cursors.advance_checkpoint(
                 RESOURCE_DEPARTMENT,
-                last_dept_id or None,
+                last_dept_id,
                 batch_id=batch.id,
                 snapshot_complete=complete,
             )
             self.cursors.advance_checkpoint(
                 RESOURCE_EMPLOYEE,
-                last_dept_id or None,
+                last_dept_id,
                 batch_id=batch.id,
                 snapshot_complete=complete,
             )
@@ -1076,7 +1170,51 @@ class OrganizationSyncService:
         self.db.flush()
         self._sync_employee_departments(employee.id, department_ids)
         self._sync_identities(employee.id, item, batch)
+        # ⚠️ 身份绑定的可用性必须跟随员工在职状态 ——
+        #    否则会出现「员工已禁用、身份却 active」的组合，
+        #    身份解析会返回一个不该参与业务的账号。
+        #
+        # ⚠️ **必须传「最终生效的状态」而不是远端算出的新状态**：
+        #    离职（exited）后复职的员工，远端算出来是 ``active``，
+        #    但本地按「离职需人工确认」**不会**恢复账号（仍是 disabled）。
+        #    若身份按 ``active`` 恢复，就会出现
+        #    「账号 disabled + 身份 active」—— 比原来更糟。
+        self._sync_identity_activation(
+            employee.id,
+            self._effective_identity_status(employment_status, previous_employment_status),
+        )
         return changed
+
+    @staticmethod
+    def _effective_identity_status(
+        employment_status: str,
+        previous_employment_status: str | None,
+    ) -> str:
+        """算出身份绑定应当跟随的**最终**状态。
+
+        ⚠️ **为什么不能直接用远端算出的新状态**：
+
+        「离职后复职」是一个特殊场景 —— 远端这个人又出现了，
+        所以 ``_resolve_employment_status`` 算出来是 ``active``；
+        但本地按业务口径「离职需人工确认」，**账号保持 disabled**
+        （见 ``_sync_employee`` 里对 ``previous_employment_status`` 的判断）。
+
+        如果身份跟着远端的新状态走，就会出现：
+        ``account_status=disabled`` + ``identity.active=1`` ——
+        这正是本次要消灭的那种错配，只是换了个方向。
+
+        所以这里复刻账号那套口径：
+        - 旧状态是 ``exited`` 且新状态是 ``active`` → 身份**不恢复**，
+          仍按「已离职」处理；
+        - 旧状态是 ``inactive``（冻结）且新状态是 ``active`` → 身份**恢复**。
+
+        Returns:
+            用于判定身份可用性的状态字符串。
+        """
+        if employment_status == "active" and previous_employment_status == "exited":
+            # 离职后复职 —— 人工确认前，身份保持停用。
+            return "exited"
+        return employment_status
 
     def _sync_employee_departments(
         self, employee_id: str, department_ids: list[str]
@@ -1151,6 +1289,107 @@ class OrganizationSyncService:
                 row.bound_by = self.triggered_by
                 row.bound_at = _now()
         self.db.flush()
+
+    def _sync_identity_activation(
+        self,
+        employee_id: str,
+        employment_status: str,
+    ) -> int:
+        """让身份绑定的可用性跟随员工在职状态。
+
+        ⚠️ **为什么必须做**：
+        ``FeishuIdentity.active`` 表示「这个飞书身份当前可用于解析员工」。
+        ``FeishuIdentityService.resolve_employee()`` 只按 ``active`` 过滤，
+        **不看**员工的 ``account_status``。
+
+        所以一旦出现「员工已禁用、身份却是 active」的组合：
+        - 身份解析会**返回一个已禁用的员工**；
+        - 下游（飞书免密登录、身份绑定、审批回流按人匹配）
+          会拿到一个根本不该参与业务的账号。
+
+        真实库里就存在这种组合：13 名 ``inactive``/``disabled`` 员工
+        持有 39 条 active 身份绑定 → 对账报 39 条
+        ``inactive_employee_has_active_identity`` 冲突。
+
+        ⚠️ **「停用」≠「解除绑定」**：
+        这里把 ``active`` 置 False 只是让该身份**不可用于解析**，
+        ``employee_id`` 绑定关系**保留** —— 这样员工复职/解冻时
+        能自动恢复，不必人工重新绑定（对应
+        ``offboarding_policy.should_disable_identity`` 的设计意图）。
+
+        Returns:
+            本次被停用的身份条数。
+        """
+        should_disable = should_disable_identity(employment_status)
+        rows = self.db.execute(
+            select(FeishuIdentity).where(
+                FeishuIdentity.employee_id == employee_id,
+                FeishuIdentity.active.is_(True),
+            )
+        ).scalars().all()
+
+        changed = 0
+        for row in rows:
+            if should_disable:
+                row.active = False
+                row.unbound_at = _now()
+                changed += 1
+            elif not row.active:
+                # ⚠️ 恢复：员工重新在职（解冻 / 复职 / 状态修正）
+                #    → 身份重新可用。
+                #    这是「冻结后解冻自动恢复」的对偶面。
+                row.active = True
+                row.unbound_at = None
+                changed += 1
+        if changed:
+            self.db.flush()
+        return changed
+
+    def _reconcile_identity_activation(self) -> int:
+        """全库对齐：身份可用性 ↔ 员工在职状态。
+
+        ⚠️ **为什么需要这个「全库对齐」**：
+        ``_sync_identity_activation`` 只在**同步到这个员工时**才修正。
+        但历史数据里那些「本次同步没覆盖到」的员工，
+        其身份绑定会一直处于错误状态。
+
+        这正是真实库 39 条冲突的来源 —— 它们来自更早的批次，
+        当时的状态判定逻辑还不存在。
+
+        做法：以员工表为准，批量把
+        ``employee 非 active`` 却 ``identity active`` 的行停用；
+        反之把 ``employee active`` 却 ``identity 全部 inactive`` 的行恢复。
+
+        ⚠️ 只在**全量模式 + 快照完整**时执行 ——
+        否则可能因为「这次没拉到某人」而误判。
+
+        Returns:
+            被修正的身份条数。
+        """
+        employees = {
+            row.id: row.employment_status
+            for row in self.db.execute(select(Employee)).scalars().all()
+        }
+        rows = self.db.execute(
+            select(FeishuIdentity).where(FeishuIdentity.active.is_(True))
+        ).scalars().all()
+
+        fixed = 0
+        for row in rows:
+            status = employees.get(row.employee_id)
+            if status is None:
+                # 员工已不存在（悬空身份）→ 停用。
+                row.active = False
+                row.unbound_at = _now()
+                fixed += 1
+                continue
+            if should_disable_identity(status):
+                row.active = False
+                row.unbound_at = _now()
+                fixed += 1
+        if fixed:
+            self.db.flush()
+        return fixed
 
     # ─────────────────────────────────────────────────────────────
     # 对账与数据质量

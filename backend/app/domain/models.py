@@ -15,10 +15,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -26,11 +27,10 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
-    func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -40,7 +40,7 @@ def _uuid() -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -243,6 +243,88 @@ class OrganizationSyncCursor(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
 
 
+class OrgChangeQueue(Base):
+    """组织架构变更事件队列（R18 事件驱动增量）。
+
+    飞书通讯录事件（``contact.user.*`` / ``contact.department.*``）
+    推送到 webhook 后，**先落库成队列项**，再由后台消费者按队列增量 upsert。
+
+    ⚠️ **为什么要有队列，而不是在 webhook 里直接改数据**：
+    - 飞书要求 webhook **快速返回**，直接做业务会超时 → 飞书反复重推；
+    - 事件可能**乱序**到达（先删后建、先改名后移动），需要串行处理；
+    - 处理失败要能**重试**，不能丢。
+
+    ⚠️ **事件不是唯一数据源**：
+    飞书事件推送**可能丢失**（网络、平台故障）。所以本表只是「快路径」，
+    现有分页游标全量对账仍是**兜底**，保证最终一致。
+    绝不能只靠事件 —— 丢一个事件就永久丢一条数据。
+    """
+
+    __tablename__ = "org_change_queue"
+    __table_args__ = (
+        # ⚠️ 取待处理记录的主要索引：按状态过滤 + 按创建时间排序。
+        Index("ix_org_change_queue_pending", "status", "created_at"),
+        # 去重键：同一资源同一事件重复推送时只留一条。
+        Index("ix_org_change_queue_dedup", "dedup_key", "created_at"),
+        # ⚠️ **去重的数据库级兜底**（PostgreSQL 关键）。
+        #
+        # 应用层的「查重 → 插入」是 check-then-act，两个并发 webhook
+        # 可能同时查不到、都去插入 → 重复队列项 → 同一变更被消费两次。
+        #
+        # SQLite 有全局写锁，窗口被掩盖；PostgreSQL 没有，
+        # 必须靠数据库约束兜底。
+        #
+        # 为什么是**部分唯一索引**（``WHERE status IN (...)``）：
+        # 去重只应作用于「**未完成**」的记录 —— 一条已处理的记录
+        # 不该挡住该资源**下一次**变更（否则第二次变更会被永久丢弃）。
+        # 部分唯一索引正好表达这个语义：只对未完成的行生效。
+        Index(
+            "uq_org_change_queue_active_dedup",
+            "dedup_key",
+            unique=True,
+            # ⚠️ 这里**必须用字面量 SQL 文本**，不能用 ``status.in_(...)``。
+            #
+            # 原因：``__table_args__`` 在类体求值时执行，此时 ``status``
+            # 还没被赋值（列声明在 ``__table_args__`` 之后）——
+            # 写成 Python 表达式会直接抛 ``NameError: name 'status' is not defined``，
+            # 整个应用**起不来**。
+            #
+            # 部分唯一索引的 ``WHERE`` 子句是**原始 SQL**，
+            # 不经过 SQLAlchemy 的表达式解析，因此这里只能写字符串。
+            sqlite_where=text("status IN ('pending', 'processing', 'failed')"),
+            postgresql_where=text("status IN ('pending', 'processing', 'failed')"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    # 事件类型：user_created / user_updated / user_deleted /
+    #           department_created / department_updated / department_deleted。
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # 资源类型：user / department。
+    resource_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # 资源 ID（飞书 user_id / department_id）。
+    resource_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # pending / processing / processed / failed / dead_letter。
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    # 重试次数；超过上限进死信。
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # 下次可处理时间（退避）。
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # ⚠️ 去重键 —— 同一资源同一类型在**很短时间窗内**的重复推送只处理一次。
+    #    飞书在重推时会带同一个 event_id，用它最精准；
+    #    没有 event_id 时退化为「资源+类型+时间片」。
+    dedup_key: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    # 事件原始载荷（已脱敏，不含 Token/Secret）。
+    payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # 关联的同步批次（处理时产生的批次，可为空 —— 事件级增量不一定产生批次）。
+    batch_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("organization_sync_batch.id"), nullable=True, index=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
 class OrganizationSyncItemError(Base):
     """组织同步的单条失败记录，用于定位和重试。"""
 
@@ -412,7 +494,7 @@ class MonthPlan(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
 
     owner: Mapped[Employee] = relationship()
-    items: Mapped[list["MonthPlanItem"]] = relationship(
+    items: Mapped[list[MonthPlanItem]] = relationship(
         back_populates="plan", cascade="all, delete-orphan", order_by="MonthPlanItem.sort_no"
     )
 
@@ -471,7 +553,7 @@ class WeekPlan(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
 
     owner: Mapped[Employee] = relationship()
-    items: Mapped[list["WeekPlanItem"]] = relationship(
+    items: Mapped[list[WeekPlanItem]] = relationship(
         back_populates="plan", cascade="all, delete-orphan", order_by="WeekPlanItem.sort_no"
     )
 
@@ -534,7 +616,7 @@ class DayPlan(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
 
     owner: Mapped[Employee] = relationship()
-    items: Mapped[list["DayPlanItem"]] = relationship(
+    items: Mapped[list[DayPlanItem]] = relationship(
         back_populates="plan", cascade="all, delete-orphan", order_by="DayPlanItem.sort_no"
     )
 
@@ -723,13 +805,13 @@ class AssessmentRecord(Base):
     submit_locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # 最终确认的等级（人工确认后写入，不由 AI 决定）
     confirmed_rating: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    
+
     # 自评内容
     self_review_content: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    
+
     # 主管评分
     manager_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
-    
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
 

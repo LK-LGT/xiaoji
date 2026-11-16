@@ -34,7 +34,6 @@ from app.perf_rules import (  # noqa: E402
     required_for_rule,
 )
 
-
 # ---------------------------------------------------------------------------
 # 脱敏
 # ---------------------------------------------------------------------------
@@ -260,6 +259,133 @@ def test_incomplete_coverage_blocks_pass(svc, rules, business_data):
     dim = next(d for d in result.dimensions if d.rule_id == "PERF_RESULT")
     assert dim.status == DimensionStatus.UNKNOWN.value
     assert "未覆盖" in dim.basis
+
+
+def _data_with_acceptance_criteria() -> dict:
+    """带验收项定义的业务数据（PARTIAL/UNPROVEN 覆盖的前提）。"""
+    return {
+        "metrics": [
+            {
+                "value": 1250000,
+                "target": 1200000,
+                "ratio": 1.0417,
+                "ratio_level": "B",
+                "source": "api:ecommerce",
+                "as_of": "2026-10-31",
+                "evidence_ids": "e1,e2",
+            }
+        ],
+        "evidence": [
+            {"summary": "双11大促活动 GMV 超额完成 4.2%", "impact": "带来新增客户 300 人"},
+        ],
+        "attendance": [{"summary": "迟到 3 次（仅供参考，不自动扣分）"}],
+        "rubric": [{"levels_json": "A: >=1.05, B: 0.95~1.05, C: <0.95"}],
+        "acceptanceCriteria": [
+            {"id": "AC_1", "text": "验收项一：核对实测值"},
+            {"id": "AC_2", "text": "验收项二：核对目标值"},
+        ],
+    }
+
+
+def _full_pass_dimension(svc, rules, business_data) -> tuple:
+    """构造一个「除覆盖状态外一切合格」的 PASS 维度。"""
+    req = svc.prepare("perf_review", rules, business_data)
+    value_src = next(s for s in req.source_catalog if "metrics[0].value" in s.path)
+    target_src = next(s for s in req.source_catalog if "metrics[0].target" in s.path)
+    raw = {
+        "analysisDimensions": [
+            {
+                "rule_id": "PERF_RESULT",
+                "status": "PASS",
+                "conclusion": "GMV 达成目标",
+                "quote": value_src.content,
+                "basis": "达成率 1.0417，落在 B 区间",
+                "references": [value_src.id, target_src.id],
+                "confidence": 0.95,
+            }
+        ]
+    }
+    return req, raw, value_src, target_src
+
+
+@pytest.mark.parametrize("coverage_status", ["PARTIAL", "UNPROVEN"])
+def test_partial_coverage_blocks_pass(svc, rules, coverage_status):
+    """⚠️ R22：验收项覆盖不完整（PARTIAL / UNPROVEN）时，**不得**判定为通过。
+
+    这条守卫在 R22 之前**算了却没用**（``has_unproven_coverage`` 变量赋值后
+    从未被读取，ruff F841 报了出来）—— 等于「有覆盖缺口也能判通过」。
+
+    R22 把它接上后，必须有测试守住 ——
+    否则守卫被改坏（比如条件写反）也不会有任何测试报警。
+    """
+    business_data = _data_with_acceptance_criteria()
+    req, raw, value_src, target_src = _full_pass_dimension(svc, rules, business_data)
+
+    # 让两个验收项都处于「覆盖不完整」状态
+    raw["acceptanceCoverage"] = [
+        {
+            "criterion_id": cid,
+            "status": coverage_status,
+            "basis": "部分核验",
+            "evidence_quote": value_src.content,
+            "evidence_references": [value_src.id],
+            "confidence": 0.6,
+        }
+        for cid in ("AC_1", "AC_2")
+    ]
+
+    result = svc.validate(req, raw)
+    dim = next(d for d in result.dimensions if d.rule_id == "PERF_RESULT")
+
+    assert dim.status == DimensionStatus.UNKNOWN.value, (
+        f"覆盖状态为 {coverage_status} 时不应判 PASS —— "
+        "覆盖不全意味着还有关键事实没被核验。"
+    )
+    assert "覆盖不完整" in dim.basis
+
+
+def test_proven_coverage_still_allows_pass(svc, rules):
+    """⚠️ 反向对照：覆盖**完整**（PROVEN）时，PASS 必须仍然成立。
+
+    没有这条，上一条可能因为「写得太狠」而误伤正常路径。
+    """
+    business_data = _data_with_acceptance_criteria()
+    req, raw, value_src, target_src = _full_pass_dimension(svc, rules, business_data)
+
+    raw["acceptanceCoverage"] = [
+        {
+            "criterion_id": cid,
+            "status": "PROVEN",
+            "basis": "已核验",
+            "evidence_quote": value_src.content,
+            "evidence_references": [value_src.id],
+            "confidence": 0.9,
+        }
+        for cid in ("AC_1", "AC_2")
+    ]
+
+    result = svc.validate(req, raw)
+    dim = next(d for d in result.dimensions if d.rule_id == "PERF_RESULT")
+
+    assert dim.status == DimensionStatus.PASS.value, (
+        "覆盖完整时不应被覆盖守卫误伤。"
+    )
+
+
+def test_no_acceptance_criteria_keeps_pass_allowed(svc, rules, business_data):
+    """⚠️ 反向对照：业务数据里**没有**验收项定义时，不应被覆盖守卫误伤。
+
+    `_acceptance_criteria` 返回空 → coverage 为空列表 →
+    `has_unproven_coverage` 必为 False → PASS 正常成立。
+    """
+    req, raw, _value_src, _target_src = _full_pass_dimension(
+        svc, rules, business_data
+    )
+
+    result = svc.validate(req, raw)
+    dim = next(d for d in result.dimensions if d.rule_id == "PERF_RESULT")
+
+    assert dim.status == DimensionStatus.PASS.value
 
 
 def test_risk_without_validated_issue_rejected(svc, rules, business_data):

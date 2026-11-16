@@ -525,22 +525,33 @@ def validate_evidence(
     ext_ok = extension in ACCEPTED_FILE_EXTENSIONS
 
     if ext_ok:
-        # 扩展名合法：MIME 若被识别但不冲突（MIME 白名单之外但属于
-        # 浏览器给出的通用类型）也放行；明显冲突的类型（如 text/html）
-        # 仍然拒绝，避免把伪装成 pdf 的 html 页面当证据存进来。
+        # 扩展名合法。
+        #
+        # ⚠️ **冲突判定**（先做，与 MIME 是否在白名单无关）：
+        #    MIME **已知**时，它对应的扩展名集合里**必须**包含本文件的扩展名。
+        #    否则说明内容类型与后缀对不上 —— 例如「.pdf」却声明 ``image/png``，
+        #    这正是「伪装成 pdf 的图片」场景，必须拒绝。
+        #
+        #    ⚠️ 之前这里**根本没有判定逻辑**，只记了条日志就放行
+        #    （死变量 ``allowed_for_ext`` 就是那段缺失逻辑的残留），
+        #    实际拦不住任何伪装文件。
+        if content_type:
+            mime_exts = _MIME_TO_EXTENSIONS.get(content_type.lower())
+            if mime_exts is not None and extension not in mime_exts:
+                raise ResultConflict(
+                    f"附件类型冲突：{file_name} 的扩展名是 .{extension}，"
+                    f"但 MIME 类型是 {content_type}"
+                )
+
+        # MIME 不在白名单里 —— 只要不是通用二进制类型就记一条日志再放行。
+        # （浏览器给的 MIME 常常不准，全拦会误杀合法文件。）
         if content_type and not mime_ok:
-            allowed_for_ext = {
-                ext
-                for mime, exts in _MIME_TO_EXTENSIONS.items()
-                for ext in exts
-            }
             generic_mimes = {
                 "application/octet-stream",
                 "binary/octet-stream",
                 "",
             }
             if content_type.lower() not in generic_mimes:
-                # 既不在 MIME 白名单，又不是通用二进制类型 —— 放行但记一条日志。
                 logger.info(
                     "附件 %s 的 MIME (%s) 不在白名单，但扩展名 %s 合法，已放行",
                     file_name, content_type, extension,

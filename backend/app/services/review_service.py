@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -242,7 +242,7 @@ def submit_self_review(
         answers_json=answers,
         attachments_json=attachments,
         submit_source=source.value,
-        submitted_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        submitted_at=datetime.now(UTC).replace(tzinfo=None),
         dedup_key=dedup_key,
     )
     db.add(sr)
@@ -273,7 +273,7 @@ def _create_evidence_from_self_review(
     if rec is None:
         return out
 
-    for key, value in (answers or {}).items():
+    for _key, value in (answers or {}).items():
         if not isinstance(value, str):
             continue
         text = value.strip()
@@ -322,14 +322,32 @@ def _build_metric_context(
 
     **只取 MetricValue 表里的数据** —— 考勤（reference_only）根本不在其中，
     所以考勤永远无法影响分数（决策②的物理保证）。
+
+    ⚠️ BUG-R6-26 修复：**周期格式不一致**导致指标"查无此项"。
+    ``AssessmentTask.period`` 存的是 ``YYYYMM``（见 ``main.py`` 任务创建），
+    而 ``MetricValue.period`` 存的是 ``YYYY-MM``（见
+    ``services/plan_execution_metric.py``）。两边一比对，
+    ``MetricValue.period == period`` 永远为 False → 指标"缺数据不参与算分"
+    → 算分直接抛 ``ScoringError: 所有指标均缺少可用数据``。
+
+    这里把两种格式都列出来查，避免因为格式差异把真实数据漏掉。
     """
     specs = scoring.build_specs(
         snapshot.metrics_json, snapshot.weights_json, snapshot.rubric_json
     )
 
+    # 周期两种写法都查（YYYYMM / YYYY-MM）—— 见上方说明。
+    period_keys = {str(period)}
+    text = str(period)
+    if len(text) == 6 and text.isdigit():
+        period_keys.add(f"{text[:4]}-{text[4:]}")
+    elif len(text) == 7 and text[4] == "-":
+        period_keys.add(text.replace("-", ""))
+
     rows = db.execute(
         select(MetricValue).where(
-            MetricValue.employee_id == employee_id, MetricValue.period == period
+            MetricValue.employee_id == employee_id,
+            MetricValue.period.in_(period_keys),
         )
     ).scalars().all()
     inputs = [
@@ -729,7 +747,7 @@ def confirm_draft(
     ).scalars().all():
         d.status = DraftStatus.CONFIRMED.value
         d.confirmed_by = confirmed_by
-        d.confirmed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        d.confirmed_at = datetime.now(UTC).replace(tzinfo=None)
 
     for d in db.execute(
         select(CommentDraft).where(
@@ -738,7 +756,7 @@ def confirm_draft(
     ).scalars().all():
         d.status = DraftStatus.CONFIRMED.value
         d.confirmed_by = confirmed_by
-        d.confirmed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        d.confirmed_at = datetime.now(UTC).replace(tzinfo=None)
 
     if confirmed_rating:
         rec.confirmed_rating = confirmed_rating

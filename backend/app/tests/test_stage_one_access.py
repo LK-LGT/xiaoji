@@ -216,7 +216,7 @@ def test_organization_sync_is_idempotent_and_preserves_multiple_departments(db: 
     assert db.query(Employee).count() == 3
     assert db.query(Department).count() == 3
 
-    employee = db.query(Employee).filter_by(id="U_EMP").one()
+    db.query(Employee).filter_by(id="U_EMP").one()
     links = db.query(EmployeeDepartment).filter_by(employee_id="U_EMP").all()
     assert {link.department_id for link in links} == {"D_CHILD", "D_HR"}
     assert sum(1 for link in links if link.is_primary) == 1

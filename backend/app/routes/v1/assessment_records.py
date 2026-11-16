@@ -154,6 +154,40 @@ def list_pending_records(
         reverse=False,
     )
 
+    # ⚠️ BUG-R6-36（同周期重复记录 → 列表刷屏 / 评错人）：
+    # 历史上任务创建不幂等（BUG-R6-35），同一个 (员工, 周期) 下可能存在
+    # 数十条考核记录。待评列表会把它们**全部**返回，
+    # 主管看到同一个下属重复 N 行，很容易点错那一条，
+    # 点到旧记录提交就会 409（BUG-R6-33）。
+    #
+    # 现在按 (员工, 周期) 去重：**优先保留最新的一条**
+    # （待评 > 已评；同级取 updated_at 更新的），
+    # 其余重复记录不再出现在待评列表里。
+    deduped: dict[tuple[str, str | None], dict[str, Any]] = {}
+    for item in items:
+        emp = item.get("employee") or {}
+        key = (emp.get("id") or "", item.get("period"))
+        current = deduped.get(key)
+        if current is None:
+            deduped[key] = item
+            continue
+        # 比较优先级：待评 > 已评；同级比更新时间
+        cur_pending = current["status"] in PENDING_REVIEW_STATUSES
+        new_pending = item["status"] in PENDING_REVIEW_STATUSES
+        if new_pending != cur_pending:
+            if new_pending:
+                deduped[key] = item
+            continue
+        if item["updated_at"] > current["updated_at"]:
+            deduped[key] = item
+
+    items = list(deduped.values())
+
+    # 去重后重新排序：待评在前，同组内按更新时间倒序（新的在前）
+    # 分两步排序：先按时间倒序，再用稳定的 sort 把待评提到最前。
+    items.sort(key=lambda item: item["updated_at"], reverse=True)
+    items.sort(key=lambda item: 0 if item["status"] in PENDING_REVIEW_STATUSES else 1)
+
     return {
         "code": 0,
         "data": {

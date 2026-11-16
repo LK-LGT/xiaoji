@@ -45,7 +45,7 @@ def get_engine():
                 #    后台同步线程与 HTTP 读请求并发时，写提交会因
                 #    一次读事务而失败 —— 批次状态写不进去，永久停在 running。
                 #    设置超时后写方会等待锁释放，而不是直接失败。
-                cur.execute("PRAGMA busy_timeout=%d" % SQLITE_BUSY_TIMEOUT_MS)
+                cur.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
                 # WAL：读写不互相阻塞，显著降低并发写冲突。
                 cur.execute("PRAGMA journal_mode=WAL")
                 cur.close()

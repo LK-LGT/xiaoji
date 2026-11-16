@@ -19,17 +19,20 @@ R22 开工前，仓库里有这么一处「配置与执行分叉」：
 
 ## 本文件的作用
 
-持续校验下面三件事，任何一件不成立就红：
+持续校验下面五件事，任何一件不成立就红：
 
 1. **CI 的 ruff 调用不得自带 ``--select``** ——
    规则集必须由 ``pyproject.toml`` 唯一决定，
    否则改配置的人根本不会想到要去改 CI。
-    2. **CI 与本地 ``run_ci_locally.py`` 的 ruff 覆盖路径一致** ——
-    否则「本地绿 / CI 红」或反之。
+2. **CI 与本地 ``run_ci_locally.py`` 的 ruff 覆盖路径一致** ——
+   否则「本地绿 / CI 红」或反之。
 3. **CI 覆盖的路径确实覆盖了仓库里全部 Python 源码** ——
-    防止新增目录忘了加进门禁。
+   防止新增目录忘了加进门禁。
 4. **实际生效的规则集与声明的规则族一致** ——
-    端到端确认配置真的被执行了。
+   端到端确认配置真的被执行了。
+5. **排除规则不得吞掉任何「已跟踪」的 Python 文件** ——
+   排除是为了放过一次性调试脚本；一旦误伤正式交付物，
+   门禁就会对自己的关键文件失守（**静默**失守，最难发现）。
 """
 
 from __future__ import annotations
@@ -55,6 +58,39 @@ def _ruff_select() -> list[str]:
     with PYPROJECT.open("rb") as fh:
         data = tomllib.load(fh)
     return list(data.get("tool", {}).get("ruff", {}).get("lint", {}).get("select", []))
+
+
+def _extend_exclude() -> list[str]:
+    with PYPROJECT.open("rb") as fh:
+        data = tomllib.load(fh)
+    return list(data.get("tool", {}).get("ruff", {}).get("extend-exclude", []))
+
+
+def _tracked_python_files() -> list[str]:
+    """仓库里**已跟踪**的 Python 文件（相对路径，正斜杠）。"""
+    result = subprocess.run(
+        ["git", "ls-files", "*.py"],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _matches_exclude(relative_path: str, patterns: list[str]) -> str | None:
+    """判断某个相对路径是否被某条排除规则命中，返回命中的规则。"""
+    from fnmatch import fnmatch
+
+    name = relative_path.rsplit("/", 1)[-1]
+    for pattern in patterns:
+        # ruff 的 exclude 按 **basename** 匹配（递归生效）
+        if fnmatch(name, pattern) or fnmatch(relative_path, pattern):
+            return pattern
+    return None
 
 
 def _ci_text() -> str:
@@ -310,4 +346,62 @@ def test_declared_rule_families_are_all_exercised():
     assert not missing, (
         f"配置声明了规则族 {sorted(missing)}，但护栏测试没有覆盖它们 —— "
         "请在 test_configured_rule_set_is_the_one_actually_enforced 里补上代表用例。"
+    )
+
+
+def test_exclude_rules_never_swallow_tracked_python_files():
+    """⚠️ 排除规则不得吞掉任何**已跟踪**的 Python 文件。
+
+    排除项是为了放过**一次性调试脚本**（tmp_* / _probe_* …）。
+    但排除规则是按 **basename 递归生效**的 ——
+    一旦有人把正式交付物命名成 ``_probe_xxx.py`` 或 ``tmp_xxx.py``，
+    它就会**静默**地脱离静态检查门禁。
+
+    这种失守最难发现：CI 全绿、ruff 全绿，
+    但那个文件从来没被检查过。
+
+    回归点：R22 第一版排除项把 ``check_*.py`` / ``probe_*.py`` 也排掉了，
+    结果 16 个已跟踪的正式交付物被移出检查范围，
+    其中包括 CI 步骤实际执行的 ``backend/scripts/check_schema_drift.py``。
+    """
+    patterns = _extend_exclude()
+    tracked = _tracked_python_files()
+
+    assert tracked, "拿不到已跟踪文件列表（git ls-files 失败）—— 护栏无法工作"
+
+    offenders: list[str] = []
+    for relative in tracked:
+        hit = _matches_exclude(relative, patterns)
+        if hit is not None:
+            offenders.append(f"{relative}  ← 被排除规则 {hit!r} 命中")
+
+    assert not offenders, (
+        "以下**已跟踪**的 Python 文件被排除规则排出了静态检查门禁：\n"
+        + "\n".join(f"  - {o}" for o in offenders)
+        + "\n排除规则只应放过一次性调试脚本。"
+        "请改排除规则（改成更精确的模式），或给该文件改名。"
+    )
+
+
+def test_excluded_patterns_are_only_for_ephemeral_scripts():
+    """⚠️ 排除模式必须是「一次性脚本」的命名特征，不能是通用词。
+
+    目的：防止有人再加一条 ``test_*.py`` / ``check_*.py`` 这种
+    **会命中正式交付物**的排除规则。
+
+    允许的形态：
+    - ``tmp_*``        —— 临时脚本
+    - ``_*`` 开头      —— 约定俗成的「一次性/内部」前缀
+
+    明确禁止的形态：
+    - ``test_*.py``    —— 测试目录已在 per-file-ignores 里单独处理
+    - ``check_*.py`` / ``probe_*.py`` —— 被跟踪的正式交付物
+    """
+    forbidden = ("test_*.py", "check_*.py", "probe_*.py", "verify_*.py", "scripts_*.py")
+    patterns = _extend_exclude()
+
+    offenders = [p for p in patterns if p in forbidden]
+    assert not offenders, (
+        f"排除规则里出现了会命中正式交付物的通用模式：{offenders}\n"
+        "一次性调试脚本请用下划线前缀（如 _probe_x.py）或 tmp_ 前缀。"
     )

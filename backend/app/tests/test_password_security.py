@@ -22,9 +22,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app.main import app
 from backend.app.core.db import get_db
 from backend.app.domain.models import Base, Employee
+from backend.app.main import app
 from backend.app.routes.auth import _generate_token
 from backend.app.services import password_hasher
 

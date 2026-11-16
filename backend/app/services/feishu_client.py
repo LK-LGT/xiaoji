@@ -14,8 +14,9 @@ import json
 import logging
 import random
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Protocol
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 
@@ -162,7 +163,7 @@ class FeishuClient:
         )
 
     def _get_access_token(self, *, force_refresh: bool = False) -> str:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if (
             not force_refresh
             and self._access_token
@@ -220,7 +221,7 @@ class FeishuClient:
             effective_ttl = 0.0
         else:
             effective_ttl = float(min(expires_in, max(30, expires_in - 300)))
-        self._token_expires_at = datetime.now(timezone.utc) + timedelta(
+        self._token_expires_at = datetime.now(UTC) + timedelta(
             seconds=effective_ttl
         )
         logger.info(
@@ -466,6 +467,48 @@ class FeishuClient:
         data = self._request("GET", f"/contact/v3/users/{user_id}")
         return data.get("user", {})
 
+    def fetch_department(self, department_id: str) -> dict[str, Any]:
+        """拉取单个部门的最新信息（R18 事件驱动增量用）。
+
+        ⚠️ 飞书通讯录 API 没有「按更新时间拉变更」的端点，
+        事件载荷也只有部分字段（缺 ``parent_department_id`` 等）。
+        所以收到部门变更事件后，必须**回查一次**拿完整数据 ——
+        否则落库会把父部门关系清掉。
+
+        ⚠️ 404 不代表「部门不存在」也可能是「应用没这个部门的权限」，
+        调用方需按错误码区分处理。
+        """
+        data = self._request("GET", f"/contact/v3/departments/{department_id}")
+        return data.get("department", {})
+
+    def fetch_department_children(
+        self, department_id: str, page_size: int = 50
+    ) -> list[dict[str, Any]]:
+        """拉取单个部门的**直属子部门**。
+
+        ⚠️ 用于「部门删除/移动」事件 —— 需要知道新的父部门是谁，
+        以及该部门下还有哪些子部门（孤儿清理）。
+        """
+        page_size = min(page_size, 50)
+        children: list[dict[str, Any]] = []
+        page_token: str | None = None
+        while True:
+            params: dict[str, Any] = {
+                "page_size": page_size,
+                "department_id": department_id,
+                "department_id_type": "department_id",
+            }
+            if page_token:
+                params["page_token"] = page_token
+            data = self._request(
+                "GET", "/contact/v3/departments/:department_id/children", params=params
+            )
+            children.extend(data.get("items", []))
+            page_token = data.get("page_token")
+            if not page_token:
+                break
+        return children
+
     def fetch_approval_instance(self, instance_id: str) -> dict[str, Any]:
         data = self._request("GET", f"/approval/v4/instances/{instance_id}")
         return data.get("instance", {})
@@ -621,7 +664,7 @@ class FeishuClient:
         )
         return results
 
-    def __enter__(self) -> "FeishuClient":
+    def __enter__(self) -> FeishuClient:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:

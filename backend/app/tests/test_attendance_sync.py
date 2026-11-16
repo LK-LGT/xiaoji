@@ -34,7 +34,6 @@ from backend.app.services.attendance_sync import (
 )
 from backend.app.services.feishu_client import FeishuClient, FeishuError, MockTransport
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

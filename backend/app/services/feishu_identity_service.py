@@ -9,22 +9,20 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import or_, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..domain.models import Employee, FeishuIdentity, FeishuIdentityAudit
 from ..exceptions import DataValidationError, DuplicateRecord, RecordNotFound
 
-
 IDENTITY_TYPES = {"user_id", "open_id", "union_id"}
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _audit(
@@ -248,7 +246,21 @@ class FeishuIdentityService:
         return rows
 
     def resolve_employee(self, **identity_values: str) -> Employee | None:
-        """按一个或多个身份字段解析唯一有效员工。"""
+        """按一个或多个身份字段解析唯一有效员工。
+
+        ⚠️ **只认在职且账号启用的员工**。
+
+        虽然 ``FeishuIdentity.active`` 正常情况下已经与员工在职状态同步
+        （见 ``organization_sync._sync_identity_activation``），
+        但这里再加一道防线：
+
+        - 身份行与员工状态可能因为**历史数据**或**并发写入**短暂不一致；
+        - 解析入口被多处调用（免密登录、身份绑定、审批回流按人匹配），
+          返回一个**已禁用**的员工会直接造成越权风险。
+
+        「宁可解析不到，也不解析到禁用账号」——
+        解析不到时上层会走人工/拒绝流程，那是安全的一侧。
+        """
         clauses = []
         for identity_type, value in identity_values.items():
             if identity_type not in IDENTITY_TYPES or not value:
@@ -266,7 +278,15 @@ class FeishuIdentityService:
         employee_ids = {row.employee_id for row in rows}
         if len(employee_ids) != 1:
             return None
-        return self.db.get(Employee, next(iter(employee_ids)))
+        employee = self.db.get(Employee, next(iter(employee_ids)))
+        if employee is None:
+            return None
+        # ⚠️ 防线：禁用 / 离职的员工不参与身份解析。
+        if employee.employment_status == "exited":
+            return None
+        if employee.account_status and employee.account_status != "enabled":
+            return None
+        return employee
 
     def detect_conflicts(self) -> list[dict[str, Any]]:
         """检测一人多账号、账号多身份及失效员工绑定冲突。"""

@@ -9,25 +9,26 @@
 所有测试基于真实的数据模型和业务逻辑，覆盖端到端的调用链。
 """
 
-import pytest
 from datetime import datetime, timedelta
+
+import pytest
 from sqlalchemy.orm import Session
 
+from backend.app import exceptions
+from backend.app.domain.enums import RecordStatus, SubmitSource
 from backend.app.domain.models import (
     AssessmentRecord,
     AssessmentTask,
+    ConfigSnapshot,
     Department,
     Employee,
-    ConfigSnapshot,
 )
-from backend.app.domain.enums import RecordStatus, SubmitSource
-from backend.app import exceptions
-from backend.app.services import self_review_service
 from backend.app.schemas_self_review import (
-    SelfReviewSubmitRequest,
     SelfReviewAttachment,
     SelfReviewMetricInput,
+    SelfReviewSubmitRequest,
 )
+from backend.app.services import self_review_service
 
 
 class TestSelfReviewService:
@@ -399,7 +400,7 @@ class TestSelfReviewService:
 
     def test_submit_self_review_deadline_exceeded(self, db: Session, mock_employees, mock_config):
         """❌ 自评截止时间已过 — 使用 Task 上可用的字段"""
-        employee = mock_employees["E001"]
+        mock_employees["E001"]
 
         # AssessmentTask 没有 self_review_deadline 字段，跳过此测试
         # 实际应用中可以在 Task 中添加此字段，或在 Record 层管理截止时间

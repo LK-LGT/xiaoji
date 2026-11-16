@@ -22,7 +22,10 @@ from backend.app.domain.models import (
     OrganizationSyncItemError,
 )
 from backend.app.services.feishu_client import FeishuClient, MockTransport
-from backend.app.services.feishu_identity_service import FeishuIdentityService, IdentityConflictError
+from backend.app.services.feishu_identity_service import (
+    FeishuIdentityService,
+    IdentityConflictError,
+)
 from backend.app.services.organization_sync import OrganizationSyncService
 
 

@@ -3,15 +3,15 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from backend.app.main import app
+from backend.app.domain.enums import RecordStatus
 from backend.app.domain.models import (
     AssessmentRecord,
     AssessmentTask,
-    Employee,
-    Department,
     ConfigSnapshot,
+    Department,
+    Employee,
 )
-from backend.app.domain.enums import RecordStatus
+from backend.app.main import app
 from backend.app.schemas_self_review import SelfReviewSubmitRequest
 
 
@@ -26,6 +26,7 @@ def db():
     """Test database"""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
     from backend.app.domain.models import Base
 
     engine = create_engine("sqlite:///:memory:")
@@ -41,14 +42,13 @@ def db():
 
 def test_self_review_endpoint_exists():
     """✅ Test: self-review endpoint is registered"""
-    openapi_schema = None
     try:
         # Try to trigger FastAPI route collection
         # (This would normally happen during actual request handling)
         pass
     except Exception:
         pass
-    
+
     # Check if the route path is in the app
     paths = []
     for route in app.routes:
@@ -59,7 +59,7 @@ def test_self_review_endpoint_exists():
             for sub_route in route.routes:
                 if hasattr(sub_route, 'path'):
                     paths.append(sub_route.path)
-    
+
     print(f"All paths: {paths}")
     assert any('self-review' in p for p in paths), f"No self-review route found in {paths}"
 

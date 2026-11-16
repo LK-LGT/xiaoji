@@ -23,7 +23,6 @@ from fastapi.testclient import TestClient
 from backend.app.core.db import get_db
 from backend.app.main import app
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

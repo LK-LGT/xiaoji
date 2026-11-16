@@ -21,7 +21,16 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter(), authStore = useAuthStore(), formRef = ref<FormInstance>(), loading = ref(false), error = ref('')
-const form = reactive({ oldPassword: '123456', newPassword: '', confirmPassword: '' })
+// ⚠️ BUG-R6-39：这里原本硬编码 `oldPassword: '123456'`。
+// 后果：改密页一打开就**预填了统一弱口令**，
+// ① 用户很容易直接点提交 → 旧密码填错 → 401；
+// ② 更隐蔽的是——用户手动选中"初始密码"框输入时，
+//    文本会**追加**在 '123456' 后面（'123456LiKai@2026'），
+//    于是「旧密码不正确」，用户完全不知道是哪里错了。
+//
+// R4 之后弱口令早已被哈希覆盖，'123456' 对绝大多数账号**根本不是**当前口令，
+// 这个默认值只会误导。现在留空，强制用户自己输入当前口令。
+const form = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
 const rules: FormRules = {
   oldPassword: [{ required: true, message: '请输入初始密码' }],
   newPassword: [{ required: true, min: 8, max: 32, message: '新密码长度为8至32位' }, { validator: (_rule, value, callback) => value === form.oldPassword ? callback(new Error('新密码不能与初始密码相同')) : callback() }],

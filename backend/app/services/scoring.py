@@ -81,7 +81,6 @@ def _match_level(ratio: float, levels: tuple[dict[str, Any], ...]) -> dict[str, 
     for lvl in levels:
         lo = lvl.get("min_ratio")
         hi = lvl.get("max_ratio")
-        label = lvl.get("level", "")
         if lo is not None and ratio < float(lo):
             continue
         if hi is not None and ratio >= float(hi):

@@ -8,42 +8,34 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .core.db import get_db, init_db
+from . import dependencies, exceptions, schemas
 from .core.config import settings
+from .core.db import get_db, init_db
 from .domain.enums import SubmitSource
 from .domain.models import (
     AssessmentRecord,
     AssessmentTask,
     CommentDraft,
-    Employee,
-    Evidence,
-    MetricValue,
-    RatingDraft,
-    Score,
-)
-from .services import evidence_service, review_service, qa_service
-from .services import access_control
-from .services.access_control import PermissionAction, build_access_context
-from .services.review_service import AgentClient, InvalidState, NotFound
-from . import schemas, exceptions, dependencies
-from .domain.models import (
     ConfigSnapshot,
-    Metric,
-    WeightSet,
-    Rubric,
+    Employee,
     FormTemplate,
+    Metric,
+    RatingDraft,
+    Rubric,
+    Score,
+    WeightSet,
 )
-import json
-from sqlalchemy import and_
-from datetime import datetime
+from .services import access_control, evidence_service, qa_service, review_service
+from .services.access_control import PermissionAction, build_access_context
+from .services.review_service import InvalidState, NotFound
 
 # ─────────────────────────────────────────────────────────────
 # 日志配置
@@ -59,6 +51,15 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
+
+#: 模块级 logger。
+#:
+#: ⚠️ 之前这里**没有**定义 logger，而下面的算分失败分支用了
+#: ``logger.error(...)`` —— 一旦规则引擎算分失败，就会抛
+#: ``NameError: name 'logger' is not defined``，
+#: 把「算分失败」变成「接口 500」，掩盖真实原因。
+#: 由 ruff 的 F821（undefined name）查出。
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="员工绩效管理 - 业务后端",
@@ -123,6 +124,15 @@ try:
     print("[APP] Feishu approval router registered successfully")
 except Exception as e:
     print(f"[APP] WARNING: Failed to register feishu approval router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    from .routes import feishu_contact as feishu_contact_routes
+    app.include_router(feishu_contact_routes.router)
+    print("[APP] Feishu contact router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register feishu contact router: {e}")
     import traceback
     traceback.print_exc()
 
@@ -342,11 +352,20 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
+try:
+    from .routes.v1 import assessment_config as assessment_config_routes
+    app.include_router(assessment_config_routes.router)
+    print("[APP] Assessment config router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register assessment config router: {e}")
+    import traceback
+    traceback.print_exc()
+
 # 直接在 main.py 中也注册一份（确保生效）
 try:
     from .schemas_self_review import SelfReviewSubmitRequest, SelfReviewSubmitResponse
     from .services import self_review_service
-    
+
     @app.post(
         "/v1/assessment/records/{record_id}/self-review",
         response_model=SelfReviewSubmitResponse,
@@ -384,7 +403,7 @@ try:
             logging.getLogger(__name__).error(f"Error: {exc}", exc_info=True)
             db.rollback()
             raise HTTPException(status_code=500, detail={"code": "INTERNAL_ERROR", "message": "服务器内部错误"}) from exc
-    
+
     print("[APP] Self-review endpoint registered in main.py")
 except Exception as e:
     print(f"[APP] WARNING: Failed to register self-review endpoint: {e}")
@@ -393,13 +412,17 @@ except Exception as e:
 
 @app.on_event("startup")
 def _startup() -> None:
-    from .core.db import init_db
     init_db()
     try:
         from .services.feishu_scheduler import start_scheduler
         start_scheduler()
     except Exception:
         logging.getLogger(__name__).exception("启动飞书定时同步失败")
+    try:
+        from .services.org_event_scheduler import start_consumer
+        start_consumer()
+    except Exception:
+        logging.getLogger(__name__).exception("启动飞书事件消费调度器失败")
 
 
 @app.on_event("shutdown")
@@ -420,6 +443,11 @@ def _shutdown() -> None:
         stop_scheduler()
     except Exception:
         logging.getLogger(__name__).exception("停止飞书定时同步失败")
+    try:
+        from .services.org_event_scheduler import stop_consumer
+        stop_consumer()
+    except Exception:
+        logging.getLogger(__name__).exception("停止飞书事件消费调度器失败")
 
 
 # ---------------------------------------------------------------------------
@@ -625,33 +653,33 @@ def create_assessment_task(
 ) -> schemas.AssessmentTaskResponse:
     """
     【板块2】发起考核任务 - HR 专属接口。
-    
+
     流程：
     1. 权限检查：仅 HR 可调用
     2. 参数验证：日期、员工列表有效性
     3. 生成 ConfigSnapshot：冻结当前配置（指标、权重、评分标准、表单）
     4. 创建 AssessmentTask：任务主记录
     5. 批量生成 AssessmentRecord：为每个被评员工生成记录
-    
+
     设计要点：
     - ConfigSnapshot：确保本次考核的配置不会被中途变更影响
     - 幂等性：同一 task_id 重复调用不会重复创建记录
     - 权限隔离：从 token 验证身份，不信任 current_user 参数
-    
+
     参数：
     - title: 任务标题（如'2026 年 11 月月度考核'）
     - target_employee_ids: 被评员工 ID 列表
     - start_date / end_date: 考核周期
     - self_review_deadline: 自评截止时间
     - manager_review_deadline: 主管评分截止时间
-    
+
     返回：
     - task_id: 新创建的任务 ID
     - status: 任务状态（created）
     - target_count: 被评员工数
     - created_at: 创建时间
     """
-    
+
     try:
         # ─────────────────────────────────────────────────────────────
         # 1. 权限检查：仅 HR 可调用
@@ -664,23 +692,23 @@ def create_assessment_task(
                 action="create_assessment_task",
                 resource="AssessmentTask（仅 HR 可操作）"
             )
-        
+
         # ─────────────────────────────────────────────────────────────
         # 2. 参数验证
         # ─────────────────────────────────────────────────────────────
-        
+
         # 验证员工列表不为空
         if not request.target_employee_ids:
             raise exceptions.DataValidationError(
                 "被评员工列表不能为空",
                 field="target_employee_ids"
             )
-        
+
         # 验证被评员工都存在
         employees = db.query(Employee).filter(
             Employee.id.in_(request.target_employee_ids)
         ).all()
-        
+
         found_ids = {e.id for e in employees}
         missing_ids = set(request.target_employee_ids) - found_ids
         if missing_ids:
@@ -688,37 +716,37 @@ def create_assessment_task(
                 f"以下员工不存在：{', '.join(missing_ids)}",
                 field="target_employee_ids"
             )
-        
+
         # 验证日期顺序
         from datetime import datetime as dt_cls
         start_dt = dt_cls.fromisoformat(request.start_date)
         end_dt = dt_cls.fromisoformat(request.end_date)
         self_review_dt = dt_cls.fromisoformat(request.self_review_deadline)
         manager_review_dt = dt_cls.fromisoformat(request.manager_review_deadline)
-        
+
         if start_dt >= end_dt:
             raise exceptions.DataValidationError(
                 "开始日期必须早于结束日期",
                 field="start_date"
             )
-        
+
         if self_review_dt <= start_dt or self_review_dt > manager_review_dt:
             raise exceptions.DataValidationError(
                 "自评截止时间必须在考核开始后、主管评分前",
                 field="self_review_deadline"
             )
-        
+
         # ─────────────────────────────────────────────────────────────
         # 3. 生成 ConfigSnapshot（冻结配置）
         # ─────────────────────────────────────────────────────────────
-        
+
         # 从数据库读取当前活跃的配置
         # （实际项目中这里应该有更复杂的逻辑，这里简化为示例）
         metrics = db.query(Metric).filter_by(active=True).all()
         weight_sets = db.query(WeightSet).filter_by(active=True).all()
         rubrics = db.query(Rubric).all()
         form_templates = db.query(FormTemplate).filter_by(active=True).all()
-        
+
         # 构建快照 JSON
         metrics_json = [
             {
@@ -734,28 +762,52 @@ def create_assessment_task(
             }
             for m in metrics
         ]
-        
-        weights_json = [
+
+        # ⚠️ BUG-R6-30（快照格式错 → 算分必崩）
+        #
+        # 冻结快照的 ``weights_json`` 必须是**扁平**结构
+        # ``[{"metric_code": ..., "weight": ...}]``，
+        # 因为 ``services/scoring.build_specs`` 是这么读的：
+        #
+        #     for w in weights_json:
+        #         code = w["metric_code"]        # ← 直接下标取键
+        #         weight = float(w["weight"])
+        #
+        # 过去这里冻的是**带壳**结构
+        # ``[{"id":..., "department_id":..., "weights":[...], "version":...}]``，
+        # 于是 ``build_specs`` 抛 ``KeyError: 'metric_code'`` ——
+        # 也就是说：**只要 weight_set 表非空，这个接口建出来的任务
+        # 就永远算不出分**（weight_set 为空时反而"碰巧"不报错，
+        # 因为 for 循环体一次都不执行，更隐蔽）。
+        #
+        # 现在统一冻成扁平结构，与 ``config_service.LocalProvider.load()``
+        # 的产出格式**完全一致**（同一套快照能被两条路径读懂）。
+        weights_json: list[dict[str, Any]] = []
+        for w in weight_sets:
+            for item in (w.weights_json or []):
+                if not isinstance(item, dict):
+                    continue
+                code = item.get("metric_code")
+                if not code:
+                    continue
+                weights_json.append(
+                    {"metric_code": str(code), "weight": item.get("weight")}
+                )
+
+        # ⚠️ 同 BUG-R6-30：``rubric_json`` 也统一成
+        # ``[{"metric_code": ..., "levels_json": [...]}]`` ——
+        # 与 ``config_service.LocalProvider`` 产出格式一致。
+        # （``build_specs`` 对 ``levels_json`` / ``levels`` 两种键都认，
+        #   但快照是**长期存档**，格式必须唯一，否则以后读快照的代码
+        #   要同时兼容两套 —— 那正是本 bug 的成因。）
+        rubric_json: list[dict[str, Any]] = [
             {
-                "id": w.id,
-                "department_id": w.department_id,
-                "position": w.position,
-                "weights": w.weights_json,
-                "version": w.version,
-            }
-            for w in weight_sets
-        ]
-        
-        rubric_json = [
-            {
-                "id": r.id,
-                "weight_set_id": r.weight_set_id,
                 "metric_code": r.metric_code,
-                "levels": r.levels_json,
+                "levels_json": r.levels_json,
             }
             for r in rubrics
         ]
-        
+
         form_template_json = None
         if form_templates:
             form_template_json = {
@@ -764,10 +816,10 @@ def create_assessment_task(
                 "fields": form_templates[0].fields_json,
                 "version": form_templates[0].version,
             }
-        
+
         # 创建 ConfigSnapshot 记录（task_id 作为唯一键）
         task_id = f"TASK_{dt_cls.now().strftime('%Y%m%d%H%M%S')}_{len(request.target_employee_ids)}"
-        
+
         config_snapshot = ConfigSnapshot(
             task_id=task_id,
             metrics_json=metrics_json,
@@ -779,11 +831,11 @@ def create_assessment_task(
         )
         db.add(config_snapshot)
         db.flush()
-        
+
         # ─────────────────────────────────────────────────────────────
         # 4. 创建 AssessmentTask 记录
         # ─────────────────────────────────────────────────────────────
-        
+
         task = AssessmentTask(
             id=task_id,
             name=request.title,
@@ -798,11 +850,11 @@ def create_assessment_task(
         )
         db.add(task)
         db.flush()
-        
+
         # ─────────────────────────────────────────────────────────────
         # 5. 批量生成 AssessmentRecord
         # ─────────────────────────────────────────────────────────────
-        
+
         records = []
         for emp_id in request.target_employee_ids:
             record = AssessmentRecord(
@@ -816,20 +868,20 @@ def create_assessment_task(
                 updated_at=dt_cls.now()
             )
             records.append(record)
-        
+
         db.add_all(records)
         db.flush()
-        
+
         # ─────────────────────────────────────────────────────────────
         # 6. 提交事务
         # ─────────────────────────────────────────────────────────────
-        
+
         db.commit()
-        
+
         # ─────────────────────────────────────────────────────────────
         # 7. 返回响应
         # ─────────────────────────────────────────────────────────────
-        
+
         return schemas.AssessmentTaskResponse(
             task_id=task_id,
             status="created",
@@ -837,7 +889,7 @@ def create_assessment_task(
             target_count=len(records),
             message=f"成功创建考核任务，包含 {len(records)} 名被评员工"
         )
-    
+
     except exceptions.BaseAppError as exc:
         # 自定义业务异常：直接转换为 HTTP 响应
         db.rollback()
@@ -845,7 +897,7 @@ def create_assessment_task(
             status_code=exc.status_code,
             detail=exc.message
         ) from exc
-    
+
     except Exception as exc:
         # 未预期的异常：通用错误处理
         db.rollback()
@@ -1140,20 +1192,20 @@ def query_assessment_data(
 ) -> dict[str, Any]:
     """
     Q&A 查询接口（改成 POST，参考 P0-2）。
-    
+
     查询类型（参考 P0-1）：
     - self_progress：我的月中进度（未确认的数据）
     - self_result：我的月末成绩（已确认）
     - colleague_result：某员工的成绩（权限检查）
     - peer_performance_distribution：部门等级分布（聚合，不排名，参考 P2-2）
-    
+
     关键原则（P0/P2）：
     - 权限来自 token（current_user），不信 URL 参数
     - 响应含 data_quality（替代 confidence）
     - 不暴露 score 字段
     - < 5 人时隐藏平均分（k-匿名，P2-1）
     """
-    
+
     try:
         # 1. 权限检查 + 数据查询
         if request.query_type == "self_progress":
@@ -1169,7 +1221,7 @@ def query_assessment_data(
                 db
             )
             data = progress_data.model_dump()
-        
+
         elif request.query_type == "self_result":
             if request.target_employee_id != current_user.id:
                 raise exceptions.PermissionDenied(
@@ -1183,7 +1235,7 @@ def query_assessment_data(
                 db
             )
             data = result_data.model_dump()
-        
+
         elif request.query_type == "colleague_result":
             # 主管查下级，或 HR 查任何人
             dependencies.check_can_view_score(
@@ -1197,26 +1249,26 @@ def query_assessment_data(
                 db
             )
             data = result_data.model_dump()
-        
+
         elif request.query_type == "peer_performance_distribution":
             # 部门汇总（权限检查：只能查自己部门）
             target_emp = db.get(Employee, request.target_employee_id)
             if not target_emp:
                 raise exceptions.RecordNotFound("Employee", request.target_employee_id)
-            
+
             summary_data = qa_service.query_department_summary(
                 target_emp.department_id,
                 request.task_id,
                 db
             )
             data = summary_data.model_dump()
-        
+
         else:
             raise exceptions.DataValidationError(
                 f"未知查询类型: {request.query_type}",
                 field="query_type"
             )
-        
+
         # 2. 计算数据质量（参考 P0-5）
         data_quality = schemas.DataQualityInfo(
             completeness=0.95,
@@ -1224,13 +1276,13 @@ def query_assessment_data(
             degraded=False,
             citations=["AssessmentRecord", "Score", "MetricValue"]
         )
-        
+
         return {
             "query_type": request.query_type,
             "data": data,
             "data_quality": data_quality.model_dump()
         }
-    
+
     except exceptions.BaseAppError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     except NotFound as exc:
@@ -1246,7 +1298,7 @@ class ManagerReviewReq(BaseModel):
     """主管提交评分。"""
     manager_comment: str = Field(..., min_length=1, max_length=2000)
     confirmed_rating: str = Field(..., pattern="^[A-D]$")
-    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
 
 
 @app.post("/v1/assessment/records/{record_id}/manager-review", tags=["Review"])
@@ -1257,13 +1309,13 @@ def submit_manager_review(
     db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     """主管提交评分（P0-3 权限模型）。"""
-    
+
     try:
         # 1. 权限检查
         record = db.get(AssessmentRecord, record_id)
         if not record:
             raise exceptions.RecordNotFound("AssessmentRecord", record_id)
-        
+
         target_emp = db.get(Employee, record.employee_id)
         if not target_emp or target_emp.manager_id != current_user.id:
             raise exceptions.PermissionDenied(
@@ -1271,34 +1323,63 @@ def submit_manager_review(
                 "submit_manager_review",
                 f"record:{record_id}"
             )
-        
+
         # 2. 验证等级
         if request.confirmed_rating not in ("A", "B", "C", "D"):
             raise exceptions.DataValidationError(
                 f"等级必须是 A/B/C/D，得到 {request.confirmed_rating}",
                 field="confirmed_rating"
             )
-        
+
         # 3. 更新 Record
+        #
+        # ⚠️ BUG-R6-34（算分失败 → 主管评分被回滚丢弃）：
+        # 过去这里是 ``compute_score`` 一抛异常就整体 ``db.rollback()``，
+        # 于是主管**已经填好的评语和等级被一起丢掉**，
+        # 前端还弹一个 409，用户白填一遍。
+        # 触发条件很常见：任务没冻结配置快照（BUG-R6-27 的历史任务），
+        # ``compute_score`` 会抛 ``InvalidState("任务没有配置快照，无法计算")``。
+        #
+        # 现在：先落库主管评分（这是**用户的主观输入**，绝不能丢），
+        # 算分失败只降级为「已评分但未算分」，把原因带回前端。
+        if record.status not in ("not_started", "self_review_submitted"):
+            raise InvalidState(
+                f"该记录当前状态为 {record.status}，不可提交主管评分"
+            )
         record.manager_comment = request.manager_comment
         record.confirmed_rating = request.confirmed_rating
         record.stage = "confirmation"
+        record.status = "manager_review_submitted"
         db.add(record)
         db.flush()
-        
-        # 4. 触发自动计分
-        result = review_service.compute_score(db, record_id=record_id)
-        review_service.persist_score(db, record_id=record_id, result=result)
-        
+
+        # 4. 触发自动计分（失败不丢主管评分）
+        score_info: dict[str, Any]
+        try:
+            result = review_service.compute_score(db, record_id=record_id)
+            persisted = review_service.persist_score(db, record_id=record_id, result=result)
+            score_info = {
+                "scored": True,
+                "total": persisted.total,
+                "rating": persisted.rating,
+            }
+        except Exception as exc:
+            logger.error(
+                "主管评分已提交，但规则引擎算分失败 record=%s: %s",
+                record_id, exc, exc_info=True,
+            )
+            score_info = {"scored": False, "scoring_error": str(exc)}
+
         db.commit()
-        
+
         return {
             "status": "success",
             "record_id": record_id,
             "confirmed_rating": request.confirmed_rating,
-            "stage": "confirmation"
+            "stage": "confirmation",
+            **score_info,
         }
-    
+
     except exceptions.BaseAppError as exc:
         db.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
@@ -1320,12 +1401,12 @@ def add_metric_to_record(
     db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     """添加指标值到某条 Record（P0-5 data_quality 相关）。"""
-    
+
     try:
         record = db.get(AssessmentRecord, record_id)
         if not record:
             raise exceptions.RecordNotFound("AssessmentRecord", record_id)
-        
+
         # 添加指标值（决策②检查内置）
         metric_value = evidence_service.add_metric_value(
             db,
@@ -1336,16 +1417,16 @@ def add_metric_to_record(
             source=request.source,
             as_of=request.collected_at
         )
-        
+
         db.commit()
-        
+
         return {
             "status": "success",
             "metric_id": metric_value.id,
             "metric_code": request.metric_code,
             "value": request.value
         }
-    
+
     except exceptions.AttendanceEvidenceRejected as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=exc.message) from exc
@@ -1471,7 +1552,6 @@ async def get_planning_stats(db: Session = Depends(get_db)):
 # 员工管理 API
 # ============================================================================
 
-from .domain.models import Employee, Department
 
 
 @app.get("/system/employees/{employee_id}")

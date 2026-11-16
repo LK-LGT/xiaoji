@@ -1,7 +1,5 @@
 """认证 API 路由 - 登录、获取当前用户、登出。"""
 
-from datetime import datetime, timedelta
-from typing import Any, Optional
 import base64
 import hashlib
 import hmac
@@ -9,15 +7,17 @@ import json
 import logging
 import os
 import time
+from datetime import datetime
+from typing import Any
 
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..core.db import get_db
 from ..core.config import settings
-from ..domain.models import Employee, Department, FeishuIdentity, SystemAdmin
+from ..core.db import get_db
+from ..domain.models import Employee, FeishuIdentity, SystemAdmin
 from ..services import password_hasher
 from ..services.access_control import build_access_context
 
@@ -464,12 +464,12 @@ async def login(
     db: Session = Depends(get_db),
 ) -> dict:
     """登录接口。
-    
+
     支持测试账号和数据库员工账号。
     """
     username = request.username
     password = request.password
-    
+
     # 检查测试账号
     if username in TEST_USERS:
         user_info = TEST_USERS[username]
@@ -479,7 +479,7 @@ async def login(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="用户名或密码错误",
             )
-        
+
         # 测试账号的权限同样走 access_control 实时解析（R5 修复）：
         # 不再返回硬编码权限串，杜绝「前端有菜单、后端 403」的分裂。
         employee, resolved = _resolve_test_user(db, username)
@@ -511,14 +511,27 @@ async def login(
                 "backendPermissions": resolved["backendPermissions"],
             },
         }
-    
-    # 检查数据库中的员工：支持登录账号、手机号或飞书身份登录。
+
+    # 检查数据库中的员工：支持登录账号、手机号、飞书身份或**员工 ID**登录。
+    #
+    # ⚠️ BUG-R6-37（能用员工 ID 登录的人登不进来）：
+    # 过去这里只按 ``login_account / email / name`` 查，
+    # **没有匹配 ``Employee.id``**。
+    # 而真实库里大量员工的 ``login_account`` 是 NULL
+    # （飞书同步建号时没回填登录账号），
+    # 于是「用员工 ID 当账号登录」这条最直觉的路径直接 401。
+    # 现象：R6 闭环验证用 ``2aaf32ea`` 登录李凯，反复 401，
+    # 但用 ``yang.fei`` 登录杨飞就正常 —— 因为杨飞**有** login_account。
+    #
+    # 现在把 ``id`` 也纳入匹配（ID 是十六进制字符串，大小写不敏感），
+    # 并保留原有的 login_account / email / name 匹配。
     employee = (
         db.query(Employee)
         .filter(
             (Employee.login_account == username.lower())
             | (Employee.email == username)
             | (Employee.name == username)
+            | (Employee.id == username.lower())
         )
         .first()
     )
@@ -547,7 +560,7 @@ async def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="账号已禁用，请联系管理员",
         )
-    
+
     # 密码校验（R4）：优先哈希；无哈希时兼容历史明文并立即补写。
     password_ok, need_upgrade = _verify_employee_password(db, employee, password)
     if not password_ok:
@@ -557,7 +570,7 @@ async def login(
         )
     if need_upgrade:
         _upgrade_legacy_password(db, employee, password)
-    
+
     # 角色与权限统一由 access_control 解析：
     #   - HR：成员属于 hr_department_config 中任一启用的部门
     #   - 部门负责人：飞书部门 leader_id（自动覆盖子部门）
@@ -570,7 +583,7 @@ async def login(
     access_token, refresh_token = _generate_token(
         employee.id, username, employee.token_version
     )
-    
+
     return {
         "code": 0,
         "data": {

@@ -38,7 +38,6 @@ from backend.app.domain.models import (
 from backend.app.main import app
 from backend.app.services import planning
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

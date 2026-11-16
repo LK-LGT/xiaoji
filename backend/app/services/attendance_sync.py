@@ -21,9 +21,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
-from typing import Any, Iterable, Sequence
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -111,7 +112,7 @@ def _epoch_to_datetime(value: Any) -> datetime | None:
         return None
     if ts <= 0:
         return None
-    return datetime.fromtimestamp(ts, tz=timezone.utc)
+    return datetime.fromtimestamp(ts, tz=UTC)
 
 
 def _parse_day(day: Any) -> date | None:
@@ -334,7 +335,7 @@ class AttendanceSyncService:
                     "check_in_type": _to_int(check_in_detail.get("type")),
                     "check_out_type": _to_int(check_out_detail.get("type")),
                     "anomaly_types": anomalies,
-                    "as_of": datetime.now(timezone.utc).replace(tzinfo=None),
+                    "as_of": datetime.now(UTC).replace(tzinfo=None),
                     "raw_json": {
                         "task": {
                             "day": task.get("day"),
@@ -412,7 +413,7 @@ class AttendanceSyncService:
                     bucket["as_of"] = row.as_of
 
         # 请假类：飞书免除打卡视为已由排班确认
-        for (emp_id, _period, atype), bucket in buckets.items():
+        for (_emp_id, _period, atype), bucket in buckets.items():
             if atype == AttendanceAnomalyType.LEAVE.value:
                 bucket["approved"] = True
 
