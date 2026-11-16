@@ -56,6 +56,16 @@ class InvalidState(Exception):
     pass
 
 
+class AgentAuthNotConfigured(Exception):
+    """智能体服务令牌未配置（R12）。
+
+    单独一个异常类型 —— 它的含义和「智能体服务挂了」不同：
+    前者是**部署配置错了**（必须有人去修），
+    后者是**临时故障**（降级即可）。
+    混在一起会导致「配置缺失」被当成偶发故障静默吞掉。
+    """
+
+
 @dataclass
 class DraftBundle:
     """一次评估的完整产物。"""
@@ -79,17 +89,37 @@ class AgentClient:
     """业务层调用智能体服务的 HTTP 客户端。
 
     智能体服务挂了 → 业务层自己降级出模板，流程不中断。
+
+    ⚠️ R12 安全加固
+    --------------
+    原实现：secret 为空时**静默不发** Authorization 头，
+    靠服务端「未配置令牌就放行」来配合。
+
+    这套组合有个致命问题：**两侧都空 → 全链路免鉴权**。
+    而且服务端若已加固（拒绝无凭据请求），业务层这边
+    就会收到莫名其妙的 401，排查方向完全跑偏。
+
+    现在改成**显式 fail fast**：
+    secret 为空 → 构造客户端时直接抛 ``AgentAuthNotConfigured``，
+    由调用方捕获后走降级模板（业务不中断），
+    同时日志里有一条**能直接指向根因**的明确错误。
     """
 
     def __init__(self, base_url: str | None = None, secret: str | None = None) -> None:
         self.base_url = base_url or settings.agent_service_url
         self.secret = secret if secret is not None else settings.agent_shared_secret
+        if not self.secret:
+            raise AgentAuthNotConfigured(
+                "AGENT_SHARED_SECRET 未配置 —— 无法调用智能体服务。"
+                "请在 backend/.env 中设置它，且与 agent-service 侧保持一致。"
+            )
 
     def _headers(self) -> dict[str, str]:
-        h = {"Content-Type": "application/json"}
-        if self.secret:
-            h["Authorization"] = f"Bearer {self.secret}"
-        return h
+        # ⚠️ secret 已由 __init__ 保证非空，这里不再「有就带、没有就算了」。
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.secret}",
+        }
 
     def draft(self, payload: dict[str, Any]) -> dict[str, Any]:
         """调 POST /v1/agent/draft。失败抛异常，由调用方降级。"""
@@ -487,8 +517,12 @@ def generate_draft(
     specs, inputs = _build_metric_context(db, snapshot, rec.employee_id, task.period)
     score_result = scoring.score_record(specs, inputs)
 
-    client = agent_client or AgentClient()
+    # ⚠️ R12：客户端构造**必须放进 try**。
+    #    `AgentClient()` 在 secret 缺失时会抛 `AgentAuthNotConfigured` ——
+    #    若放在 try 外面，异常会一路冒到 API 层变成 500，
+    #    而这里本该「降级出模板、业务不中断」。
     try:
+        client = agent_client or AgentClient()
         resp = client.draft(payload)
         degraded = bool(resp.get("degraded"))
         agent_status = resp.get("agent_status", {})
@@ -497,6 +531,27 @@ def generate_draft(
         citations = resp.get("citations", [])
         gaps = resp.get("gaps", [])
         fairness = resp.get("fairness", {})
+    except AgentAuthNotConfigured as exc:
+        # ⚠️ 这是**部署配置错误**，不是临时故障 ——
+        #    智能体服务现在拒绝无凭据请求（fail fast），
+        #    不配 secret 就永远调不通。必须记 ERROR 且指向根因。
+        logger.error(
+            "智能体服务令牌未配置，已降级为模板草稿。"
+            "请设置 AGENT_SHARED_SECRET（backend/.env，且需与 agent-service 一致）: %s",
+            exc,
+        )
+        degraded = True
+        agent_status = {"rating": "degraded", "comment": "degraded"}
+        ratings = []
+        comment = _template_comment(payload, score_result)
+        citations = []
+        gaps = _template_gaps(payload)
+        fairness = {
+            "grounded": False,
+            "warnings": [],
+            "unsupported_claims": 0,
+            "cited_evidence": [],
+        }
     except Exception as exc:
         logger.warning("智能体服务不可用，降级为模板草稿: %s", exc)
         degraded = True

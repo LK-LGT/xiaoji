@@ -41,3 +41,13 @@ dist/
 .coverage
 coverage.xml
 htmlcov/
+
+# 手工验证用的临时产物
+# （R6 闭环验证脚本生成的证据文件；前端 public/ 下的同名副本同理）
+_r6_evidence/
+frontend/public/_r6_evidence/
+frontend/public/*.pdf
+frontend/public/*.docx
+
+# 后端一次性调试脚本（下划线开头）
+backend/_*.py

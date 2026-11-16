@@ -15,6 +15,12 @@ from fastapi.testclient import TestClient
 AGENT = Path(__file__).resolve().parents[1] / "agent-service"
 sys.path.insert(0, str(AGENT))
 
+# ⚠️ R12 —— 智能体服务现在**强制鉴权**（secret 未配置则拒绝启动）。
+#    secret 收敛到 `_test_secret` 一处 —— 各测试文件各自 setdefault
+#    会导致「谁先导入谁定 secret」，后导入的拿到不同值 → 莫名 401。
+from tests._test_secret import AUTH_HEADERS as AUTH  # noqa: E402
+from tests._test_secret import TEST_SECRET  # noqa: E402,F401
+
 from app.main import app  # noqa: E402
 
 client = TestClient(app)
@@ -73,7 +79,7 @@ def _payload(
 
 def test_draft_endpoint_works():
     """基础链路通。"""
-    resp = client.post("/v1/agent/draft", json=_payload())
+    resp = client.post("/v1/agent/draft", json=_payload(), headers=AUTH)
     assert resp.status_code == 200
     data = resp.json()
     assert data["ratings"]
@@ -83,7 +89,7 @@ def test_draft_endpoint_works():
 
 def test_grounding_passes_with_real_data():
     """数据真实 → 锚定通过。"""
-    resp = client.post("/v1/agent/draft", json=_payload())
+    resp = client.post("/v1/agent/draft", json=_payload(), headers=AUTH)
     data = resp.json()
     fairness = data["fairness"]
 
@@ -111,7 +117,7 @@ def test_grounding_catches_hallucinated_evidence_quote(monkeypatch):
 
     monkeypatch.setattr(base_mod.EchoModelClient, "_comment", hacked)
 
-    resp = client.post("/v1/agent/draft", json=_payload())
+    resp = client.post("/v1/agent/draft", json=_payload(), headers=AUTH)
     data = resp.json()
     fairness = data["fairness"]
 
@@ -126,7 +132,7 @@ def test_grounding_downgrades_when_no_evidence():
     payload = _payload()
     payload["evidence"] = []
 
-    resp = client.post("/v1/agent/draft", json=payload)
+    resp = client.post("/v1/agent/draft", json=payload, headers=AUTH)
     data = resp.json()
     fairness = data["fairness"]
 
@@ -138,7 +144,7 @@ def test_grounding_downgrades_when_no_evidence():
 
 def test_attendance_not_in_evidence_field():
     """决策②：考勤不进 evidence 字段。"""
-    resp = client.post("/v1/agent/draft", json=_payload())
+    resp = client.post("/v1/agent/draft", json=_payload(), headers=AUTH)
     data = resp.json()
     # 评语里不应出现考勤被当成结论支撑
     assert "考勤" not in data["comment_draft"] or "不自动扣分" in data["comment_draft"]
@@ -146,7 +152,7 @@ def test_attendance_not_in_evidence_field():
 
 def test_no_score_in_response():
     """原则三：响应里没有 score 字段。"""
-    resp = client.post("/v1/agent/draft", json=_payload())
+    resp = client.post("/v1/agent/draft", json=_payload(), headers=AUTH)
     data = resp.json()
     assert "score" not in data
     assert "total" not in data

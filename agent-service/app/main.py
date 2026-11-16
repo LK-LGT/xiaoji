@@ -12,14 +12,53 @@
 
 from __future__ import annotations
 
+import hmac
+import logging
 import os
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .agents import build_agents
 from .base import AgentResult, EchoModelClient, ModelClient, NullModelClient
+
+
+def _load_dotenv() -> None:
+    """加载 ``agent-service/.env``（若存在）。
+
+    ⚠️ **不引入 python-dotenv 依赖** —— agent-service 的
+    ``requirements.txt`` 只有 fastapi / uvicorn / pydantic，
+    而这个服务可能是**独立容器**部署的（不共用后端的 venv）。
+    多一个依赖就多一个「部署时忘了装」的坑。
+
+    这里实现一个极简加载器：只认 ``KEY=VALUE``，
+    忽略 ``#`` 注释与空行，**不覆盖**已存在的环境变量
+    （环境变量优先级更高 —— 容器部署时通常由环境注入）。
+
+    解析刻意保持简单：这是本地开发便利，不是完整的 dotenv 规范。
+    """
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except OSError:  # pragma: no cover - 读不了就当没有 .env
+        pass
+
+
+_load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="绩效智能体服务",
@@ -48,11 +87,97 @@ _agents = build_agents(_client)
 
 
 def _verify_token(authorization: str | None) -> None:
+    """校验业务层传来的服务令牌。
+
+    ⚠️ R12 安全加固 —— 原实现是「secret 为空就放行」
+    --------------------------------------------------
+    原代码::
+
+        if not _SERVICE_TOKEN:
+            return  # 未配置令牌时跳过（本地开发）
+
+    后果：**未配置令牌 = 完全免鉴权**。4 个端点（含 AI 生成接口）
+    对任何能访问该端口的人裸奔。本机开发时因为端口是
+    ``127.0.0.1`` 侥幸没出事，但一旦独立部署 / 换 IP /
+    放到反向代理后面 —— 立刻变成公网可调用的 AI 接口。
+
+    这类「为了本地开发方便」的开关是典型的**安全债**：
+    开发期看起来无害，上线时忘记关就是事故。
+
+    现在的做法（**按最坏情况假设**：这个服务可能被外部访问）：
+
+    1. **secret 为空 → 进程启动即失败**（fail fast）。
+       与其「跑着一个裸奔的服务」，不如**起不来** ——
+       启动失败会在部署时被立刻发现，而不是等到出事。
+    2. 令牌比较用 ``hmac.compare_digest`` —— 防时序侧信道。
+    3. 令牌错误 → 401，且**不泄露**是哪一部分错了。
+
+    逃生舱：本地开发如果确实需要免鉴权，
+    显式设 ``AGENT_ALLOW_INSECURE=true`` 并**仅限本机**使用。
+    这个开关会打日志警告，绝不能带到生产。
+    """
     if not _SERVICE_TOKEN:
-        return  # 未配置令牌时跳过（本地开发）
-    expected = f"Bearer {_SERVICE_TOKEN}"
-    if authorization != expected:
+        # 理论上走不到这里 —— 模块加载时已经 fail fast。
+        # 保留这道防线是为了防「运行期有人把环境变量清掉」。
+        raise HTTPException(status_code=503, detail="服务令牌未配置")
+
+    if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="服务令牌无效")
+
+    presented = authorization[7:]
+    # ⚠️ 恒定时间比较 —— 普通 `==` 会在第一个不同字节处短路返回，
+    #    攻击者可以通过响应时间差逐字节猜出令牌。
+    if not hmac.compare_digest(presented, _SERVICE_TOKEN):
+        raise HTTPException(status_code=401, detail="服务令牌无效")
+
+
+def require_service_token(
+    authorization: str | None = Header(default=None),
+) -> None:
+    """FastAPI 依赖 —— 校验服务令牌。
+
+    ⚠️ **为什么用依赖而不是在端点函数体里调**：
+    FastAPI 的执行顺序是「**先解析并校验请求体**，再调端点函数」。
+    若把校验写在函数体里，一个**格式错误**的请求体会先撞上
+    422（参数校验失败），而不是 401（未认证）——
+
+    这有两个害处：
+    1. **未认证的调用方能探到端点的参数结构**（422 的 detail 会
+       告诉你缺哪个字段、类型是什么）—— 这本身就是信息泄露；
+    2. 鉴权失败被伪装成参数错误，日志和监控都会误判。
+
+    依赖在**路由匹配之后、请求体解析之前**执行，
+    保证「没令牌 → 一律 401」，不泄露任何端点细节。
+    """
+    _verify_token(authorization)
+
+
+def _require_startup_secret() -> None:
+    """启动时校验令牌已配置 —— **fail fast**。
+
+    ⚠️ 宁可起不来，也不要裸奔。
+
+    逃生舱：``AGENT_ALLOW_INSECURE=true`` 可跳过（仅限本地开发）。
+    """
+    if _SERVICE_TOKEN:
+        return
+
+    if os.getenv("AGENT_ALLOW_INSECURE", "").lower() in ("1", "true", "yes", "on"):
+        logger.warning(
+            "⚠️ AGENT_ALLOW_INSECURE=true —— 服务令牌未配置，"
+            "本实例**完全免鉴权**。仅限本地开发，严禁带到生产。"
+        )
+        return
+
+    raise RuntimeError(
+        "AGENT_SHARED_SECRET 未配置 —— 拒绝启动。\n"
+        "本服务是业务层的内部 AI 通道，未鉴权等于把 AI 接口暴露给所有人。\n"
+        "请在环境变量中设置 AGENT_SHARED_SECRET（业务层 backend/.env 同名变量需一致）。\n"
+        "如需在本地开发临时免鉴权，请显式设置 AGENT_ALLOW_INSECURE=true。"
+    )
+
+
+_require_startup_secret()
 
 
 # ---------------------------------------------------------------------------
@@ -166,14 +291,12 @@ def health() -> dict[str, Any]:
 
 
 @app.post("/v1/agent/draft", response_model=DraftResponse)
-def draft(req: DraftRequest, authorization: str | None = Header(default=None)) -> DraftResponse:
+def draft(req: DraftRequest, _auth: None = Depends(require_service_token)) -> DraftResponse:
     """生成评级建议 + 评语草稿 + 证据缺口。
 
     三个智能体协同：评级建议 → 评语 → 缺口整理。
     任一失败自动降级，不阻塞流程。
     """
-    _verify_token(authorization)
-
     status: dict[str, str] = {}
     warnings: list[str] = []
 
@@ -413,9 +536,8 @@ def _build_raw_dimensions(
 
 
 @app.post("/v1/agent/rating", response_model=RatingResponse)
-def rating(req: RatingRequest, authorization: str | None = Header(default=None)) -> RatingResponse:
+def rating(req: RatingRequest, _auth: None = Depends(require_service_token)) -> RatingResponse:
     """只要评级建议。"""
-    _verify_token(authorization)
     result = _agents["rating"].run(
         metrics=[m.model_dump() for m in req.metrics],
         evidence=[e.model_dump() for e in req.evidence],
@@ -428,10 +550,9 @@ def rating(req: RatingRequest, authorization: str | None = Header(default=None))
 
 @app.post("/v1/agent/evidence-check", response_model=EvidenceCheckResponse)
 def evidence_check(
-    req: EvidenceCheckRequest, authorization: str | None = Header(default=None)
+    req: EvidenceCheckRequest, _auth: None = Depends(require_service_token)
 ) -> EvidenceCheckResponse:
     """证据校验。"""
-    _verify_token(authorization)
     result = _agents["evidence"].run(text=req.text, question_text=req.question_text)
     data = result.data
     return EvidenceCheckResponse(
@@ -446,8 +567,13 @@ def evidence_check(
 
 
 @app.post("/v1/agent/reload")
-def reload_agents() -> dict[str, Any]:
-    """重载模型客户端与智能体（换模型配置后调用，无需重启）。"""
+def reload_agents(_auth: None = Depends(require_service_token)) -> dict[str, Any]:
+    """重载模型客户端与智能体（换模型配置后调用，无需重启）。
+
+    ⚠️ R12 —— 原实现**完全没有鉴权**。
+    这个端点会重建模型客户端，等价于「切换后端模型」的控制面 ——
+    免鉴权意味着任何人都能让你换掉正在服务的模型。
+    """
     global _client, _agents
     _client = _build_client()
     _agents = build_agents(_client)
