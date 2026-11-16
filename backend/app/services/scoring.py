@@ -120,6 +120,19 @@ def score_record(
     if abs(total_weight - 100.0) > 1e-6:
         raise ScoringError(f"权重合计必须等于 100，当前为 {total_weight}")
 
+    # 权重必须非负。
+    #
+    # ⚠️ 合计 = 100 这个检查单独用是不够的：`-70 + 170 = 100` 能通过，
+    #    但归一化后会产生**负权重**，把「好的指标」扣成负贡献、把「差的指标」
+    #    放大成 >100 的贡献，最终总分跑到 0~100 之外（实测能算出 128）。
+    #    这类配置必须阻断，不能出分。
+    negative = [s.code for s in specs if s.weight < 0]
+    if negative:
+        raise ScoringError(f"权重不得为负：{sorted(negative)}")
+    zero = [s.code for s in specs if s.weight == 0]
+    if zero:
+        raise ScoringError(f"权重不得为 0：{sorted(zero)}")
+
     by_code = {i.code: i for i in inputs}
 
     # 第一轮：算出每个指标的达成率与等级，识别缺失项

@@ -848,6 +848,12 @@ class Score(Base):
     """
 
     __tablename__ = "score"
+    # ⚠️ 一条考核记录只能有一份分数（幂等重算走 UPDATE，不新增行）。
+    #    `migrations/versions/0001_baseline.py` 早已声明 `uq_score_record`，
+    #    但 ORM 模型漏了 —— 导致 `Base.metadata.create_all` 建出来的库
+    #    **没有**这个约束，与 Alembic 建库不一致（真实运行库就是这个漂移的受害者）。
+    #    并发算分会写出重复行，之后所有 `scalar_one_or_none()` 查询都会 500。
+    __table_args__ = (UniqueConstraint("record_id", name="uq_score_record"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     record_id: Mapped[str] = mapped_column(String(64), ForeignKey("assessment_record.id"), nullable=False, index=True)

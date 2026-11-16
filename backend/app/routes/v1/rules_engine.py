@@ -69,6 +69,21 @@ _FORCEABLE_STATES = frozenset(
 #: 等级标签（A/B/C/D 体系）→ 1~5 整数档位（响应契约用）
 _LEVEL_TO_INT = {"A": 5, "B": 4, "C": 3, "D": 2}
 
+#: 总分 → 整档等级（A/B/C/D）。用于把加权总分折算成**整体**评级。
+#:
+#: ⚠️ 历史实现在这里有缺陷：整档评级取「第一个有等级的指标」，导致
+#:    混合等级场景（gmv=A、conv=C，总分 88）回报「A」——与总分不符，
+#:    且与 `message` 文案自相矛盾。整档评级必须由**总分**决定。
+#:
+#: 阈值与 `scoring.DEFAULT_LEVEL_SCORE` 的默认分档保持一致：
+#:    A=100 / B=80 / C=60 / D=40
+_TOTAL_BANDS: tuple[tuple[float, str], ...] = (
+    (90.0, "A"),
+    (75.0, "B"),
+    (50.0, "C"),
+    (0.0, "D"),
+)
+
 
 # ─────────────────────────────────────────────────────────────
 # 适配层：scoring.ScoreResult → schemas_block4.CalculationDetail
@@ -93,6 +108,21 @@ def _level_label(level: str | None) -> str:
     if text in _LEVEL_TO_INT:
         return text
     return "达标"
+
+
+def _overall_level(total: float) -> str:
+    """由**加权总分**折算整体等级。
+
+    为什么不用「第一个指标的等级」：
+        指标等级是「该指标相对自身目标」的达成情况，
+        而整档评级必须描述「这个人整体拿了多少分」。
+        两者在混合等级时会分歧（gmv=A + conv=C → 总分 88，
+        按首指标会误报「A」，按总分才是「B」）。
+    """
+    for threshold, level in _TOTAL_BANDS:
+        if total >= threshold:
+            return level
+    return "D"
 
 
 def _build_calculation_detail(
@@ -121,12 +151,8 @@ def _build_calculation_detail(
         sum(float(pm.get("contribution") or 0.0) for pm in result.per_metric), 2
     )
 
-    # 第一个有等级的指标决定整档评级
-    primary_level = None
-    for pm in result.per_metric:
-        if pm.get("level"):
-            primary_level = pm["level"]
-            break
+    # 整档评级由**加权总分**决定（不是首个指标的等级 —— 见 `_overall_level` 注释）
+    primary_level = _overall_level(float(result.total))
 
     return CalculationDetail(
         record_id=record_id,
