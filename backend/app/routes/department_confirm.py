@@ -281,36 +281,216 @@ def _approve_week_result(
 # ---------------------------------------------------------------------------
 
 
+def _result_confirm_rows(
+    db: Session,
+    scope: Any,
+    *,
+    org_id: str | None = None,
+    period_month: str | None = None,
+    confirm_status: str | None = None,
+    keyword: str | None = None,
+) -> list[dict]:
+    """构造部门侧成果确认列表（对齐前端 `ResultConfirmItem`）。
+
+    ⚠️ 部门侧与主管侧是**同一批端点**（决策 D2/D4：主管审批即完成，
+    不是两级审批链），所以这里与 `_suggestion_rows` 用同一套可见范围。
+    """
+    rows = result_submission.list_results_for_approval(
+        db, scope, plan_type=result_submission.RESULT_PLAN_TYPE_MONTH
+    )
+
+    items: list[dict] = []
+    for result in rows:
+        if result.status not in (
+            result_submission.RESULT_STATUS_SUBMITTED,
+            result_submission.RESULT_STATUS_CONFIRMED,
+            result_submission.RESULT_STATUS_REJECTED,
+        ):
+            continue
+        item = result_submission.serialize_result_suggestion(
+            db, result, evidence_base_url="/v1/department/result-confirms"
+        )
+
+        if org_id and str(item["orgId"]) != str(org_id):
+            continue
+        period = str(item.get("period") or "")
+        if period_month and period and period != str(period_month):
+            continue
+        if confirm_status and item["confirmStatus"] != confirm_status:
+            continue
+        if keyword:
+            haystack = " ".join(
+                [
+                    str(item.get("employeeName") or ""),
+                    str(item.get("employeeNo") or ""),
+                    str(item.get("resultTitle") or ""),
+                    str(item.get("planNo") or ""),
+                ]
+            )
+            if str(keyword).lower() not in haystack.lower():
+                continue
+        items.append(item)
+
+    items.sort(key=lambda r: (r.get("submittedAt") or "", r.get("employeeName") or ""), reverse=True)
+    return items
+
+
+def _confirm_status_for(result: Result) -> str:
+    """成果状态 → 前端 `confirmStatusLabels` 认识的取值。
+
+    `PENDING_CONFIRM` / `BLOCKED` / `CONFIRMED` / `REJECTED`
+    """
+    if result.status == RESULT_STATUS_CONFIRMED:
+        return "CONFIRMED"
+    if result.status == RESULT_STATUS_REJECTED:
+        return "REJECTED"
+    if result.status == RESULT_STATUS_SUBMITTED:
+        return "PENDING_CONFIRM"
+    return "BLOCKED"
+
+
+@router.get("/v1/department/result-confirms")
+async def list_department_result_confirms(
+    orgId: str | None = Query(None),
+    periodMonth: str | None = Query(None),
+    confirmStatus: str | None = Query(None),
+    keyword: str | None = Query(None),
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=200),
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """获取部门侧成果确认列表。
+
+    响应结构：PageResponse<ResultConfirmItem> = { items, total, pageNo, pageSize }
+
+    ⚠️ 查询参数**用 camelCase**（前端 `ResultConfirm.vue` 传
+    `orgId` / `periodMonth` / `confirmStatus`）。
+    """
+    scope = _approval_scope(current_user, db)
+    rows = _result_confirm_rows(
+        db,
+        scope,
+        org_id=orgId,
+        period_month=periodMonth,
+        confirm_status=confirmStatus,
+        keyword=keyword,
+    )
+    return _ok(_paginate(rows, pageNo, pageSize))
+
+
 @router.get("/v1/department/result-confirms/{confirm_id}")
 async def get_department_result_confirm(
     confirm_id: str,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取部门侧结果确认详情。
 
     响应结构：ResultConfirmItem
     """
-    return _ok(_empty_result_confirm(confirm_id))
+    result = db.get(Result, confirm_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="成果不存在")
+    context = _access_context(current_user, db)
+    if not result_submission.can_access_result(db, context, result):
+        raise HTTPException(status_code=403, detail="无权查看该成果")
+    item = result_submission.serialize_result_suggestion(
+        db, result, evidence_base_url="/v1/department/result-confirms"
+    )
+    item["confirmStatus"] = _confirm_status_for(result)
+    return _ok(item)
 
 
 @router.get("/v1/department/result-confirms/{result_id}/evidence/{evidence_id}")
 async def download_department_result_confirm_evidence(
     result_id: str,
-    evidence_id: int,
+    evidence_id: str,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Any:
     """下载部门侧结果证据文件。
 
     响应结构：二进制文件流
     """
-    # 尚无真实证据文件时返回 404，避免前端拿到损坏内容。
-    raise HTTPException(status_code=404, detail="证据文件不存在或已过期")
+    row = db.get(ResultEvidence, evidence_id)
+    if row is None or str(row.result_id) != str(result_id):
+        raise HTTPException(status_code=404, detail="证据文件不存在或已过期")
+
+    result = db.get(Result, result_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="证据文件不存在或已过期")
+
+    context = _access_context(current_user, db)
+    if not result_submission.can_access_result(db, context, result):
+        raise HTTPException(status_code=404, detail="证据文件不存在或已过期")
+
+    path = result_submission.evidence_path(row)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="证据文件不存在或已过期")
+    return FileResponse(path, filename=row.file_name)
+
+
+def _apply_result_decision(
+    db: Session,
+    current_user: Employee,
+    result_id: str,
+    payload: Any,
+    *,
+    approve: bool,
+) -> dict:
+    """执行部门侧成果确认（通过 / 驳回）。
+
+    ⚠️ 与主管侧是**同一批端点**（决策 D2/D4），不是第二级审批链。
+    """
+    result = db.get(Result, result_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="成果不存在")
+
+    context = _access_context(current_user, db)
+    if not result_submission.can_access_result(db, context, result):
+        raise HTTPException(status_code=403, detail="无权审批该成果")
+
+    comment = ""
+    if payload is not None:
+        comment = str(payload.get("comment") or "")
+
+    try:
+        if approve:
+            updated = result_submission.approve_result(
+                db, current_user.id, result_id, comment=comment
+            )
+        else:
+            updated = result_submission.reject_result(
+                db, current_user.id, result_id, comment=comment
+            )
+        db.commit()
+    except result_submission.ResultForbidden as exc:
+        db.rollback()
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except result_submission.ResultConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    except result_submission.ResultNotFound as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+
+    return {
+        "objectId": result_submission._as_id(updated.id),
+        "id": result_submission._as_id(updated.id),
+        "status": "CONFIRMED" if approve else "REJECTED",
+        "message": "成果已确认" if approve else "成果已驳回",
+        "auditActionCode": "RESULT_CONFIRM",
+        "auditDeferred": False,
+        "leaderSuggestion": comment,
+    }
 
 
 @router.post("/v1/department/result-confirms/{confirm_id}/confirm")
 async def confirm_department_result(
     confirm_id: str,
     payload: JsonBody,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """确认部门侧结果。
@@ -318,13 +498,14 @@ async def confirm_department_result(
     请求体：PerformanceActionPayload
     响应结构：ActionResult
     """
-    return _ok(_empty_action_result(confirm_id, "CONFIRMED"))
+    return _ok(_apply_result_decision(db, current_user, confirm_id, payload, approve=True))
 
 
 @router.post("/v1/department/result-confirms/{confirm_id}/reject")
 async def reject_department_result(
     confirm_id: str,
     payload: JsonBody,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """驳回部门侧结果。
@@ -332,7 +513,7 @@ async def reject_department_result(
     请求体：PerformanceActionPayload
     响应结构：ActionResult
     """
-    return _ok(_empty_action_result(confirm_id, "REJECTED"))
+    return _ok(_apply_result_decision(db, current_user, confirm_id, payload, approve=False))
 
 
 # ---------------------------------------------------------------------------
