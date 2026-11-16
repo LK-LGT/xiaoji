@@ -165,7 +165,7 @@ def call_multipart(base: str, path: str, filename: str, content: bytes) -> tuple
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
         "Content-Type: application/octet-stream\r\n\r\n"
-    ).encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    ).encode() + content + f"\r\n--{boundary}--\r\n".encode()
     req = urllib.request.Request(
         base + path,
         method="POST",
@@ -222,7 +222,7 @@ def main() -> int:
     print(f"批次 3 端点冒烟测试: {passed}/{total} 通过")
     if failures:
         print("-" * 70)
-        for method, path, status, detail in failures:
+        for method, path, _status, detail in failures:
             print(f"  FAIL {method:<7}{path:<60} {detail}")
         return 1
     print("✅ 全部通过")

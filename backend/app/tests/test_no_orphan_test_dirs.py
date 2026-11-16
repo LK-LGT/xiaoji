@@ -250,6 +250,55 @@ def test_tests_must_not_write_to_the_shared_database():
     )
 
 
+def test_subprocess_alembic_must_receive_an_explicit_database_url():
+    """⚠️ 跑 Alembic 子进程时**必须显式传 DATABASE_URL**（2026-11-16 实测）。
+
+    回归点：``test_hex_id_routes.py`` 的 ``_upgrade_schema_to_head()``
+    原本是 ``env = {**os.environ}`` + ``setdefault`` —— 而环境里通常
+    **没有** ``DATABASE_URL``，于是子进程会重新读 ``backend/.env``，
+    拿到**真实库**的绝对路径（``.../backend/data/perf.db``）。
+
+    结果：「给隔离库建表」实际建到了**真实库**上，
+    真实库被塞进 ``CI_ADMIN`` 测试账号 —— 而且这个污染是**不可逆**的。
+
+    本检查覆盖所有「子进程跑 alembic」的测试文件：
+    - 必须出现 ``DATABASE_URL`` 的**直接赋值**（``env["DATABASE_URL"] = ...``）；
+    - 且不能是 ``setdefault`` —— 它不会覆盖继承来的值。
+    """
+    offenders: list[str] = []
+    for path in (ROOT / "backend" / "app" / "tests").rglob("test_*.py"):
+        if set(path.parts) & SKIP_DIRS:
+            continue
+        # ⚠️ 本文件自身含 "alembic"/"subprocess" 字样与示例正则 —— 必须排除。
+        if path.name == Path(__file__).name:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if "alembic" not in text or "subprocess" not in text:
+            continue
+        # ⚠️ `setdefault` 形式不算数 —— 它不会覆盖继承来的值。
+        if re.search(r'env\.setdefault\(\s*["\']DATABASE_URL["\']', text):
+            offenders.append(str(path.relative_to(ROOT)))
+            continue
+        # 两种合法写法都要认：
+        #   env["DATABASE_URL"] = url          （赋值）
+        #   env = {..., "DATABASE_URL": url}   （字典字面量）
+        has_assign = bool(
+            re.search(r'env\[["\']DATABASE_URL["\']\]\s*=', text)
+        )
+        has_literal = bool(
+            re.search(r'["\']DATABASE_URL["\']\s*:\s*[a-zA-Z_{]', text)
+        )
+        if not (has_assign or has_literal):
+            offenders.append(str(path.relative_to(ROOT)))
+
+    assert not offenders, (
+        "以下测试用 Alembic 子进程时未显式覆盖 DATABASE_URL，"
+        "子进程会读 backend/.env 里的**真实库**路径并污染它：\n"
+        + "\n".join(f"  - {p}" for p in sorted(offenders))
+        + "\n请写成 env['DATABASE_URL'] = <隔离库 URL>（不要用 setdefault）。"
+    )
+
+
 @pytest.mark.parametrize(
     "filename",
     [

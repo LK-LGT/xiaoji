@@ -102,6 +102,10 @@ def isolated_db(tmp_path_factory):
     # **不经过** core.db 的全局单例，因此不受其它模块干扰。
     module_sessionmaker = sessionmaker(bind=engine, autoflush=False, future=True)
 
+    # ⚠️ 把 URL 一并交给调用方：`_upgrade_schema_to_head()` 需要它，
+    #    否则子进程会读 `backend/.env` 里的**真实库**路径（见该函数说明）。
+    module_sessionmaker.db_url = url  # type: ignore[attr-defined]
+
     yield module_sessionmaker
 
     engine.dispose()
@@ -143,19 +147,30 @@ def client(isolated_db) -> TestClient:
         app.dependency_overrides.pop(get_db, None)
 
 
-def _upgrade_schema_to_head() -> None:
-    """用 Alembic 把当前 `DATABASE_URL` 指向的库升到 head。
+def _upgrade_schema_to_head(url: str) -> None:
+    """用 Alembic 把**指定**的库升到 head。
 
     ⚠️ 必须走 Alembic 而不是 `Base.metadata.create_all()`：
     后者只建表、不写 `alembic_version`，会让 CI 后续的迁移检查
     撞上 `table xxx already exists`。
+
+    ⚠️⚠️ **`url` 必须显式传进来，不能靠继承环境变量**（2026-11-16 实测）：
+    子进程是**全新**的 Python 进程，它会重新读 `backend/.env` ——
+    那里写的是**真实库**的绝对路径（``.../backend/data/perf.db``）。
+    于是「给隔离库建表」实际建到了**真实库**上，
+    真实库会被塞进 `CI_ADMIN` 测试账号（之前就是这么混进去的）。
+
+    `env["DATABASE_URL"]` 的优先级高于 `.env`（pydantic-settings：
+    环境变量 > env_file），所以这里**必须覆盖**而不是 `setdefault`。
     """
     import os
     import subprocess
 
     repo_root = Path(__file__).resolve().parents[3]
     env = {**os.environ}
-    env.setdefault("AUTO_CREATE_TABLES", "false")
+    # ⚠️ 覆盖而非 setdefault —— 继承来的值可能指向真实库。
+    env["DATABASE_URL"] = url
+    env["AUTO_CREATE_TABLES"] = "false"
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=str(repo_root / "backend"),
@@ -203,7 +218,9 @@ def auth_headers(isolated_db) -> dict:
             db.query(Employee).filter(Employee.id == "CI_ADMIN").first()
         except Exception:
             db.rollback()
-            _upgrade_schema_to_head()
+            # ⚠️ 必须传隔离库的 URL —— 不传的话子进程会读 `.env`
+            #    里的真实库路径，把迁移打到真实 perf.db 上。
+            _upgrade_schema_to_head(isolated_db.db_url)  # type: ignore[attr-defined]
 
         admin = db.query(Employee).filter(Employee.id == "CI_ADMIN").first()
         if admin is None:

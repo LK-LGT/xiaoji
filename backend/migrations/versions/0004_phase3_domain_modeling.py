@@ -33,15 +33,16 @@ AI 域：
     - SQLite 兼容：``env.py`` 已配置 ``render_as_batch=True``。
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
+from typing import Union
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0004_phase3_domain_modeling"
-down_revision: Union[str, Sequence[str], None] = "0003_phase3_planning"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "0003_phase3_planning"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _table_exists(table_name: str) -> bool:

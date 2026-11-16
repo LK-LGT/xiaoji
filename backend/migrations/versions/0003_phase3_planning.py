@@ -14,15 +14,16 @@ Create Date: 2026-11-14
 - 迁移保持幂等：已存在的表跳过，方便在已建表的库上重放。
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
+from typing import Union
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0003_phase3_planning"
-down_revision: Union[str, Sequence[str], None] = "0002_phase2_feishu"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "0002_phase2_feishu"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _table_exists(table_name: str) -> bool:

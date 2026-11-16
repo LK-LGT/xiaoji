@@ -18,16 +18,16 @@
 - 部门负责人**不能**审批自己提交的计划。
 """
 
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from backend.app.core.db import get_db, get_sessionmaker
 from backend.app.dependencies import get_current_user
 from backend.app.domain.enums import PlanStatus
-from backend.app.domain.models import Department, Employee, MonthPlan
+from backend.app.domain.models import Employee, MonthPlan
 from backend.app.domain.plan_models import PlanApproval
 from backend.app.main import app
 from backend.app.services.access_control import build_access_context
-from fastapi.testclient import TestClient
 
 db = get_sessionmaker()()
 

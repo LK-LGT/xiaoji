@@ -9,3 +9,8 @@ pytest>=8.0
 alembic>=1.13
 # 飞书事件解密（AES-256-CBC）—— 后台配置 Encrypt Key 时必需
 pycryptodome>=3.20
+# PostgreSQL 驱动（psycopg 3）—— 部署到 PG 时必需。
+# ⚠️ 之前**没有**声明，导致连 PG 时报 ModuleNotFoundError。
+#    驱动缺失是「部署即失败」，不会等到运行时才暴露。
+#    psycopg3 同时支持 psycopg:// 与 postgresql:// 两种连接串前缀。
+psycopg[binary]>=3.1

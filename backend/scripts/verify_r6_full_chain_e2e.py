@@ -35,7 +35,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -59,12 +58,11 @@ from backend.app.domain.models import (  # noqa: E402
     MonthPlanItem,
     Score,
 )
+from backend.app.domain.plan_models import PlanApproval  # noqa: E402
 from backend.app.domain.result_models import (  # noqa: E402
-    RESULT_PLAN_TYPE_MONTH,
     RESULT_STATUS_SUBMITTED,
     Result,
 )
-from backend.app.domain.plan_models import PlanApproval  # noqa: E402
 from backend.app.main import app  # noqa: E402
 from backend.app.services.access_control import (  # noqa: E402
     build_access_context,

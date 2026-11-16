@@ -33,7 +33,6 @@ from sqlalchemy import select
 from backend.app.core.db import get_db, get_sessionmaker
 from backend.app.dependencies import get_current_user
 from backend.app.domain.models import (
-    Department,
     Employee,
     MonthPlan,
     MonthPlanItem,
@@ -41,7 +40,6 @@ from backend.app.domain.models import (
     WeekPlanItem,
 )
 from backend.app.domain.result_models import (
-    RESULT_PLAN_TYPE_WEEK,
     RESULT_STATUS_CONFIRMED,
     RESULT_STATUS_SUBMITTED,
     Result,

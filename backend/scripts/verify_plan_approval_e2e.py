@@ -14,6 +14,7 @@
    否则访问 name / department_id 时触发 `DetachedInstanceError`。
 """
 
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from backend.app.core.db import get_db, get_sessionmaker
@@ -21,9 +22,8 @@ from backend.app.dependencies import get_current_user
 from backend.app.domain.enums import PlanStatus
 from backend.app.domain.models import Employee, MonthPlan
 from backend.app.domain.plan_models import PlanApproval
-from backend.app.services.access_control import build_access_context
 from backend.app.main import app
-from fastapi.testclient import TestClient
+from backend.app.services.access_control import build_access_context
 
 db = get_sessionmaker()()
 
