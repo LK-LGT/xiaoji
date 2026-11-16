@@ -70,6 +70,21 @@ class Settings(BaseSettings):
     # 未配置时 `/v1/feishu/approval/events` 返回 503（不放行），
     # 避免出现任何人都能改审批状态的未鉴权写入入口。
     feishu_approval_webhook_token: str = ""
+    # 飞书事件的 Encrypt Key（后台「事件与回调 > 加密策略」）。
+    # 配置了加密策略时，飞书推送的 body 只有 `{"encrypt": "..."}`，
+    # 必须先 AES-256-CBC 解密才能拿到事件内容与 Verification Token；
+    # 同时启用 SHA-256 签名校验（X-Lark-Signature）。
+    # 留空表示明文模式（仅比对 Verification Token）。
+    feishu_encrypt_key: str = ""
+    # 飞书通讯录事件的 Verification Token（R18 事件驱动增量）。
+    # 未配置时 `/v1/feishu/contact/events` 返回 503（不放行）——
+    # 否则任何人都能伪造通讯录变更把员工改成离职。
+    feishu_contact_event_token: str = ""
+    # 事件队列消费间隔（秒）：后台消费者多久扫一次待处理事件。
+    feishu_event_consume_interval_seconds: int = 60
+    # 是否启用事件驱动增量消费。关闭时事件仍然入队（不丢），
+    # 但不自动消费 —— 可作为应急开关。
+    feishu_event_consume_enabled: bool = True
 
     # ─────────────────────────────────────────────────────────────
     # 同步失败告警

@@ -7,3 +7,5 @@ httpx>=0.27
 python-multipart>=0.0.9
 pytest>=8.0
 alembic>=1.13
+# 飞书事件解密（AES-256-CBC）—— 后台配置 Encrypt Key 时必需
+pycryptodome>=3.20

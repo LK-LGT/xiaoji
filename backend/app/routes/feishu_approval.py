@@ -4,26 +4,39 @@
 
 1. **Webhook 接收端点**（`/v1/feishu/approval/events`）
    —— 飞书审批状态变化时回调本系统，触发审批回流。
-   **不要求登录态**（飞书服务器调用），但**必须校验 Verification Token**。
+   **不要求登录态**（飞书服务器调用），但**必须通过来源校验**。
 
 2. **管理端点**（管理员可手动触发回流 / 查回流流水）
    —— 补偿 webhook 漏推；排查问题时看流水。
 
 3. **通知测试端点** —— 验证 IM 通知链路是否通。
 
-签名校验
---------
-飞书 webhook 提供 **Verification Token**（请求体 `token` 字段）与
-**Encrypt Key**（AES 加密）两套机制。本项目采用 **Verification Token 比对**：
-请求体中的 `token` 字段必须等于配置的 token，不等则 401。
+来源校验（两种模式自动切换）
+--------------------------
+飞书后台「事件与回调 > 加密策略」配没配 Encrypt Key，决定了推送形态：
 
-> 加密模式（Encrypt Key）暂未实现 —— 需要 AES 解密依赖且复杂度更高。
-> 当前按明文 token 模式实现，配置 `FEISHU_APPROVAL_WEBHOOK_TOKEN` 即可启用；
-> 未配置时端点返回 503（**不放行**，避免未鉴权的写入入口）。
+**明文模式**（未配 Encrypt Key）
+
+    body 直接是事件 JSON，比对 ``header.token`` == Verification Token。
+
+**加密模式**（配了 Encrypt Key）—— body **只有** ``{"encrypt": "..."}``
+
+    1. 先用 Encrypt Key 做 AES-256-CBC 解密拿到明文；
+    2. 用 ``X-Lark-Signature`` 做 SHA-256 签名校验
+       （``sha256(timestamp + nonce + encrypt_key + 原始 body)``）；
+    3. 再比对明文里的 Verification Token。
+
+两种模式都**不支持降级放行** —— 解密失败 / 验签失败一律拒绝。
+
+握手
+----
+飞书保存回调地址时会 POST 一个带 ``challenge`` 的请求，**必须在 1 秒内**
+原样返回 ``{"challenge": "<值>"}``，否则地址保存不上。
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -35,7 +48,7 @@ from ..core.config import settings
 from ..core.db import get_db
 from ..dependencies import get_current_user
 from ..domain.models import Employee
-from ..services import feishu_approval_sync, feishu_binding, plan_approval
+from ..services import feishu_approval_sync, feishu_binding, feishu_event, plan_approval
 from ..services.feishu_client import FeishuClient
 
 logger = logging.getLogger(__name__)
@@ -70,30 +83,6 @@ def _require_admin(db: Session, current_user: Employee) -> None:
 # ===========================================================================
 # 请求模型
 # ===========================================================================
-
-
-class ApprovalEventRequest(BaseModel):
-    """飞书审批事件体（webhook 推送）。
-
-    飞书实际推送的字段比这多，这里只取**回流必需**的部分，
-    多余字段由 Pydantic 默认忽略。
-    """
-
-    token: str = Field(default="", description="飞书 Verification Token")
-    event_id: str = Field(default="", description="事件 ID，用于幂等")
-    event_type: str = Field(default="", description="事件类型")
-    # 审批实例信息
-    instance_code: str = Field(default="", description="审批实例 code")
-    instance_status: str = Field(default="", description="审批实例状态")
-    approval_code: str = Field(default="", description="审批定义 code")
-    user_id: str = Field(default="", description="发起人 user_id")
-    open_id: str = Field(default="", description="发起人 open_id")
-    comment: str = Field(default="", description="审批意见")
-    # 本系统计划标识（事件自带时可省略 —— 走绑定表反查）
-    plan_type: str = Field(default="", description="计划类型 month/week/day")
-    plan_id: str = Field(default="", description="计划 ID")
-    # 关联码（飞书侧发起时，员工在表单里填写的短码）
-    correlation_key: str = Field(default="", description="关联码，用于反查计划")
 
 
 class ReflowRequest(BaseModel):
@@ -137,11 +126,10 @@ async def receive_approval_event(
 ) -> dict[str, Any]:
     """接收飞书审批状态变更事件，触发审批回流。
 
-    **无需登录态**（调用方是飞书服务器），但必须通过 Verification Token 校验。
+    **无需登录态**（调用方是飞书服务器），但必须通过来源校验。
 
     响应体遵循飞书 webhook 约定：返回 `{"code": 0}` 表示成功。
     """
-    # ── 1. 校验 Verification Token ──────────────────────────────
     expected_token = settings.feishu_approval_webhook_token
     if not expected_token:
         # 未配置 → 端点不可用。**绝不能放行**，否则任何人都能改审批状态。
@@ -151,24 +139,74 @@ async def receive_approval_event(
             detail="飞书审批 webhook 未配置 Verification Token",
         )
 
+    # ── 1. 取原始 body（签名校验必须用原始字节）───────────────
+    raw_body = await request.body()
+    if not raw_body:
+        raise HTTPException(status_code=400, detail="请求体为空")
+
     try:
         body = await request.json()
     except Exception as exc:
         raise HTTPException(status_code=400, detail="请求体不是合法 JSON") from exc
 
-    token = str(body.get("token") or "")
-    if not token or token != expected_token:
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体不是 JSON 对象")
+
+    encrypt_key = settings.feishu_encrypt_key
+
+    # ── 2. 加密模式：先验签，再解密 ────────────────────────────
+    if isinstance(body.get("encrypt"), str) and body["encrypt"]:
+        if not encrypt_key:
+            # 收到密文却没配密钥 → 无法解密。**不能猜**，直接拒绝。
+            logger.error("飞书审批 webhook 收到加密事件但未配置 FEISHU_ENCRYPT_KEY")
+            raise HTTPException(status_code=503, detail="未配置 Encrypt Key，无法解密事件")
+
+        # 签名校验（可不解密就完成来源校验，官方推荐）
+        timestamp = request.headers.get(feishu_event.HEADER_TIMESTAMP, "")
+        nonce = request.headers.get(feishu_event.HEADER_NONCE, "")
+        signature = request.headers.get(feishu_event.HEADER_SIGNATURE, "")
+        if not feishu_event.verify_signature(
+            encrypt_key=encrypt_key,
+            timestamp=timestamp,
+            nonce=nonce,
+            signature=signature,
+            raw_body=raw_body,
+        ):
+            logger.warning("飞书审批 webhook 签名校验失败")
+            raise HTTPException(status_code=401, detail="签名校验失败")
+
+        try:
+            plain = feishu_event.decrypt_event(encrypt_key, body["encrypt"])
+        except feishu_event.FeishuEventError as exc:
+            logger.warning("飞书审批 webhook 解密失败：%s", exc)
+            raise HTTPException(status_code=400, detail=f"事件解密失败：{exc}") from exc
+
+        try:
+            body = json.loads(plain)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="解密结果不是合法 JSON") from exc
+
+    # ── 3. 握手：飞书保存回调地址时的 url_verification ──────────
+    # 必须在 1 秒内原样返回 challenge，否则飞书保存不了地址。
+    if feishu_event.is_url_verification(body):
+        challenge = feishu_event.extract_challenge(body)
+        if not challenge:
+            raise HTTPException(status_code=400, detail="握手请求缺少 challenge")
+        logger.info("飞书回调地址校验握手通过")
+        return {"challenge": challenge}
+
+    # ── 4. 校验 Verification Token ─────────────────────────────
+    event = feishu_event.parse_event(body)
+    if not event.token or event.token != expected_token:
         logger.warning("飞书审批 webhook token 校验失败")
         raise HTTPException(status_code=401, detail="Verification Token 校验失败")
 
-    # ── 2. 解析事件 ────────────────────────────────────────────
-    event = ApprovalEventRequest.model_validate(body)
-    plan_type = event.plan_type.strip().lower()
-    plan_id = event.plan_id.strip()
-    correlation_key = event.correlation_key.strip()
-
-    status_value = event.instance_status.strip().upper()
-    instance_id = event.instance_code.strip() or event.event_id.strip()
+    # ── 5. 解析事件字段 ────────────────────────────────────────
+    plan_type = event.plan_type
+    plan_id = event.plan_id
+    correlation_key = event.correlation_key
+    status_value = event.instance_status
+    instance_id = event.instance_code or event.event_id
 
     # 计划标识可以来自事件本身，也可以由绑定表反查（飞书侧发起的场景）。
     # 三者都拿不到 → 无法定位计划，记日志忽略（不报错，避免飞书反复重试）。
@@ -176,7 +214,7 @@ async def receive_approval_event(
         logger.warning("飞书审批 webhook 事件缺少计划标识与绑定线索，跳过")
         return {"code": 0, "message": "事件缺少计划标识，已忽略"}
 
-    # ── 3. 回流 ────────────────────────────────────────────────
+    # ── 6. 回流 ────────────────────────────────────────────────
     try:
         result = feishu_approval_sync.apply_feishu_approval_event(
             db,
@@ -185,7 +223,7 @@ async def receive_approval_event(
             feishu_status=status_value,
             instance_id=instance_id,
             correlation_key=correlation_key,
-            approval_code=event.approval_code.strip(),
+            approval_code=event.approval_code,
             actor_feishu_id=event.user_id or event.open_id,
             comment=event.comment or None,
         )
@@ -205,9 +243,10 @@ async def receive_approval_event(
 
     db.commit()
     logger.info(
-        "飞书审批 webhook 处理完成：plan=%s status=%s result=%s",
-        plan_id,
-        status_value,
+        "飞书审批 webhook 处理完成：plan=%s instance=%s status=%s result=%s",
+        plan_id or "-",
+        instance_id or "-",
+        status_value or "-",
         result,
     )
     return {"code": 0, "message": "ok", "data": {"result": result}}
