@@ -523,7 +523,12 @@ def approve_result(
     *,
     comment: str | None = None,
 ) -> Result:
-    """主管通过成果：`submitted → confirmed`。"""
+    """主管通过成果：`submitted → confirmed`。
+
+    ⚠️ **审批通过时会顺带物化成绩效证据**（A6 · 决策 D4 的 E2）。
+    物化失败**不阻断审批** —— 成果已经通过审批是既成事实，
+    证据转换可以事后补跑（``materialize_for_result``）。
+    """
     result = fetch_result(db, result_id)
     _assert_not_self_approval(result, actor_id)
     _assert_submittable(result)
@@ -532,7 +537,26 @@ def approve_result(
     result.approved_at = _now()
     result.approval_comment = comment
     db.flush()
+
+    _try_materialize(db, result)
     return result
+
+
+def _try_materialize(db: Session, result: Result) -> None:
+    """物化成果为绩效证据 —— **失败不阻断主流程**。
+
+    成果审批通过是既成事实；证据转换失败只记日志，
+    后续可以用 ``services.result_evidence_materialization.materialize_for_result``
+    补跑。
+    """
+    from . import result_evidence_materialization as materialization
+
+    try:
+        materialization.materialize_result(db, result)
+    except materialization.MaterializationError as exc:
+        logger.warning("成果 %s 物化为证据失败（不影响审批）：%s", result.id, exc.message)
+    except Exception:  # noqa: BLE001 —— 物化是附加动作，绝不能拖垮审批
+        logger.exception("成果 %s 物化为证据时发生未预期错误（不影响审批）", result.id)
 
 
 def reject_result(

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-
 # ---------------------------------------------------------------------------
 # 审核 / 生命周期
 # ---------------------------------------------------------------------------
@@ -78,6 +77,10 @@ class EvidenceSource(StrEnum):
     SYSTEM_API = "system_api"
     PEER_REVIEW = "peer_review"
     MANUAL_UPLOAD = "manual_upload"
+    # 计划成果物化（A6 · 决策 D4 的 E2「转换物化」）。
+    # 成果审批通过时由 `services.result_evidence_materialization` 生成，
+    # `usage=scoring` —— 与考勤的 `reference_only` 相反，成果是真业绩，进算分集。
+    PLAN_RESULT = "plan_result"
 
 
 class EvidenceUsage(StrEnum):
