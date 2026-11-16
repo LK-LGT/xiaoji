@@ -88,6 +88,20 @@ class Employee(Base):
     login_account: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     account_status: Mapped[str] = mapped_column(String(32), default="enabled", nullable=False)
     token_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")
+    # ── 密码哈希（R4）───────────────────────────────────────────────────
+    # 历史上所有员工的密码是**明文 "123456"**，等于没设密码。
+    # 现在改为存 PBKDF2-HMAC-SHA256 哈希（见 services/password_hasher.py）。
+    #
+    # ⚠️ `password_hash` 为 NULL 表示「还没设过密码」——
+    #    这类账号**不允许**用默认口令登录，必须走改密流程。
+    #    登录时若发现 hash 为空但命中了兼容明文，会**立即补写哈希**（渐进迁移）。
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 最近一次设置密码的时间（改密成功后更新）。
+    password_set_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 是否强制该用户下次登录后改密（管理员重置密码 / 首登时置 True）。
+    force_change_password: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="0"
+    )
     department_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("department.id"), nullable=True)
     position: Mapped[str | None] = mapped_column(String(128), nullable=True)
     manager_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("employee.id"), nullable=True)

@@ -62,6 +62,15 @@
       <template #footer><el-button @click="drawerVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveEdit">保存</el-button></template>
     </el-drawer>
 
+    <el-dialog v-model="resetResultVisible" title="密码已重置" width="480px" @closed="resetResult.initialPassword = ''">
+      <el-alert title="此初始密码仅显示这一次，关闭后无法再次查看。请立即复制并转告员工。" type="warning" :closable="false" show-icon />
+      <dl class="reset-result-list">
+        <div><dt>员工</dt><dd>{{ resetResult.realName }}</dd></div>
+        <div><dt>初始密码</dt><dd><code>{{ resetResult.initialPassword }}</code> <el-button text type="primary" @click="copy(resetResult.initialPassword)">复制</el-button></dd></div>
+      </dl>
+      <p class="empty-copy">员工首次登录后必须修改初始密码。</p>
+    </el-dialog>
+
     <el-dialog v-model="importResultVisible" title="员工导入结果" width="520px">
       <el-descriptions :column="3" border><el-descriptions-item label="总数">{{ importResult.total }}</el-descriptions-item><el-descriptions-item label="成功">{{ importResult.success }}</el-descriptions-item><el-descriptions-item label="失败">{{ importResult.failed }}</el-descriptions-item></el-descriptions>
         <ul v-if="importResult.errors.length" class="import-errors"><li v-for="error in importResult.errors" :key="error">{{ error }}</li></ul>
@@ -79,6 +88,9 @@ import { useAutoQuery } from '@/composables/useAutoQuery'
 
 const router = useRouter()
 const loading = ref(false), saving = ref(false), drawerVisible = ref(false), importResultVisible = ref(false)
+// 重置密码结果（明文初始密码**只在此刻**存在，关闭弹窗即丢弃）。
+const resetResultVisible = ref(false)
+const resetResult = reactive({ realName: '', initialPassword: '' })
 const editFormRef = ref<FormInstance>()
 const options = reactive<SystemOptions>({ departments: [], leaders: [], roles: [] })
 const page = reactive<PageResult<UserItem>>({ records: [], total: 0, pageNo: 1, pageSize: 20 })
@@ -96,6 +108,11 @@ const autoQuery = useAutoQuery(
   },
 )
 function mapDepartments(nodes: SystemOptions['departments']): any[] { return nodes.map((node) => ({ value: node.id, label: node.name, disabled: node.status !== 1, children: mapDepartments(node.children || []) })) }
+
+async function copy(value: string) {
+  await navigator.clipboard.writeText(value)
+  ElMessage.success('已复制')
+}
 
 async function loadOptions() { Object.assign(options, await getSystemOptions()) }
 async function loadUsers() {
@@ -117,7 +134,17 @@ async function toggleStatus(row: UserItem) {
   try { await ElMessageBox.confirm(`确认${row.status === 1 ? '禁用' : '启用'}员工“${row.realName}”吗？`, '账号状态确认', { type: 'warning' }); await changeUserStatus(row.id, row.status === 1 ? 0 : 1); ElMessage.success('账号状态已更新'); await loadUsers() } catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '操作失败') }
 }
 async function resetPassword(row: UserItem) {
-  try { await ElMessageBox.confirm(`将“${row.realName}”的密码重置为 123456，并要求首次登录改密。`, '重置密码', { type: 'warning' }); await resetUserPassword(row.id); ElMessage.success('密码已重置'); await loadUsers() } catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '重置失败') }
+  try {
+    await ElMessageBox.confirm(`将为“${row.realName}”生成一个随机初始密码，并要求其首次登录后修改。确定继续吗？`, '重置密码', { type: 'warning' })
+    // ⚠️ 后端只在这一次响应里返回明文初始密码（库里只存 PBKDF2 哈希），
+    //    之后无法再取回 —— 所以必须在这里展示给管理员，由管理员转告员工。
+    const result = await resetUserPassword(row.id)
+    resetResult.realName = row.realName
+    resetResult.initialPassword = result?.initialPassword || ''
+    resetResultVisible.value = true
+    ElMessage.success('密码已重置')
+    await loadUsers()
+  } catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '重置失败') }
 }
 async function handleImport(uploadFile: UploadFile) {
   if (!uploadFile.raw) return

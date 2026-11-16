@@ -10,13 +10,17 @@
 from __future__ import annotations
 
 import logging
+import secrets
+import string
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
-from ...services import system_views
+from ...domain.models import Employee
+from ...services import password_hasher, system_views
 from ..shared import JsonBody
 from ...dependencies import get_current_user
 
@@ -28,6 +32,22 @@ router = APIRouter(prefix="/v1/system/users", tags=["system-users"], dependencie
 def _ok(data: Any) -> dict:
     """统一响应信封：前端 http.ts 会自动拆包出 data。"""
     return {"code": 0, "data": data}
+
+
+def _generate_initial_password(length: int = 12) -> str:
+    """生成随机初始口令。
+
+    ⚠️ 字符集刻意**不含**容易混淆的 ``0/O``、``1/l/I``，
+    避免管理员口头/截图传递时抄错。
+
+    用 :func:`secrets.choice`（而非 ``random.choice``）——
+    初始口令要参与密码认证，必须是密码学安全的随机源。
+    """
+    alphabet = string.ascii_letters + string.digits
+    # 去掉易混淆字符
+    ambiguous = set("0O1lI")
+    pool = [c for c in alphabet if c not in ambiguous]
+    return "".join(secrets.choice(pool) for _ in range(length))
 
 
 # ---------------------------------------------------------------------------
@@ -121,11 +141,49 @@ async def reset_user_password(
     user_id: str,
     db: Session = Depends(get_db),
 ) -> dict:
-    """重置用户密码。
+    """重置用户密码（R4 落实）。
+
+    之前是**空壳**：直接返回 ``{"initialPassword": ""}``，什么都没做 ——
+    前端显示"重置成功"，但用户的老密码**依然能用**。
+
+    现在的行为：
+      1. 生成一个**随机初始口令**（不是固定 "123456"）；
+      2. 写入 PBKDF2 哈希，**明文只在这一刻返回一次**，不落库；
+      3. 置 ``force_change_password = True`` → 该用户下次登录必须改密；
+      4. 递增 ``token_version`` → 该用户所有已签发的 Token 立即失效
+         （否则旧 Token 还能继续用，"重置密码"等于没重置）。
 
     响应结构：{ initialPassword: string }
     """
-    return _ok({"initialPassword": ""})
+    employee = db.get(Employee, user_id)
+    if employee is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    # 随机初始口令：大小写字母 + 数字，12 位。
+    # ⚠️ 不再返回固定的 "123456" —— 全员共用一个口令等于没重置。
+    initial_password = _generate_initial_password()
+
+    try:
+        employee.password_hash = password_hasher.hash_password(initial_password)
+    except password_hasher.PasswordStrengthError as exc:
+        raise HTTPException(status_code=500, detail=f"生成初始口令失败：{exc}") from exc
+    employee.password_set_at = datetime.now()
+    # 强制该用户下次登录后改密（管理员不知道用户会怎么用它）。
+    employee.force_change_password = True
+    # 吊销所有旧 Token。
+    employee.token_version = int(employee.token_version or 1) + 1
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("重置密码失败 employee=%s", user_id)
+        raise HTTPException(status_code=500, detail="重置密码失败，请稍后重试")
+
+    logger.info("管理员重置了员工 %s 的密码，token_version → %s", user_id, employee.token_version)
+
+    # ⚠️ 明文只在这里返回一次，之后无法再取回（库里只有哈希）。
+    return _ok({"initialPassword": initial_password})
 
 
 # ---------------------------------------------------------------------------

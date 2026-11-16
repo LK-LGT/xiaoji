@@ -197,7 +197,7 @@ export const registerEmployee = (data: { realName: string; mobile: string; deptI
 export const getUsers = (params: Record<string, unknown>) => http.get<unknown, PageResult<UserItem>>('/system/users', { params })
 export const updateUser = (id: string, data: Record<string, unknown>) => http.put<unknown, UserItem>(`/system/users/${id}`, data)
 export const changeUserStatus = (id: string, status: number) => http.post(`/system/users/${id}/status`, { status })
-export const resetUserPassword = (id: string) => http.post(`/system/users/${id}/reset-password`)
+export const resetUserPassword = (id: string) => http.post<unknown, { initialPassword: string }>(`/system/users/${id}/reset-password`)
 export const importUsers = (file: File) => {
   const form = new FormData()
   form.append('file', file)

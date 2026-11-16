@@ -104,9 +104,17 @@ def test_hex_id_not_rejected(
 
     response = getattr(client, method)(url, **kwargs)
 
+    # ⚠️ 断言的是「hex ID 没被当成非法输入」，不是「端点必须成功」。
+    #
+    #   422 = 参数校验层拒绝了 hex 字符串（如 int 类型转换失败）→ 必须防
+    #   500 = 处理 hex ID 时崩了 → 必须防
+    #
+    # 404 / 403 属可接受：说明已经过了鉴权与参数校验层，
+    # 只是该业务实体在当前库里不存在（CI 用空库，真实库也没有那个 ID）。
+    # 端点自己的 docstring 与本文件的 fixture docstring 也都这么写。
     assert response.status_code != 422, f"{method.upper()} {url} -> 422 {response.text}"
     assert response.status_code != 500, f"{method.upper()} {url} -> 500 {response.text}"
-    assert response.status_code < 400, f"{method.upper()} {url} -> {response.status_code} {response.text}"
+    assert response.status_code < 500, f"{method.upper()} {url} -> {response.status_code} {response.text}"
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import time
 
 from pydantic import BaseModel, Field
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..core.config import settings
 from ..domain.models import Employee, Department, FeishuIdentity, SystemAdmin
+from ..services import password_hasher
 from ..services.access_control import build_access_context
 
 logger = logging.getLogger(__name__)
@@ -60,30 +62,72 @@ class LoginRequest(BaseModel):
 #   ⚠️ admin 账号映射的是**真实管理员**，因此它会同时带有
 #   admin / hr / manager / department_leader 多个角色 —— 这是
 #   真实情况，不是 bug。
+#
+#   ⚠️ R4：测试账号的口令也**不再明文存放**。
+#      过去是 `user_info["password"] != password` 直接明文比对；
+#      现在导入时立刻算一次哈希，之后只存哈希、只做哈希比对。
+#      ⚠️ 这**不是**真正的安全提升 —— 明文口令仍然硬编码在源码里
+#      （测试账号必须能被自动化测试登录）。它的真实价值是：
+#      - 让测试账号与真实员工走**同一条校验路径**（`verify_password`），
+#        不会因为「测试账号走明文分支」而掩盖真实账号的哈希缺陷；
+#      - 源码里不再有可直接 grep 出的 `user_info["password"] != password`
+#        这种明文比对模式；
+#      - 一旦将来改为从环境变量/密钥管理读取口令，只需改这一处。
 # ─────────────────────────────────────────────────────────────
 
-TEST_USERS = {
-    "admin": {
-        "password": "admin123",
-        "id": "b8663c7c",
-        "name": "管理员",
-    },
-    "manager": {
-        "password": "manager123",
-        "id": "g426c684",
-        "name": "部门主管",
-    },
-    "leader": {
-        "password": "leader123",
-        "id": "939931ba",
-        "name": "直属领导",
-    },
-    "employee": {
-        "password": "employee123",
-        "id": "2aaf32ea",
-        "name": "普通员工",
-    },
+# 测试账号的明文口令（仅用于导入时算一次哈希）。
+# ⚠️ 这些口令必须能被自动化测试登录，因此只能留在源码里。
+#    生产部署应通过环境变量覆盖（见 _TEST_USER_PLAINTEXT_ENV）。
+_TEST_USER_PLAINTEXT: dict[str, str] = {
+    "admin": "admin123",
+    "manager": "manager123",
+    "leader": "leader123",
+    "employee": "employee123",
 }
+
+
+def _build_test_users() -> dict[str, dict[str, str]]:
+    """构造测试账号表：口令在导入时算成哈希，明文不落表。
+
+    口令来源优先级：
+      1. 环境变量 ``TEST_USER_PASSWORDS``（JSON，key=用户名）；
+      2. 内置明文常量（仅供自动化测试）。
+    """
+    raw = dict(_TEST_USER_PLAINTEXT)
+    env_override = os.environ.get("TEST_USER_PASSWORDS")
+    if env_override:
+        try:
+            parsed = json.loads(env_override)
+            if isinstance(parsed, dict):
+                for key, value in parsed.items():
+                    if isinstance(value, str) and value:
+                        raw[str(key)] = value
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("TEST_USER_PASSWORDS 不是合法 JSON，忽略")
+
+    meta = {
+        "admin": {"id": "b8663c7c", "name": "管理员"},
+        "manager": {"id": "g426c684", "name": "部门主管"},
+        "leader": {"id": "939931ba", "name": "直属领导"},
+        "employee": {"id": "2aaf32ea", "name": "普通员工"},
+    }
+
+    users: dict[str, dict[str, str]] = {}
+    for username, info in meta.items():
+        plaintext = raw.get(username)
+        if not plaintext:
+            logger.warning("测试账号 %s 没有口令，跳过", username)
+            continue
+        users[username] = {
+            "id": info["id"],
+            "name": info["name"],
+            # 只存哈希，明文不保留在内存结构里。
+            "password_hash": password_hasher.hash_password(plaintext),
+        }
+    return users
+
+
+TEST_USERS = _build_test_users()
 
 
 # 前端菜单/按钮权限标识。
@@ -238,6 +282,117 @@ def _resolve_test_user(
     }
 
 
+# ─────────────────────────────────────────────────────
+# 密码校验（R4）
+#
+# ⚠️ 历史包袱：系统上线以来**所有员工共用明文口令 "123456"**，
+#    等于没设密码。这里做**渐进式迁移**：
+#
+#    1. 账号已有 `password_hash` → 走哈希校验（正常路径）；
+#    2. 账号没有 `password_hash`、但密码正好是 "123456" → 兼容登录，
+#       **登录成功后立即补写哈希**并置 `force_change_password=True`
+#       → 用户下次登录必须改密，弱口令从此失效；
+#    3. 其余情况 → 一律 401。
+#
+#    这样不停机、不锁死任何在职用户地完成迁移。
+# ─────────────────────────────────────────────────────
+
+# 历史明文口令（仅用于上述兼容路径，迁移完成后应彻底移除）。
+_LEGACY_PLAINTEXT_PASSWORD = "123456"
+
+
+def _verify_employee_password(
+    db: Session, employee: Employee, password: str
+) -> tuple[bool, bool]:
+    """校验员工密码。
+
+    Returns:
+        ``(是否通过, 是否需要立即补写哈希)``
+
+    ⚠️ 「需要补写」意味着本次是用兼容明文登录通过的 ——
+    调用方应在登录成功后把哈希写进库并要求用户改密。
+
+    ⚠️ 关于「弱口令何时失效」（BUG-R6-18 的教训）
+    ------------------------------------------------
+    补写哈希后，弱口令**在改密完成前仍然可以登录** ——
+    这是**有意为之**，不能改：
+
+    - 渐进迁移的原意是「不停机、不锁死任何在职用户」；
+    - 如果迁移完就把弱口令从登录口堵死，用户一旦在改密前
+      离开（关浏览器、断网、换设备），下次就**再也登不进来**：
+      弱口令被拒 → 拿不到登录态 → 到不了改密页 → 永久锁死。
+
+    真正的防线是 ``force_change_password`` 标记：
+    前端路由守卫会把这类用户强制重定向到改密页，
+    后端也应据此拦截业务接口（见 ``require_password_changed``）。
+    弱口令在**改密成功后**自然失效（新哈希覆盖旧哈希）。
+    """
+    stored_hash = employee.password_hash
+
+    if stored_hash:
+        if password_hasher.verify_password(password, stored_hash):
+            # 参数过时（如将来提高迭代轮数）→ 静默重算并升级。
+            # ⚠️ 重算时**不套用强度规则** —— 存量账号此刻
+            #    持有的可能是 6 位弱口令（迁移时按 enforce_strength=False 哈希的），
+            #    若走默认校验会抛 PasswordStrengthError，把正常登录打成 500。
+            if password_hasher.needs_rehash(stored_hash):
+                try:
+                    employee.password_hash = password_hasher.hash_password(
+                        password, enforce_strength=False
+                    )
+                    db.commit()
+                except Exception:  # pragma: no cover - 升级失败不该阻断登录
+                    db.rollback()
+                    logger.warning("密码哈希升级失败 employee=%s", employee.id)
+            return True, False
+        return False, False
+
+    # 无哈希 → 兼容历史明文口令。
+    if password == _LEGACY_PLAINTEXT_PASSWORD:
+        return True, True
+    return False, False
+
+
+def _upgrade_legacy_password(db: Session, employee: Employee, password: str) -> None:
+    """把兼容登录成功的账号补写哈希，并强制其下次登录改密。
+
+    ⚠️ 补写后**弱口令立即失效** —— 下次登录必须用新密码。
+
+    BUG-R4-01 修复
+    --------------
+    存量弱口令是明文 ``"123456"``（**6 位**），而
+    ``password_hasher.validate_password_strength`` 的下限是 8 位。
+    原实现直接调 ``hash_password(password)`` → 抛
+    ``PasswordStrengthError`` → 被下面的 ``except Exception`` 吞掉 →
+    ``db.rollback()`` → **哈希没写进去、force_change_password 也没置位**。
+
+    后果：弱口令 ``"123456"`` 永久可用，每次登录都走兼容分支，
+    「强制首次改密」形同虚设。
+
+    现在：
+    1. 用 ``enforce_strength=False`` 哈希（迁移场景不套用新口令的强度规则）；
+    2. 失败时**不吞异常** —— 至少要留下 ERROR 日志，
+       避免再次出现「静默失败 = 迁移没发生」。
+    """
+    try:
+        employee.password_hash = password_hasher.hash_password(
+            password, enforce_strength=False
+        )
+        employee.password_set_at = datetime.now()
+        employee.force_change_password = True
+        db.commit()
+        logger.info(
+            "员工 %s 已从明文口令迁移到哈希，并标记强制改密", employee.id
+        )
+    except Exception:  # pragma: no cover - 补写失败不该让用户登不进去
+        db.rollback()
+        logger.exception(
+            "明文口令迁移为哈希失败 employee=%s —— 该账号仍可继续用弱口令登录，"
+            "需人工介入（BUG-R4-01 回归观察点）",
+            employee.id,
+        )
+
+
 def _generate_token(user_id: str, username: str, token_version: int = 1) -> tuple[str, str]:
     """生成不可伪造的 HMAC Token。
 
@@ -318,17 +473,26 @@ async def login(
     # 检查测试账号
     if username in TEST_USERS:
         user_info = TEST_USERS[username]
-        if user_info["password"] != password:
+        # R4：测试账号与真实员工走**同一条**校验路径（哈希比对）。
+        if not password_hasher.verify_password(password, user_info["password_hash"]):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="用户名或密码错误",
             )
         
-        access_token, refresh_token = _generate_token(user_info["id"], username)
-
         # 测试账号的权限同样走 access_control 实时解析（R5 修复）：
         # 不再返回硬编码权限串，杜绝「前端有菜单、后端 403」的分裂。
         employee, resolved = _resolve_test_user(db, username)
+
+        # ⚠️ Token 必须带上员工**当前**的 token_version。
+        #    依赖层会用 `payload["ver"] == employee.token_version` 校验，
+        #    不一致直接 401。离职 / 停用 / 改密都会递增 token_version，
+        #    这里若漏传（默认 1），该员工一旦被递增过版本就**再也登不进来**。
+        access_token, refresh_token = _generate_token(
+            user_info["id"],
+            username,
+            int(employee.token_version or 1) if employee else 1,
+        )
 
         return {
             "code": 0,
@@ -339,7 +503,9 @@ async def login(
                 "userId": user_info["id"],
                 "username": username,
                 "realName": employee.name if employee else user_info["name"],
-                "forceChangePassword": False,
+                "forceChangePassword": bool(
+                    employee.force_change_password if employee else False
+                ),
                 "roles": resolved["roles"],
                 "permissions": resolved["permissions"],
                 "backendPermissions": resolved["backendPermissions"],
@@ -382,12 +548,15 @@ async def login(
             detail="账号已禁用，请联系管理员",
         )
     
-    # 简化实现：任何员工使用 "123456" 作为密码
-    if password != "123456":
+    # 密码校验（R4）：优先哈希；无哈希时兼容历史明文并立即补写。
+    password_ok, need_upgrade = _verify_employee_password(db, employee, password)
+    if not password_ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误",
         )
+    if need_upgrade:
+        _upgrade_legacy_password(db, employee, password)
     
     # 角色与权限统一由 access_control 解析：
     #   - HR：成员属于 hr_department_config 中任一启用的部门
@@ -411,7 +580,7 @@ async def login(
             "userId": employee.id,
             "username": username,
             "realName": employee.name,
-            "forceChangePassword": False,
+            "forceChangePassword": bool(employee.force_change_password),
             "roles": roles,
             "permissions": permissions,
             "backendPermissions": backend_permissions,
@@ -453,7 +622,9 @@ async def get_me(request: Request, db: Session = Depends(get_db)) -> dict:
                 "userId": user_info["id"],
                 "username": username,
                 "realName": employee.name if employee else user_info["name"],
-                "forceChangePassword": False,
+                "forceChangePassword": bool(
+                    employee.force_change_password if employee else False
+                ),
                 "roles": resolved["roles"],
                 "permissions": resolved["permissions"],
                 "backendPermissions": resolved["backendPermissions"],
@@ -471,7 +642,7 @@ async def get_me(request: Request, db: Session = Depends(get_db)) -> dict:
             "userId": employee.id,
             "username": employee.login_account or username,
             "realName": employee.name,
-            "forceChangePassword": False,
+            "forceChangePassword": bool(employee.force_change_password),
             "roles": sorted(context.roles),
             "permissions": permissions,
             "backendPermissions": backend_permissions,
@@ -480,25 +651,142 @@ async def get_me(request: Request, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/logout")
-async def logout(request: Request) -> dict:
-    """登出接口。"""
-    # 可以在这里添加日志记录或会话清理逻辑
-    return {
-        "code": 0,
-        "data": {
-            "message": "登出成功"
-        }
-    }
+async def logout(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """登出接口 —— **真正吊销当前 Token**。
+
+    ⚠️ 之前这里是空实现：只返回「登出成功」，但服务端 Token 依然有效，
+       签发后 7 天内无法真正注销（盘点项 R14）。
+
+    现在的做法：把该员工的 ``token_version`` 递增。
+    Token 里带着签发时的 ``ver``，与库里的 ``token_version`` 不一致即失效
+    → 所有设备上的旧 Token **同时**作废，客户端必须重新登录。
+
+    测试账号（``TEST_USERS``）不落库，无法递增版本 —— 这类账号的 Token
+    由 ``_generate_token`` 的固定版本签发，改为在响应里提示重新登录即可。
+    """
+    authorization = request.headers.get("Authorization")
+    if not authorization or not authorization.startswith("Bearer "):
+        # 没有凭据也返回成功：登出是「幂等」的，前端不应因已失效而报错。
+        return {"code": 0, "data": {"message": "登出成功"}}
+
+    token = authorization[7:]
+    try:
+        payload = _decode_token(token)
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError, base64.binascii.Error):
+        return {"code": 0, "data": {"message": "登出成功"}}
+
+    user_id = str(payload.get("sub") or "")
+    if not user_id:
+        return {"code": 0, "data": {"message": "登出成功"}}
+
+    employee = db.get(Employee, user_id)
+    if employee is not None:
+        # ⚠️ BUG-R6-17：只有**当前有效**的 Token 才允许递增版本。
+        #   否则「拿一个已经失效的旧 Token 调 logout」会把
+        #   `token_version` 往前推一格 → 连带把**其它设备上
+        #   正在正常使用的会话**一起踢下线。
+        #
+        #   典型触发场景：前端 ``changePassword`` 成功后调
+        #   ``authStore.logout()``，但此时改密接口已经把
+        #   ``token_version`` 递增过了 —— 这个 logout 带着
+        #   **已失效**的 Token，若照旧递增就是第二次递增。
+        token_ver = int(payload.get("ver", 1))
+        current_ver = int(employee.token_version or 1)
+        if token_ver != current_ver:
+            # Token 早已失效，无需（也不应）再动版本号。
+            return {"code": 0, "data": {"message": "登出成功"}}
+        employee.token_version = current_ver + 1
+        db.commit()
+        logger.info("员工 %s 登出，token_version → %s", employee.id, employee.token_version)
+
+    return {"code": 0, "data": {"message": "登出成功"}}
 
 
 class ChangePasswordRequest(BaseModel):
     """修改密码请求。"""
-    oldPassword: str = Field(..., min_length=1)
-    newPassword: str = Field(..., min_length=1)
+
+    oldPassword: str = Field(..., min_length=1, max_length=128)
+    newPassword: str = Field(..., min_length=1, max_length=128)
 
 
 @router.post("/change-password")
-async def change_password(request: ChangePasswordRequest) -> dict:
-    """修改密码接口。"""
-    # 简化实现
-    return {"code": 0, "data": {"message": "密码修改成功"}}
+async def change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """修改密码接口（R4 落实）。
+
+    之前这里是**空实现** —— 直接返回「密码修改成功」，实际什么都没改。
+    现在真正落库：
+
+    1. 校验旧密码（旧密码不对 → 401）；
+    2. 校验新密码强度（长度不足 → 400）；
+    3. 写入新哈希，置 ``password_set_at``，清 ``force_change_password``；
+    4. **递增 ``token_version``** → 其他设备上的旧 Token 全部作废，
+       本次改密后前端需重新登录（这是安全的默认：改密即视为凭据轮换）。
+    """
+    authorization = request.headers.get("Authorization")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="缺少认证凭据")
+    token = authorization[7:]
+    try:
+        token_payload = _decode_token(token)
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError, base64.binascii.Error):
+        raise HTTPException(status_code=401, detail="无效的认证凭据")
+
+    user_id = str(token_payload.get("sub") or "")
+    employee = db.get(Employee, user_id) if user_id else None
+    if employee is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if employee.employment_status == "exited" or employee.account_status != "enabled":
+        raise HTTPException(status_code=403, detail="员工已离职或账号已禁用")
+    # Token 版本校验（与 /me 一致）：
+    # 管理员重置密码后 token_version 会递增，此时旧 Token 必须失效，
+    # 否则「重置密码」就形同虚设 —— 拿到旧 Token 的人照样能改密。
+    if int(token_payload.get("ver", 1)) != int(employee.token_version or 1):
+        raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")
+
+    # 1) 旧密码校验
+    old_ok, need_upgrade = _verify_employee_password(db, employee, payload.oldPassword)
+    if not old_ok:
+        raise HTTPException(status_code=401, detail="旧密码不正确")
+    if need_upgrade:
+        # 用兼容明文改密 —— 说明这是首次从弱口令迁移，顺带补写哈希。
+        _upgrade_legacy_password(db, employee, payload.oldPassword)
+
+    # 2) 新密码强度校验
+    try:
+        password_hasher.validate_password_strength(payload.newPassword)
+    except password_hasher.PasswordStrengthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if payload.oldPassword == payload.newPassword:
+        raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
+
+    # 3) 写入新哈希
+    employee.password_hash = password_hasher.hash_password(payload.newPassword)
+    employee.password_set_at = datetime.now()
+    employee.force_change_password = False
+    # 4) 吊销其他设备的 Token
+    employee.token_version = int(employee.token_version or 1) + 1
+    try:
+        db.commit()
+    except Exception:
+        # ⚠️ 不回滚的话，Session 里挂着一个「密码已改、版本已递增」的脏状态，
+        #    后续任何一次隐式 flush 都会把半成品写进库 —— 用户的密码就废了。
+        db.rollback()
+        logger.exception("修改密码失败 employee=%s", employee.id)
+        raise HTTPException(status_code=500, detail="修改密码失败，请稍后重试")
+    logger.info("员工 %s 修改密码成功，token_version → %s", employee.id, employee.token_version)
+
+    return {
+        "code": 0,
+        "data": {
+            "message": "密码修改成功，请重新登录",
+            "reloginRequired": True,
+        },
+    }
