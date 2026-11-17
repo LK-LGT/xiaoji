@@ -376,6 +376,22 @@ class FeishuClient:
                 retryable=True,
                 status_code=resp.status_code,
             )
+        # ── TEMP DIAGNOSTIC (2026-11-17) ─────────────────────────────
+        # 定位 502：只打印**字段名**与**非敏感标识**，不打印 token 值。
+        try:
+            _dbg = resp.json()
+            logger.warning(
+                "[DIAG] token 响应字段=%s open_id=%r union_id=%r user_id=%r code=%r msg=%r",
+                sorted(_dbg.keys()),
+                _dbg.get("open_id"),
+                _dbg.get("union_id"),
+                _dbg.get("user_id"),
+                _dbg.get("code"),
+                _dbg.get("msg"),
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("[DIAG] token 响应非 JSON")
+        # ── END TEMP DIAGNOSTIC ──────────────────────────────────────
         try:
             resp.raise_for_status()
         except httpx.HTTPError:
@@ -424,7 +440,7 @@ class FeishuClient:
         return detail or f"飞书用户 Token 换取失败（HTTP {resp.status_code}）"
 
     def get_user_info(self, user_access_token: str, user_id: str) -> dict[str, Any]:
-        """用 ``user_access_token`` 查询指定用户信息。
+        """用 ``user_access_token`` 查询**通讯录里指定用户**的信息。
 
         ⚠️⚠️ **必须带 ``user_id_type=user_id``**（2026-11-17 实测发现，F1）。
 
@@ -437,6 +453,9 @@ class FeishuClient:
         已固化在 ``check_feishu_scopes.py`` 的探测项里做回归保护。
 
         返回值含 ``open_id`` / ``union_id`` / ``user_id`` / ``name`` 等。
+
+        ⚠️ **这个接口不适合「免登」场景** —— 它要求先知道 ``user_id``，
+        而免登时我们只有 token（见 ``get_login_user_info``）。
         """
         if not user_access_token:
             raise FeishuTokenError("缺少 user_access_token")
@@ -447,6 +466,38 @@ class FeishuClient:
             "GET",
             f"/contact/v3/users/{user_id}",
             params={"user_id_type": "user_id"},
+            token=user_access_token,
+        )
+
+    def get_login_user_info(self, user_access_token: str) -> dict[str, Any]:
+        """用 ``user_access_token`` 查询**当前登录用户**的信息。
+
+        ⚠️⚠️ **免登必须用这个接口**（2026-11-17 实测发现，F2）。
+
+        官方「获取用户信息」接口：
+
+            GET https://open.feishu.cn/open-apis/authen/v1/user_info
+            Authorization: Bearer <user_access_token>
+
+        **不需要传 user_id** —— 它直接返回**当前登录用户**的身份，
+        这正是免登场景的语义（我们手上的 token 就代表「这个人」）。
+
+        返回含 ``open_id`` / ``union_id`` / ``name`` / ``tenant_key``；
+        ⚠️ ``user_id`` **可能不返回** —— 它需要额外的
+        「获取用户 user ID」权限（仅自建应用）。所以**不能依赖它**。
+
+        ⚠️ **为什么不能用** ``get_user_info()``（通讯录接口）：
+        那个接口路径里必须有 ``user_id``，而 OAuth 令牌响应里
+        **不含** ``user_id``（官方文档的响应字段只有
+        ``access_token`` / ``refresh_token`` / ``expires_in`` / ``scope`` …）
+        ⇒ 之前用它必然抛「缺少 user_id」，**免登永远走不到最后一步**。
+        """
+        if not user_access_token:
+            raise FeishuTokenError("缺少 user_access_token")
+
+        return self._request_with_token(
+            "GET",
+            "/authen/v1/user_info",
             token=user_access_token,
         )
 

@@ -324,21 +324,29 @@ class FeishuOAuthService:
 
         # ⚠️ user_access_token 从此往下只在**局部变量**中存在，
         #    函数返回后即随作用域释放。绝不写入日志、响应体或数据库。
+        #
+        # ⚠️⚠️ **必须用 ``get_login_user_info``**（2026-11-17 实测发现，F2）。
+        #    之前用的是通讯录接口 ``get_user_info(token, user_id)`` ——
+        #    那个接口路径里必须有 user_id，而 OAuth 令牌响应**不含 user_id**
+        #    （官方响应字段：access_token / refresh_token / expires_in / scope …）
+        #    ⇒ 必然抛「缺少 user_id」，**免登永远走不到最后一步**。
+        #
+        #    官方给登录用户准备的接口是 ``/authen/v1/user_info`` ——
+        #    不需要 user_id，直接返回当前登录用户的身份。
         try:
-            info = self.client.get_user_info(
-                user_access_token, str(token_data.get("user_id") or "")
-            )
+            info = self.client.get_login_user_info(user_access_token)
         except FeishuError as exc:
             raise FeishuOAuthError(
                 f"飞书用户信息获取失败：{exc.message}", code="user_info_failed"
             ) from exc
 
-        # ⚠️ 飞书「查询用户信息」接口的响应结构是：
-        #      {"code":0, "data": {"user": {"open_id":..., "user_id":...}}}
+        # ⚠️ 「获取用户信息」接口的响应结构是：
+        #      {"code":0, "data": {"open_id":..., "union_id":..., "name":...}}
         #    而 ``_request_with_token`` 已经剥掉了外层 ``data``，
-        #    所以这里拿到的是 ``{"user": {...}}`` —— open_id 在**再一层**。
+        #    所以这里拿到的是扁平的用户信息字典。
         #
-        #    写成兼容两种形状，是因为某些响应（及录制数据）会直接摊平。
+        #    ⚠️ 某些响应（或录制数据）会多包一层 ``user`` ——
+        #    兼容两种形状，避免响应结构变动直接打挂免登。
         user_info = info.get("user") if isinstance(info.get("user"), dict) else info
 
         open_id = str(user_info.get("open_id") or "")
@@ -346,6 +354,8 @@ class FeishuOAuthService:
             raise FeishuOAuthError("飞书未返回 open_id", code="no_open_id")
 
         union_id = user_info.get("union_id")
+        # ⚠️ user_id 是**可选字段** —— 需要额外的「获取用户 user ID」权限才会返回。
+        #    没有它不影响免登（open_id 才是主键）；留着是为了多一路身份解析兜底。
         user_id = user_info.get("user_id") or token_data.get("user_id")
 
         # ⚠️ 身份解析交给 resolve_employee —— 它只认**在职且启用**的员工。

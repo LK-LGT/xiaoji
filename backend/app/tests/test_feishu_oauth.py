@@ -58,13 +58,14 @@ USER_INFO_RESP = {
     "status_code": 200,
     "json": {
         "code": 0,
+        # ⚠️ 官方「获取用户信息」接口的 data 是**扁平**的用户信息，
+        #    没有多包一层 "user"。
+        #    见 GET /open-apis/authen/v1/user_info
         "data": {
-            "user": {
-                "user_id": TEST_USER_ID,
-                "open_id": TEST_OPEN_ID,
-                "union_id": TEST_UNION_ID,
-                "name": "测试员工",
-            }
+            "user_id": TEST_USER_ID,
+            "open_id": TEST_OPEN_ID,
+            "union_id": TEST_UNION_ID,
+            "name": "测试员工",
         },
     },
 }
@@ -238,7 +239,7 @@ def test_exchange_code_success(db_session, identity):
     recordings = {
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
         "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
-        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+        "GET /authen/v1/user_info": [USER_INFO_RESP],
     }
     client = make_client(recordings)
     service = FeishuOAuthService(client, db_session)
@@ -251,16 +252,26 @@ def test_exchange_code_success(db_session, identity):
     assert result.real_name == "测试员工"
 
 
-def test_exchange_sends_user_id_type_param(db_session, identity):
-    """⚠️ F1 回归：必须带 ``user_id_type=user_id``。
+def test_exchange_uses_login_user_info_endpoint_not_contact_lookup(db_session, identity):
+    """⚠️⚠️ **F2 回归**：免登必须用「获取用户信息」接口，**不能**用通讯录接口。
 
-    漏掉它飞书会按 open_id 解析 → 99992351「not a valid {open_id}」，
-    免登查不到人。这个错误信息完全不指向「少传参数」，极易排查半天。
+    官方给登录用户准备的接口：
+
+        GET /open-apis/authen/v1/user_info
+        Authorization: Bearer <user_access_token>
+
+    **不需要 user_id** —— 直接返回当前登录用户的身份。
+
+    ⚠️ 之前用的是通讯录接口 ``/contact/v3/users/{user_id}``，
+    那个接口路径里必须有 user_id，而 OAuth 令牌响应**不含 user_id**
+    ⇒ 必然抛「缺少 user_id」，**免登永远走不到最后一步**（2026-11-17 真机实测）。
+
+    ⚠️ 同时确保不再带 ``user_id_type`` —— 那是通讯录接口的参数，
+    登录用户接口不需要（带上也无意义）。
     """
     recordings = {
-        "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
         "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
-        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+        "GET /authen/v1/user_info": [USER_INFO_RESP],
     }
     client = make_client(recordings)
     transport = client._http_client._transport  # type: ignore[union-attr]
@@ -270,11 +281,46 @@ def test_exchange_sends_user_id_type_param(db_session, identity):
     service.exchange_code_for_employee("valid-code", state)
 
     user_calls = [
-        req for req in transport.calls if "/contact/v3/users" in req.url.path  # type: ignore[union-attr]
+        req for req in transport.calls if "/authen/v1/user_info" in req.url.path  # type: ignore[union-attr]
     ]
-    assert user_calls, "应发出查询用户信息的请求"
-    params = dict(user_calls[0].url.params)
-    assert params.get("user_id_type") == "user_id"
+    assert user_calls, "应调用「获取用户信息」接口"
+    assert not [
+        req for req in transport.calls if "/contact/v3/users" in req.url.path  # type: ignore[union-attr]
+    ], "免登不应调用通讯录接口 —— 它要求先知道 user_id"
+
+
+def test_exchange_works_without_user_id_in_token_response(db_session, identity):
+    """⚠️⚠️ **F2 回归**：令牌响应里**没有** user_id 也必须能完成免登。
+
+    OAuth 令牌响应的官方字段只有：
+    ``access_token`` / ``refresh_token`` / ``expires_in`` / ``scope`` / ``token_type``
+    —— **没有 user_id**。
+
+    ⇒ 身份解析**必须**依赖 ``/authen/v1/user_info`` 返回的 ``open_id``，
+    不能依赖令牌响应里的 user_id。
+    """
+    token_resp = {
+        "status_code": 200,
+        "json": {
+            "code": 0,
+            "access_token": "user-token-xxx",
+            "expires_in": 7200,
+            "token_type": "Bearer",
+            # ⚠️ 故意**不给** user_id
+        },
+    }
+    recordings = {
+        "POST /authen/v2/oauth/token": [token_resp],
+        "GET /authen/v1/user_info": [USER_INFO_RESP],
+    }
+    client = make_client(recordings)
+    service = FeishuOAuthService(client, db_session)
+
+    state = service.issue_state(TEST_REDIRECT)
+    result = service.exchange_code_for_employee("valid-code", state)
+
+    assert result.employee_id == "emp_test_001"
+    assert result.open_id == TEST_OPEN_ID
 
 
 def test_exchange_uses_user_token_not_tenant_token(db_session, identity):
@@ -282,7 +328,7 @@ def test_exchange_uses_user_token_not_tenant_token(db_session, identity):
     recordings = {
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
         "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
-        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+        "GET /authen/v1/user_info": [USER_INFO_RESP],
         "POST /auth/v3/tenant_access_token/internal": [
             {"status_code": 200, "json": {"code": 0, "tenant_access_token": "tenant-yyy", "expire": 7200}}
         ],
@@ -295,7 +341,7 @@ def test_exchange_uses_user_token_not_tenant_token(db_session, identity):
     service.exchange_code_for_employee("valid-code", state)
 
     user_call = next(
-        req for req in transport.calls if "/contact/v3/users" in req.url.path  # type: ignore[union-attr]
+        req for req in transport.calls if "/authen/v1/user_info" in req.url.path  # type: ignore[union-attr]
     )
     auth = user_call.headers.get("Authorization")
     assert auth == "Bearer user-token-xxx", "查询用户信息必须用用户态 token"
@@ -333,7 +379,7 @@ def test_inactive_employee_cannot_login(
     recordings = {
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
         "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
-        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+        "GET /authen/v1/user_info": [USER_INFO_RESP],
     }
     client = make_client(recordings)
     service = FeishuOAuthService(client, db_session)
@@ -358,7 +404,7 @@ def test_unbound_open_id_rejected(db_session):
     recordings = {
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
         "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
-        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+        "GET /authen/v1/user_info": [USER_INFO_RESP],
     }
     client = make_client(recordings)
     service = FeishuOAuthService(client, db_session)
@@ -395,13 +441,16 @@ def test_user_and_tenant_tokens_do_not_contaminate(db_session):
         "status_code": 200,
         "json": {
             "code": 0,
-            "data": {"user": {"open_id": TEST_OPEN_ID, "user_id": TEST_USER_ID}},
+            "data": {"open_id": TEST_OPEN_ID, "user_id": TEST_USER_ID},
         },
     }
 
     transport = MockTransport(
         {
             "POST /auth/v3/tenant_access_token/internal": [tenant_resp] * 25,
+            "GET /authen/v1/user_info": [user_resp] * 25,
+            # ⚠️ 这条是**客户端层**的隔离测试 —— 它要验证「显式传 token 的调用」
+            #    不会被租户态 token 污染，所以两个端点都要覆盖。
             f"GET /contact/v3/users/{TEST_USER_ID}": [user_resp] * 25,
             "GET /contact/v3/departments/0/children": [
                 {"status_code": 200, "json": {"code": 0, "data": {"items": []}}}
@@ -455,7 +504,7 @@ def test_tenant_token_not_overwritten_by_user_flow(db_session, identity):
         "POST /auth/v3/tenant_access_token/internal": [tenant_resp] * 5,
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP] * 5,
         "POST /authen/v2/oauth/token": [USER_TOKEN_RESP] * 5,
-        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP] * 5,
+        "GET /authen/v1/user_info": [USER_INFO_RESP] * 5,
     }
     client = make_client(recordings)
     service = FeishuOAuthService(client, db_session)
@@ -484,7 +533,7 @@ def test_feishu_token_never_leaks_to_response(db_session, identity, monkeypatch)
     recordings = {
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
         "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
-        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+        "GET /authen/v1/user_info": [USER_INFO_RESP],
     }
 
     # ⚠️ 用 ``app.dependency_overrides`` 注入 mock client ——
@@ -717,7 +766,7 @@ def test_oauth_service_passes_redirect_uri_to_token_exchange(db_session, identit
     """
     recordings = {
         "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
-        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+        "GET /authen/v1/user_info": [USER_INFO_RESP],
     }
     client = make_client(recordings)
     transport = client._http_client._transport  # type: ignore[union-attr]
