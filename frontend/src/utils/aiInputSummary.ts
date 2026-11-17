@@ -8,6 +8,8 @@ export interface AiInputOverview {
   relatedWeekItemCount: number
 }
 
+import { periodMonthKey } from './period.ts'
+
 export interface AiParentOptionView {
   id: string
   taskName: string
@@ -261,9 +263,11 @@ export function parseAiInputSummary(value: unknown): AiInputSummaryView {
 
   const items = currentItems(context)
   const related = relatedWeekItems(context)
-  const targetMonth = stringValue(context.weekStart, '').slice(0, 7)
-    || stringValue(context.planMonth, '')
-    || stringValue(context.planDate, '').slice(0, 7)
+  // ⚠️ **BUG-R6-26**：统一走 `periodMonthKey`（不再手写 `slice(0, 7)`）。
+  //    三种来源格式可能各不相同（紧凑 / 带横杠 / 日期），periodMonthKey 都能吃。
+  const targetMonth = periodMonthKey(stringValue(context.weekStart, ''))
+    || periodMonthKey(stringValue(context.planMonth, ''))
+    || periodMonthKey(stringValue(context.planDate, ''))
   const parents = parentGroups(context, targetMonth)
   const knowledge = knowledgeItems(context)
   const memory = conversationMemory(context)

@@ -99,6 +99,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { getWeekResultSubmitOptionsApi, submitWeekResultApi, type WeekResultRecord, type WeekResultSubmitOption } from '@/api/weekResult'
 import { groupRowsByMonth, paginateMonthGroups } from '@/utils/monthGroups'
 import { buildFileAcceptAttribute, fileExtension as fileExtensionUtil, isAcceptedFile } from '@/utils/fileUpload'
+import { periodMonthKey } from '@/utils/period'
 
 const monthPageSize = 10
 
@@ -139,7 +140,8 @@ const uploadAccept = computed(() => buildFileAcceptAttribute(options.acceptedFil
 const rows = computed<WeekResultRow[]>(() => options.plans.map((plan) => ({
   ...plan,
   key: `${plan.weekPlanId}-${plan.task.id}`,
-  planMonth: plan.weekStart.slice(0, 7),
+  // ⚠️ **BUG-R6-26**：统一走 `periodMonthKey`（不再手写 `slice(0, 7)`）。
+  planMonth: periodMonthKey(plan.weekStart),
   content: plan.task.content,
   status: plan.latestResult?.status || 'NOT_SUBMITTED',
 })))

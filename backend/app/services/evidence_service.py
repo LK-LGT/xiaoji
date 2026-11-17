@@ -26,6 +26,7 @@ from ..domain.enums import (
     Visibility,
 )
 from ..domain.models import Evidence, MetricValue
+from .period import normalize_period
 
 logger = logging.getLogger(__name__)
 
@@ -132,17 +133,40 @@ def add_metric_value(
     """写入指标实测值 —— **算分集的唯一入口**。
 
     考勤来源一律拒绝：考勤只作参考证据，永不参与算分（决策②）。
+
+    ⚠️ **BUG-R6-26：周期格式在这里归一化**（紧凑 `YYYYMM`）。
+
+    过去这个函数**原样透传** ``period``，于是同一个字段被两种格式写入：
+
+    - ``plan_execution_metric`` 走 ``resolve_period`` → ``YYYY-MM``（``2026-11``）
+    - ``main.py`` 的 API 走客户端入参 → 常常是 ``YYYYMM``（``202611``）
+
+    结果 ``metric_value.period`` 里**两种格式混存**，
+    算分时 ``MetricValue.period == period`` 比对不上 → 指标"查无此项"。
+
+    历史上靠 ``review_service._build_metric_context``「两种格式都查一遍」
+    兜住了 —— 那是**补丁**，不是修复：新写入的行仍然可能落成另一种格式，
+    跨表比对、唯一性约束、报表聚合都会继续分叉。
+
+    现在：**唯一写入入口统一归一化**，库里只会有一种格式。
+    （``AssessmentTask.period`` 已经是紧凑格式 —— 见 ``routes/v1/assessment_config.py``
+    的 ``_normalize_period`` —— 两边口径一致。）
     """
     if source in ATTENDANCE_SOURCES:
         raise AttendanceEvidenceRejected(
             f"考勤数据（{source}）不得进入算分集，请使用 record_attendance_anomalies"
         )
 
+    # ⚠️ 归一化到紧凑 `YYYYMM`（唯一权威格式）。
+    #   无法解析时**原样保留** —— 不能因为格式怪就把写入整个拒掉
+    #   （历史上有 ``period=""`` 的调用，见 main.py 的 ADD_METRIC_VALUE 端点）。
+    normalized_period = normalize_period(period) or str(period or "")
+
     existing = db.execute(
         select(MetricValue).where(
             MetricValue.employee_id == employee_id,
             MetricValue.metric_code == metric_code,
-            MetricValue.period == period,
+            MetricValue.period == normalized_period,
         )
     ).scalar_one_or_none()
 
@@ -159,7 +183,7 @@ def add_metric_value(
     mv = MetricValue(
         employee_id=employee_id,
         metric_code=metric_code,
-        period=period,
+        period=normalized_period,
         value=value,
         target=target,
         unit=unit,

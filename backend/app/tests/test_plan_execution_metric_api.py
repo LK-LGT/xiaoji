@@ -386,7 +386,7 @@ def test_metric_value_written_with_correct_fields(db, org):
     mv = rows[0]
     assert mv.employee_id == "E_A"
     assert mv.metric_code == pem.PLAN_EXECUTION_RATE_CODE
-    assert mv.period == "2026-11"
+    assert mv.period == "202611"  # BUG-R6-26：指标实测值周期统一为紧凑 `YYYYMM`
     assert mv.value == pytest.approx(75.0)
     assert mv.target == pytest.approx(100.0)
     assert mv.unit == "%"
@@ -456,7 +456,7 @@ def test_approval_refreshes_execution_rate(db, org):
     rows = _metric_values(db)
     assert len(rows) == 1
     assert rows[0].value == pytest.approx(88.0)
-    assert rows[0].period == "2026-11"
+    assert rows[0].period == "202611"  # BUG-R6-26：紧凑 `YYYYMM`
 
 
 def test_approval_does_not_write_metric_for_rejected(db, org):

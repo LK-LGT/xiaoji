@@ -1,7 +1,7 @@
 <template>
   <section class="page-panel">
     <div v-if="detail" class="page-header">
-      <div><div class="eyebrow">DISPUTE WORKSPACE / C02</div><h1 class="page-title">{{ detail.summary.caseNo }}</h1><p class="page-subtitle">{{ detail.summary.employeeName }} · {{ detail.summary.disputeSubject }} · {{ detail.summary.periodStart?.slice(0, 7) }}</p></div>
+      <div><div class="eyebrow">DISPUTE WORKSPACE / C02</div><h1 class="page-title">{{ detail.summary.caseNo }}</h1><p class="page-subtitle">{{ detail.summary.employeeName }} · {{ detail.summary.disputeSubject }} · {{ formatPeriodShort(detail.summary.periodStart) }}</p></div>
       <div class="toolbar"><el-button @click="backToCases">返回案件</el-button><el-button @click="load">刷新</el-button></div>
     </div>
     <el-skeleton v-if="loading" :rows="8" animated />
@@ -84,6 +84,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { downloadDisputePackageApi, getDisputeDetailApi, recuseDisputeApi, saveDisputeOpinionApi, submitDisputeDecisionApi, type DisputeDetail, type DisputeOpinion } from '@/api/dispute'
 import { useSmartBack } from '@/composables/useSmartBack'
+import { formatPeriodShort } from '@/utils/period'
 const route = useRoute(); const router = useRouter(); const id = Number(route.params.id)
 const { goBack } = useSmartBack('/dispute/cases')
 const loading = ref(false); const saving = ref(false); const deciding = ref(false); const detail = ref<DisputeDetail>()

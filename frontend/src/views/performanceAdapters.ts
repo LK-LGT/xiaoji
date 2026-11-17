@@ -13,6 +13,7 @@ import type {
   ResultConfirmItem,
   TodoItem,
 } from '@/api/department'
+import { formatPeriodShort } from '@/utils/period'
 
 export const reviewStatusCodes: Record<string, string> = {
   '未点评': 'PENDING_COMMENT',
@@ -437,7 +438,8 @@ export function appealText(status: string) {
 function periodText(item: LedgerItem) {
   if (item.periodType === 'ALL') return '全部'
   if (!item.periodStart || !item.periodEnd) return '--'
-  if (item.periodType === 'MONTH') return item.periodStart.slice(0, 7)
+  // ⚠️ **BUG-R6-26**：统一走 `formatPeriodShort`（不再手写 `slice(0, 7)`）。
+  if (item.periodType === 'MONTH') return formatPeriodShort(item.periodStart, '--')
   return `${item.periodStart} ~ ${item.periodEnd}`
 }
 

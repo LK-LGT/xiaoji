@@ -243,6 +243,7 @@ import PlanAiReviewCell from '@/components/PlanAiReviewCell.vue'
 import PlanAiReviewDrawer from '@/components/PlanAiReviewDrawer.vue'
 import { notifyAiReviewResult } from '@/utils/aiReviewFeedback'
 import { normalizeMonthPlanPeriods } from '@/utils/monthPlanPeriod'
+import { periodMonthKey } from '@/utils/period'
 import { listMonthPlansApi } from '@/api/planning'
 import {
   MONTH_PLAN_CONTEXT_TYPES,
@@ -463,7 +464,8 @@ function readInitialTaskViewMode(): TaskViewMode {
 function defaultEstimatedStartDate() {
   if (!form.planMonth) return ''
   const today = formatDate(new Date())
-  return form.planMonth === today.slice(0, 7) ? today : `${form.planMonth}-01`
+  // ⚠️ **BUG-R6-26**：统一走 `periodMonthKey`（不再手写 `slice(0, 7)`）。
+  return form.planMonth === periodMonthKey(today) ? today : `${form.planMonth}-01`
 }
 
 function defaultEstimatedEndDate() {

@@ -48,7 +48,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -68,6 +68,7 @@ from ..domain.result_models import (
     RESULT_STATUS_CONFIRMED,
     Result,
 )
+from .period import period_match_keys, to_dashed_period
 
 logger = logging.getLogger(__name__)
 
@@ -199,13 +200,18 @@ def _latest_confirmed_results(
     ``week_plan.week_start`` 所在月归属（**D6 决策：按周起始月**）。
     """
     # ── 月成果 ──
+    # ⚠️ **BUG-R6-26**：``month_plan.plan_month`` 库里存 ``YYYY-MM``，
+    #    而本函数的 ``period`` 是紧凑 ``YYYYMM`` —— 直接 ``==`` 会恒为 False，
+    #    静默查出 0 条成果（不报错，只是结果凭空消失）。
+    #    所以这里用 ``period_match_keys`` 给出两种写法一起比。
+    month_keys = period_match_keys(period)
     month_stmt = (
         select(Result)
         .join(MonthPlan, Result.plan_id == MonthPlan.id)
         .where(
             Result.owner_id == employee_id,
             Result.plan_type == RESULT_PLAN_TYPE_MONTH,
-            MonthPlan.plan_month == period,
+            MonthPlan.plan_month.in_(month_keys),
         )
     )
     # ── 周成果 ──
@@ -219,7 +225,9 @@ def _latest_confirmed_results(
     )
     week_rows = list(db.execute(week_stmt).scalars().all())
     # 周成果要按「周起始月」过滤，不能直接下推到 SQL（week_start 是日期）
-    period_prefix = f"{period[:4]}-{period[5:7]}" if len(period) >= 7 else period
+    # ⚠️ 同上：``_week_start_month`` 返回 ``YYYY-MM``，
+    #    这里必须跟同一口径比（不能拿 ``YYYYMM`` 去比 ``YYYY-MM``）。
+    period_prefix = to_dashed_period(period) or period
     week_rows = [
         r
         for r in week_rows
@@ -271,16 +279,21 @@ def _item_weight(db: Session, result: Result) -> float:
 def _expected_item_count(db: Session, employee_id: str, period: str) -> int:
     """该周期内该员工的应提交条目数（月 + 周）。
 
-    「应提交」的判定：月计划条目（归属 ``plan_month == period``）
-    + 周计划条目（归属 ``week_start`` 所在月 == period）。
+    「应提交」的判定：月计划条目（归属 ``plan_month``）
+    + 周计划条目（归属 ``week_start`` 所在月）。
+
+    ⚠️ **BUG-R6-26**：``plan_month`` 库里是 ``YYYY-MM``，
+    ``period`` 是紧凑 ``YYYYMM`` —— 必须两种写法都比。
     """
+    month_keys = period_match_keys(period)
     month_items = db.execute(
         select(MonthPlanItem.id)
         .join(MonthPlan, MonthPlanItem.plan_id == MonthPlan.id)
-        .where(MonthPlan.owner_id == employee_id, MonthPlan.plan_month == period)
+        .where(MonthPlan.owner_id == employee_id, MonthPlan.plan_month.in_(month_keys))
     ).scalars().all()
 
     week_items = 0
+    period_prefix = to_dashed_period(period) or period
     week_plans = db.execute(
         select(WeekPlan.id, WeekPlan.week_start).where(
             WeekPlan.owner_id == employee_id,
@@ -289,7 +302,7 @@ def _expected_item_count(db: Session, employee_id: str, period: str) -> int:
     for plan_id, week_start in week_plans:
         if week_start is None:
             continue
-        if f"{week_start.year:04d}-{week_start.month:02d}" != period:
+        if f"{week_start.year:04d}-{week_start.month:02d}" != period_prefix:
             continue
         count = db.execute(
             select(func.count(WeekPlanItem.id)).where(WeekPlanItem.plan_id == plan_id)
@@ -575,13 +588,17 @@ def _period_result_counts(
 
     ids = list(employee_ids)
 
+    # ⚠️ **BUG-R6-26**：两种格式都要比（见 ``_latest_confirmed_results`` 的说明）。
+    month_keys = period_match_keys(period)
+    period_prefix = to_dashed_period(period) or period
+
     month_stmt = (
         select(Result.status, Result.id)
         .join(MonthPlan, Result.plan_id == MonthPlan.id)
         .where(
             Result.owner_id.in_(ids),
             Result.plan_type == RESULT_PLAN_TYPE_MONTH,
-            MonthPlan.plan_month == period,
+            MonthPlan.plan_month.in_(month_keys),
         )
     )
     month_rows = db.execute(month_stmt).all()
@@ -597,7 +614,7 @@ def _period_result_counts(
     week_rows = [
         r
         for r in db.execute(week_stmt).all()
-        if _week_start_month(db, r.plan_id) == period
+        if _week_start_month(db, r.plan_id) == period_prefix
     ]
 
     counts = {"total": 0, "confirmed": 0, "rejected": 0, "submitted": 0}
@@ -635,11 +652,19 @@ def build_planning_stats(
     Args:
         db: 数据库会话。
         context: 访问上下文（``access_control.build_access_context`` 的结果）。
-        period: 统计周期 ``YYYY-MM``；缺省取当前月。
-    """
-    from . import planning as planning_service
+        period: 统计周期；缺省取当前月。支持 ``YYYY-MM`` / ``YYYYMM`` 两种入参。
 
-    period_text = planning_service.normalize_month(period)
+    ⚠️ **BUG-R6-26**：统计口径内部用**紧凑 ``YYYYMM``**（权威格式）。
+    对外返回的 ``period`` 字段同样用紧凑格式 —— 前端有统一的格式化函数，
+    不需要后端再分叉出一种写法。
+    """
+    from .period import normalize_period
+
+    if period:
+        period_text = normalize_period(period) or ""
+    else:
+        today = date.today()
+        period_text = f"{today.year:04d}{today.month:02d}"
     employee_ids = resolve_scope_employee_ids(db, context)
 
     pending = _pending_day_plan_count(db, employee_ids)

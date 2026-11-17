@@ -7,6 +7,7 @@
  * - 周期格式：后端紧凑格式 `202611` 与带横杠格式 `2026-11` 等价。
  */
 import { http } from './http'
+import { toDashedPeriod as toDashedPeriodUtil } from '@/utils/period'
 
 /** 六类异常（与后端 `AttendanceAnomalyType` 一一对应）。 */
 export type AttendanceAnomalyType =
@@ -152,13 +153,13 @@ export interface VisiblePeriod {
 /**
  * 紧凑周期 `202611` → 带横杠 `2026-11`。
  * 后端两种格式都接受，这里统一输出带横杠用于展示和日期区间计算。
+ *
+ * ⚠️ **BUG-R6-26**：实现已收敛到 `@/utils/period`（唯一权威实现），
+ * 这里只保留一个薄封装，避免前端出现两套周期换算逻辑。
  */
 export function toDashedPeriod(period: string | null | undefined): string | null {
-  if (!period) return null
-  const text = period.trim()
-  if (/^\d{4}-\d{2}$/.test(text)) return text
-  if (/^\d{6}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4)}`
-  return null
+  const dashed = toDashedPeriodUtil(period)
+  return dashed || null
 }
 
 /**

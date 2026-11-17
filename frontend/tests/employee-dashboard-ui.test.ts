@@ -31,7 +31,8 @@ test('employee workbench keeps the calendar focused and removes duplicate detail
   assert.doesNotMatch(view, /workbench-month-card/)
   assert.doesNotMatch(view, />今日待办</)
   assert.doesNotMatch(view, /danger-entry/)
-  assert.match(view, /const selectedMonth = day\.slice\(0, 7\)/)
+  // BUG-R6-26：日历选月不再手写 `day.slice(0, 7)`，统一走 `periodMonthKey`。
+  assert.match(view, /const selectedMonth = periodMonthKey\(day\)/)
   assert.match(view, /currentMonth\.value = selectedMonth/)
 })
 

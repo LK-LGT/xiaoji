@@ -124,6 +124,7 @@ import {
 } from '@/api/employee'
 import { saveBlob } from '@/utils/download'
 import { formatMonthPlanPeriod, formatMonthPlanStandard } from '@/utils/monthPlanPeriod'
+import { formatPeriodLabel } from '@/utils/period'
 import {
   buildMonthResultArchives,
   monthArchiveStatusMeta,
@@ -188,7 +189,8 @@ const versions = computed(() => {
 
 function taskState(task: MonthResultArchiveTask): TaskDetailState { return taskDetails.get(task.id) || { state: 'idle', detail: null, error: '' } }
 function taskStatusMeta(task: MonthResultArchiveTask) { return ({ REJECTED: { label: '已退回', type: 'danger' as const }, SUBMITTED: { label: '审批中', type: 'primary' as const }, CONFIRMED: { label: '已确认', type: 'success' as const }, NOT_SUBMITTED: { label: '未提交', type: 'info' as const } })[task.status] }
-function monthText(value: string) { const [year, month] = value.split('-'); return year && month ? `${year}年${Number(month)}月` : value }
+// ⚠️ **BUG-R6-26**：统一走 `formatPeriodLabel`（唯一权威实现）。
+function monthText(value: string) { return formatPeriodLabel(value, value) }
 function dateTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 16) : '--' }
 function numberText(value?: number) { return Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 }) }
 function moneyText(value?: number) { return Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }

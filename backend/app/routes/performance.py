@@ -27,6 +27,7 @@ from ..domain.models import (
 )
 from ..services import config_service, review_service
 from ..services.access_control import build_access_context
+from ..services.period import normalize_period
 
 logger = logging.getLogger(__name__)
 
@@ -400,7 +401,11 @@ def list_performance_tasks(
     if status:
         query = query.filter(AssessmentTask.status == status)
     if period:
-        query = query.filter(AssessmentTask.period == period)
+        # ⚠️ **BUG-R6-26**：周期过滤**格式无关** —— 入参可能是 `202611` 也可能是 `2026-11`，
+        # 而 ``AssessmentTask.period`` 存的是权威的紧凑格式。这里归一化后再比。
+        normalized = normalize_period(period)
+        if normalized:
+            query = query.filter(AssessmentTask.period == normalized)
 
     total = query.count()
     tasks = query.order_by(AssessmentTask.created_at.desc()).offset(skip).limit(limit).all()

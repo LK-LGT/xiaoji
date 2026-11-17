@@ -3,6 +3,8 @@ export interface MonthPlanPeriodItem {
   estimatedEndDate?: string | null
 }
 
+import { periodMonthKey, toDashedPeriod } from './period.ts'
+
 function compactDate(value?: string | null) {
   const text = String(value ?? '').trim()
   const match = /^(?:\d{4}-)?(\d{1,2})-(\d{1,2})$/.exec(text)
@@ -57,7 +59,9 @@ export function normalizeMonthPlanPeriods<T extends MonthPlanPeriodItem>(
   items: T[],
   today = localToday(),
 ): Array<T & { estimatedStartDate: string; estimatedEndDate: string }> {
-  if (!/^\d{4}-\d{2}$/.test(planMonth) || !items.length) {
+  // ⚠️ **BUG-R6-26**：统一走 `toDashedPeriod`，同时兼容紧凑 `202611` 与带横杠 `2026-11`。
+  const dashedPlanMonth = toDashedPeriod(planMonth)
+  if (!dashedPlanMonth || !items.length) {
     return items.map((item) => ({
       ...item,
       estimatedStartDate: String(item.estimatedStartDate ?? ''),
@@ -65,9 +69,10 @@ export function normalizeMonthPlanPeriods<T extends MonthPlanPeriodItem>(
     }))
   }
 
-  const [year, month] = planMonth.split('-').map(Number)
+  const [year, month] = dashedPlanMonth.split('-').map(Number)
   const lastDay = new Date(year, month, 0).getDate()
-  const firstDay = planMonth === today.slice(0, 7) ? Math.min(Math.max(Number(today.slice(8, 10)) || 1, 1), lastDay) : 1
+  // ⚠️ **BUG-R6-26**：统一走 `periodMonthKey`（不再手写 `slice(0, 7)`）。
+  const firstDay = dashedPlanMonth === periodMonthKey(today) ? Math.min(Math.max(Number(today.slice(8, 10)) || 1, 1), lastDay) : 1
   const availableDays = lastDay - firstDay + 1
 
   return items.map((item, index) => {

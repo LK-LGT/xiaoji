@@ -70,6 +70,7 @@ from ..domain.result_models import (
     Result,
     ResultEvidence,
 )
+from .period import normalize_period
 
 logger = logging.getLogger(__name__)
 
@@ -99,25 +100,31 @@ def _now() -> datetime:
 
 
 def resolve_period(db: Session, result: Result) -> str | None:
-    """成果归属的考核周期（``YYYY-MM``）。
+    """成果归属的考核周期（**紧凑 `YYYYMM`** —— BUG-R6-26）。
 
     - 月成果 → 所属计划的 ``plan_month``
     - 周成果 → 所属计划的 ``week_start`` 所在月（**D6 决策：按周起始月**）
     - 兜底 → 成果自身的 ``result_date`` 所在月
 
     跨月周（如 11/30~12/6）归属 **11 月**。
+
+    ⚠️ **BUG-R6-26**：``MonthPlan.plan_month`` 在库里是 **``YYYY-MM``**，
+    而考核周期侧的权威格式是 **``YYYYMM``**（``AssessmentTask.period``）。
+    这里统一归一化 —— 让本函数**只产出一种格式**，
+    否则它下游的 ``MetricValue.period`` 会跟着写成 ``YYYY-MM``，
+    与任务侧对不上（历史上靠算分时「两种格式都查一遍」兜着，那是补丁不是修复）。
     """
     if result.plan_type == RESULT_PLAN_TYPE_MONTH:
         plan = db.get(MonthPlan, result.plan_id)
         if plan is not None and plan.plan_month:
-            return plan.plan_month
+            return normalize_period(plan.plan_month)
     elif result.plan_type == RESULT_PLAN_TYPE_WEEK:
         plan = db.get(WeekPlan, result.plan_id)
         if plan is not None and plan.week_start is not None:
-            return f"{plan.week_start.year:04d}-{plan.week_start.month:02d}"
+            return normalize_period(f"{plan.week_start.year:04d}-{plan.week_start.month:02d}")
 
     if result.result_date is not None:
-        return f"{result.result_date.year:04d}-{result.result_date.month:02d}"
+        return normalize_period(f"{result.result_date.year:04d}-{result.result_date.month:02d}")
     return None
 
 
@@ -343,7 +350,11 @@ def list_plan_result_evidence(
     )
     rows = list(db.execute(stmt).scalars().all())
     if period:
-        rows = [r for r in rows if _period_of_ref(r.source_ref) == period]
+        # BUG-R6-26：周期过滤**格式无关** —— 入参可能是 `202611` 也可能是 `2026-11`，
+        # 而 ``source_ref`` 里存的是权威的紧凑格式。这里归一化后再比。
+        target = normalize_period(period)
+        if target:
+            rows = [r for r in rows if normalize_period(_period_of_ref(r.source_ref)) == target]
     return rows
 
 

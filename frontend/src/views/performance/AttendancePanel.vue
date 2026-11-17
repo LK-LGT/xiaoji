@@ -68,6 +68,7 @@ import {
   type AttendanceAnomalyType,
   type AttendanceSummary,
 } from '@/api/attendance'
+import { formatPeriodShort } from '@/utils/period'
 
 const props = defineProps<{
   /** 周期（紧凑 202611 或带横杠 2026-11 均可）。 */
@@ -88,13 +89,15 @@ const emit = defineEmits<{ (e: 'retry'): void }>()
 
 const disclaimer = ATTENDANCE_DISCLAIMER
 
-/** 展示用的周期标签。 */
+/**
+ * 展示用的周期标签。
+ *
+ * ⚠️ **BUG-R6-26**：统一走 `@/utils/period`（唯一权威实现），
+ * 不再手写 `slice` 拼接 —— 两种格式进来都产出 `2026-11`。
+ */
 const periodDisplay = computed(() => {
   if (!props.period) return null
-  const text = props.period.trim()
-  if (/^\d{4}-\d{2}$/.test(text)) return text
-  if (/^\d{6}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4)}`
-  return text
+  return formatPeriodShort(props.period, props.period.trim())
 })
 
 /** 数据截至时间：优先取统计汇总，其次取证据条目。 */

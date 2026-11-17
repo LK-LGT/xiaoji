@@ -6,6 +6,7 @@ import type {
 import type { WeekResultRecord, WeekResultSubmitOptions } from '@/api/weekResult'
 import type { AiReview } from '@/api/aiReview'
 import { resultStatusMeta, resultStatusRank } from './resultStatus.ts'
+import { periodMonthKey } from '@/utils/period'
 
 export type ResultPackageType = 'MONTH' | 'WEEK'
 export type ResultWorkbenchStatus = 'NOT_STARTED' | 'DRAFT' | 'REJECTED' | 'SUBMITTED' | 'CONFIRMED' | 'APPROVED' | 'LOCKED'
@@ -239,7 +240,8 @@ export function buildResultWorkbench(
         planId,
         taskId: option.task.id,
         planTitle: option.weekPlanTitle,
-        periodKey: option.weekStart.slice(0, 7),
+        // ⚠️ **BUG-R6-26**：统一走 `periodMonthKey`（不再手写 `slice(0, 7)`）。
+        periodKey: periodMonthKey(option.weekStart),
         periodLabel: `${option.weekStart} 至 ${option.weekEnd}`,
         taskName: option.task.content,
         taskContent: option.task.content,
@@ -259,7 +261,7 @@ export function buildResultWorkbench(
       key: `WEEK:${planId}`,
       type: 'WEEK',
       planId,
-      periodKey: first.weekStart.slice(0, 7),
+      periodKey: periodMonthKey(first.weekStart),
       title: first.weekPlanTitle || `${first.weekStart}周执行成果`,
       startDate: first.weekStart,
       endDate: first.weekEnd,

@@ -18,7 +18,7 @@
       <el-table :data="items" empty-text="当前授权范围内没有争议案件" @row-click="open">
         <el-table-column prop="caseNo" label="案件编号" width="200" />
         <el-table-column prop="employeeName" label="申诉人" width="110" />
-        <el-table-column label="周期" width="120"><template #default="{ row }">{{ row.periodStart?.slice(0, 7) }}</template></el-table-column>
+        <el-table-column label="周期" width="120"><template #default="{ row }">{{ formatPeriodShort(row.periodStart) }}</template></el-table-column>
         <el-table-column prop="disputeSubject" label="争议点" min-width="230" show-overflow-tooltip />
         <el-table-column label="资料完整性" width="120"><template #default="{ row }"><el-tag type="success">{{ row.packageStatus === 'READY' ? '完整' : '待校验' }}</el-tag></template></el-table-column>
         <el-table-column prop="status" label="状态" width="120"><template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
@@ -35,6 +35,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getDisputeCasesApi, type DisputeCase } from '@/api/dispute'
 import { useAutoQuery } from '@/composables/useAutoQuery'
+import { formatPeriodShort } from '@/utils/period'
 const router = useRouter()
 const loading = ref(false); const items = ref<DisputeCase[]>([]); const period = ref(''); const status = ref(''); const keyword = ref('')
 const autoQuery = useAutoQuery(

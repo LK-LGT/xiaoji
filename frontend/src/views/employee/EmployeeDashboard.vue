@@ -246,6 +246,7 @@ import {
   type EmployeePlanStatus,
 } from '@/api/employee'
 import { currentMonth as getCurrentMonth } from '@/api/performance'
+import { periodMonthKey } from '@/utils/period'
 
 const router = useRouter()
 const loading = ref(false)
@@ -433,7 +434,8 @@ function calendarCellClass(day: string) {
 }
 
 function selectCalendarDate(day: string) {
-  const selectedMonth = day.slice(0, 7)
+  // ⚠️ **BUG-R6-26**：统一走 `periodMonthKey`（不再手写 `slice(0, 7)`）。
+  const selectedMonth = periodMonthKey(day)
   if (selectedMonth !== currentMonth.value) currentMonth.value = selectedMonth
   selectedDate.value = new Date(`${day}T00:00:00`)
 }

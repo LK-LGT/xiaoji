@@ -289,6 +289,7 @@ import ResultStatusTag from '@/components/results/ResultStatusTag.vue'
 import MonthPlanTaskContentView from '@/components/MonthPlanTaskContentView.vue'
 import { saveBlob } from '@/utils/download'
 import { buildFileAcceptAttribute, isAcceptedFile } from '@/utils/fileUpload'
+import { periodMonthKey } from '@/utils/period'
 
 type TaskFilter = 'all' | 'pending' | 'submitted' | 'completed'
 type WorkspaceViewMode = 'FORM' | 'SHEET'
@@ -692,7 +693,8 @@ async function loadWorkspace() {
     Object.assign(monthOptions, months); Object.assign(weekOptions, weeks)
     const inferredMonth = packageType.value === 'MONTH'
       ? months.monthPlanOptions.find((plan) => String(plan.id) === planId.value)?.planMonth
-      : weeks.plans.find((plan) => String(plan.weekPlanId) === planId.value)?.weekStart.slice(0, 7)
+      // ⚠️ **BUG-R6-26**：统一走 `periodMonthKey`（不再手写 `slice(0, 7)`）。
+      : periodMonthKey(weeks.plans.find((plan) => String(plan.weekPlanId) === planId.value)?.weekStart)
     const data = buildResultWorkbench(monthOptions, weekOptions, inferredMonth || String(route.query.month || currentMonthKey()))
     activePackage.value = data.packages.find((item) => item.type === packageType.value && String(item.planId) === planId.value) || null
     if (!activePackage.value) throw new Error('成果包不存在或对应计划尚未审批通过')

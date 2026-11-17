@@ -25,6 +25,7 @@ from ..domain.models import DayPlan, Employee, MonthPlan
 from ..domain.result_models import Result
 from ..services import plan_execution_metric
 from ..services.access_control import build_access_context
+from ..services.period import period_match_keys
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,12 @@ async def list_month_plans(
             return _ok([])
         query = query.filter(MonthPlan.owner_id == ownerId)
     if planMonth:
-        query = query.filter(MonthPlan.plan_month == planMonth)
+        # ⚠️ **BUG-R6-26**：客户端可能传 ``YYYY-MM`` 或 ``YYYYMM``，
+        #    而库里 ``month_plan.plan_month`` 存的是 **``YYYY-MM``**。
+        #    只按单一格式比对 → 另一种写法**静默返回空列表**（不报错）。
+        #    这里两种写法都放进 IN，兼容两种入参。
+        plan_keys = period_match_keys(planMonth) or (planMonth,)
+        query = query.filter(MonthPlan.plan_month.in_(plan_keys))
     if status:
         query = query.filter(MonthPlan.status == status)
 

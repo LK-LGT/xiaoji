@@ -44,6 +44,7 @@ from ..domain.models import (
     SelfReview,
 )
 from . import config_service, evidence_service, scoring
+from .period import period_match_keys
 
 logger = logging.getLogger(__name__)
 
@@ -324,25 +325,19 @@ def _build_metric_context(
     所以考勤永远无法影响分数（决策②的物理保证）。
 
     ⚠️ BUG-R6-26 修复：**周期格式不一致**导致指标"查无此项"。
-    ``AssessmentTask.period`` 存的是 ``YYYYMM``（见 ``main.py`` 任务创建），
-    而 ``MetricValue.period`` 存的是 ``YYYY-MM``（见
-    ``services/plan_execution_metric.py``）。两边一比对，
-    ``MetricValue.period == period`` 永远为 False → 指标"缺数据不参与算分"
-    → 算分直接抛 ``ScoringError: 所有指标均缺少可用数据``。
+    ``AssessmentTask.period`` 与 ``MetricValue.period`` 都是权威的紧凑 ``YYYYMM``，
+    但**历史脏数据**里可能仍有 ``YYYY-MM`` 的行（迁移 ``0022`` 已清理，
+    这里保留双格式查询作为兜底）。
 
-    这里把两种格式都列出来查，避免因为格式差异把真实数据漏掉。
+    以前这段是**手写字符串拼接**推两种写法 —— 口径容易漂移。
+    现在统一走 ``services.period.period_match_keys``。
     """
     specs = scoring.build_specs(
         snapshot.metrics_json, snapshot.weights_json, snapshot.rubric_json
     )
 
     # 周期两种写法都查（YYYYMM / YYYY-MM）—— 见上方说明。
-    period_keys = {str(period)}
-    text = str(period)
-    if len(text) == 6 and text.isdigit():
-        period_keys.add(f"{text[:4]}-{text[4:]}")
-    elif len(text) == 7 and text[4] == "-":
-        period_keys.add(text.replace("-", ""))
+    period_keys = period_match_keys(period) or (str(period),)
 
     rows = db.execute(
         select(MetricValue).where(

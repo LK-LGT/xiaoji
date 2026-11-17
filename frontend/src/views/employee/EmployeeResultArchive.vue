@@ -93,6 +93,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { getEmployeeResultSubmitOptionsApi, type EmployeeResultSubmitOptionsResp } from '@/api/employee'
 import { getWeekResultSubmitOptionsApi, type WeekResultSubmitOptions } from '@/api/weekResult'
 import { groupRowsByMonth } from '@/utils/monthGroups'
+import { formatPeriodLabel, periodMonthKey } from '@/utils/period'
 import ResultStatusTag from '@/components/results/ResultStatusTag.vue'
 import { buildMonthResultArchives, monthArchiveStatusMeta, type MonthArchiveStatus } from './resultArchiveModel'
 
@@ -116,13 +117,15 @@ const allRows = computed<ArchiveRow[]>(() => {
     }
   }
   const weeks = weekOptions.value
-  if (weeks) for (const option of weeks.plans) { const latest = option.latestResult; if (!latest || !['SUBMITTED', 'APPROVED', 'REJECTED'].includes(latest.status)) continue; const description = latest.content || latest.completionStatus || ''; result.push({ key: `WEEK:${latest.id}`, type: 'WEEK', resultId: latest.id, planId: option.weekPlanId, taskId: option.task.id, title: option.task.content, description, periodKey: option.weekStart.slice(0, 7), periodLabel: `${option.weekStart} 至 ${option.weekEnd}`, status: latest.status as ArchiveStatus, updatedAt: latest.submitAt, resultDate: latest.resultDate, resultCount: 1, taskCount: 1, searchText: `${option.task.content} ${description}`.toLowerCase() }) }
+  if (weeks) for (const option of weeks.plans) { const latest = option.latestResult; if (!latest || !['SUBMITTED', 'APPROVED', 'REJECTED'].includes(latest.status)) continue; const description = latest.content || latest.completionStatus || ''; result.push({ key: `WEEK:${latest.id}`, type: 'WEEK', resultId: latest.id, planId: option.weekPlanId, taskId: option.task.id, title: option.task.content, description, periodKey: periodMonthKey(option.weekStart), periodLabel: `${option.weekStart} 至 ${option.weekEnd}`, status: latest.status as ArchiveStatus, updatedAt: latest.submitAt, resultDate: latest.resultDate, resultCount: 1, taskCount: 1, searchText: `${option.task.content} ${description}`.toLowerCase() }) }
   return result.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
 })
 const filteredRows = computed(() => allRows.value.filter((row) => { if (filters.type && row.type !== filters.type) return false; if (filters.month && row.periodKey !== filters.month) return false; if (filters.status === 'SUBMITTED' && !['SUBMITTED', 'PARTIAL'].includes(row.status)) return false; if (filters.status === 'COMPLETED' && !['CONFIRMED', 'APPROVED'].includes(row.status)) return false; if (filters.status === 'REJECTED' && row.status !== 'REJECTED') return false; if (filters.keyword && !row.searchText.includes(filters.keyword.trim().toLowerCase())) return false; return true }))
 const rows = computed(() => filteredRows.value.slice((pageNo.value - 1) * pageSize, pageNo.value * pageSize)); const monthGroups = computed(() => groupRowsByMonth(rows.value, (row) => row.resultDate)); const hasFilters = computed(() => Boolean(filters.type || filters.month || filters.status || filters.keyword))
 function dateTimeText(value?: string) { return value ? value.replace('T', ' ').slice(0, 16) : '--' }
-function monthText(value: string) { const [year, month] = value.split('-'); return year && month ? `${year}年${Number(month)}月` : value }
+// ⚠️ **BUG-R6-26**：月份标签统一走 `formatPeriodLabel`（唯一权威实现）。
+// 旧的本地 `monthText` 只认 `YYYY-MM`，遇到紧凑 `202611` 会原样显示数字。
+function monthText(value: string) { return formatPeriodLabel(value, value) }
 function archiveStatusMeta(row: ArchiveRow) { return monthArchiveStatusMeta(row.status as MonthArchiveStatus) }
 function positiveInt(value: unknown) { const parsed = Number(value); return Number.isInteger(parsed) && parsed > 0 ? parsed : 1 }
 function archiveQuery() { return { view: 'archive', ...(filters.type ? { archiveType: filters.type } : {}), ...(filters.month ? { archiveMonth: filters.month } : {}), ...(filters.status ? { archiveStatus: filters.status } : {}), ...(filters.keyword.trim() ? { archiveKeyword: filters.keyword.trim() } : {}), ...(pageNo.value > 1 ? { archivePage: String(pageNo.value) } : {}) } }

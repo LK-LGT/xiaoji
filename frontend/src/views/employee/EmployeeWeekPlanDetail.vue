@@ -34,6 +34,7 @@ import { getEmployeeWeekPlanApi, weekPlanStatusMeta, withdrawEmployeeWeekPlanApi
 import PlanFeedbackBanner from './components/PlanFeedbackBanner.vue'
 import { useSmartBack } from '@/composables/useSmartBack'
 import { countWeekWorkPoints, mergeWeekPlanFields } from '@/utils/weekPlanDisplay'
+import { periodMonthKey } from '@/utils/period'
 import PlanAiReviewCell from '@/components/PlanAiReviewCell.vue'
 import PlanAiReviewDrawer from '@/components/PlanAiReviewDrawer.vue'
 import { useAiReviewCollection } from '@/composables/useAiReviewCollection'
@@ -53,11 +54,13 @@ function backToList() {
   void goBack(weekPlanBasePath)
 }
 function openResultSubmit(item: WeekPlanItem) {
+  // ⚠️ **BUG-R6-26**：统一走 `periodMonthKey`（不再手写 `slice(0, 7)`）。
+  const month = periodMonthKey(detail.value?.summary.weekStart)
   if (isLeaderWorkspace) {
-    void router.push({ path: '/leader/results/submit', query: { planType: 'WEEK', weekMonth: detail.value?.summary.weekStart.slice(0, 7), weekPlanId: String(id), weekPlanItemId: String(item.id) } })
+    void router.push({ path: '/leader/results/submit', query: { planType: 'WEEK', weekMonth: month, weekPlanId: String(id), weekPlanItemId: String(item.id) } })
     return
   }
-  void router.push({ path: `/employee/results/workspace/WEEK/${id}`, query: { month: detail.value?.summary.weekStart.slice(0, 7), taskId: String(item.id) } })
+  void router.push({ path: `/employee/results/workspace/WEEK/${id}`, query: { month, taskId: String(item.id) } })
 }
 async function withdrawPlan() {
   const summary = detail.value?.summary

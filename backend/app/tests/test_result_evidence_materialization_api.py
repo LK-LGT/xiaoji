@@ -344,7 +344,7 @@ def test_source_ref_is_stable(db, org):
 
     ev = _evidences(db)[0]
     assert ev.source_ref is not None
-    assert ev.source_ref.startswith("E_A|2026-11|plan_result|month|")
+    assert ev.source_ref.startswith("E_A|202611|plan_result|month|")
     assert ev.source_ref.endswith(f"|{item.id}|1")
 
 
@@ -426,19 +426,19 @@ def test_draft_does_not_materialize(db, org):
 
 
 def test_month_result_period_from_plan_month(db, org):
-    """月成果的周期取所属计划的 plan_month。"""
+    """月成果的周期取所属计划的 plan_month（BUG-R6-26：归一化为紧凑 `YYYYMM`）。"""
     plan, item = _month_plan(db, month="2026-11")
     result = _submit_month_result(db, plan, item)
 
-    assert materialization.resolve_period(db, result) == "2026-11"
+    assert materialization.resolve_period(db, result) == "202611"
 
 
 def test_week_result_period_from_week_start(db, org):
-    """周成果的周期按 D6 决策取 week_start 所在月。"""
+    """周成果的周期按 D6 决策取 week_start 所在月（BUG-R6-26：紧凑 `YYYYMM`）。"""
     plan, item = _week_plan(db, week_start=date(2026, 11, 2))
     result = _submit_week_result(db, plan, item)
 
-    assert materialization.resolve_period(db, result) == "2026-11"
+    assert materialization.resolve_period(db, result) == "202611"
 
 
 def test_cross_month_week_belongs_to_start_month(db, org):
@@ -457,7 +457,7 @@ def test_cross_month_week_belongs_to_start_month(db, org):
     db.flush()
 
     result = _submit_week_result(db, plan, item)
-    assert materialization.resolve_period(db, result) == "2026-11"
+    assert materialization.resolve_period(db, result) == "202611"
 
 
 def test_evidence_ref_contains_period(db, org):
@@ -471,7 +471,7 @@ def test_evidence_ref_contains_period(db, org):
     ev = _evidences(db)[0]
     parts = ev.source_ref.split("|")
     assert parts[0] == "E_A"
-    assert parts[1] == "2026-11"
+    assert parts[1] == "202611"
     assert parts[2] == "plan_result"
 
 

@@ -96,6 +96,7 @@ import {
 } from '@/api/department'
 import { currentMonth, errorMessage, periodRange } from '@/api/performance'
 import { useDepartmentOrgScope } from '@/composables/useDepartmentOrgScope'
+import { periodMonthKey } from '@/utils/period'
 
 interface FactorRow {
   code: string
@@ -182,7 +183,8 @@ async function refresh() {
     currentRuleName.value = rule.ruleName
     currentRuleStatus.value = rule.status
     currentRuleJson.value = rule.ruleJson
-    query.month = rule.effectiveStart?.slice(0, 7) || currentMonth()
+    // ⚠️ **BUG-R6-26**：统一走 `periodMonthKey`（不再手写 `slice(0, 7)`）。
+    query.month = periodMonthKey(rule.effectiveStart) || currentMonth()
     const factors = Array.isArray(rule.ruleJson.factors) ? rule.ruleJson.factors as Array<Record<string, unknown>> : []
     requiresMigration.value = !factors.length
     rows.value = factors.length ? factors.map(mapFactor) : defaultFactors()

@@ -48,8 +48,8 @@
           <span class="employee-month-card__label">
             {{ month.month === currentMonth ? '已选择' : month.isCurrent ? '本月' : '月份' }}
           </span>
-          <strong>{{ month.month.slice(5) }}<small>月</small></strong>
-          <span class="employee-month-card__year">{{ month.month.slice(0, 4) }}</span>
+          <strong>{{ periodMonthNumber(month.month) }}<small>月</small></strong>
+          <span class="employee-month-card__year">{{ periodYear(month.month) }}</span>
           <span class="employee-month-card__meta">{{ month.title }}</span>
           <el-tag size="small" :type="month.statusType">{{ month.statusLabel }}</el-tag>
         </button>
@@ -186,6 +186,7 @@ import {
   type EmployeeResultSubmitOptionsResp,
 } from '@/api/employee'
 import { currentMonth as getCurrentMonth } from '@/api/performance'
+import { periodMonthNumber, periodYear } from '@/utils/period'
 import { usePersonalMonthPlanRoutes } from '@/composables/usePersonalMonthPlanRoutes'
 import EmployeeMonthPlanSupportActions from './components/EmployeeMonthPlanSupportActions.vue'
 import PlanAiReviewCell from '@/components/PlanAiReviewCell.vue'

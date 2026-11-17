@@ -272,6 +272,7 @@ import {
 } from '@/api/selfReview'
 import type { SelfReviewDetail } from '@/api/selfReview'
 import type { PendingAssessmentRecord } from '@/api/attendance'
+import { toDashedPeriod } from '@/utils/period'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -303,10 +304,10 @@ const allRecords = ref<PendingAssessmentRecord[]>([])
 
 /** 把后端记录映射成页面用的视图模型。 */
 function toViewModel(record: PendingAssessmentRecord) {
-  const period = record.period || ''
-  const dashed = /^\d{6}$/.test(period)
-    ? `${period.slice(0, 4)}-${period.slice(4)}`
-    : period
+  // ⚠️ **BUG-R6-26**：周期归一化统一走 `@/utils/period`。
+  //   后端 `AssessmentTask.period` 是紧凑 `YYYYMM`（权威格式），
+  //   但历史数据/考勤证据侧可能是 `YYYY-MM` —— 两种都要能处理。
+  const dashed = toDashedPeriod(record.period)
   const start = dashed ? `${dashed}-01` : ''
   const end = dashed
     ? (() => {
