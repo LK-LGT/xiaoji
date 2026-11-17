@@ -87,6 +87,30 @@ class Settings(BaseSettings):
     feishu_event_consume_enabled: bool = True
 
     # ─────────────────────────────────────────────────────────────
+    # 飞书 OAuth（网页免登，FS-1 / FS-2）
+    #
+    # ⚠️ 留空时 `/v1/feishu/auth/url` 返回 503（不放行）——
+    # 与「审批/通讯录 webhook 未配 Token 就 503」保持同一套安全语义：
+    # **宁可明确失败，也不要留一个半残的免登入口。**
+    # ─────────────────────────────────────────────────────────────
+    # 授权成功后的回调地址（逗号分隔多个）。
+    # ⚠️ 必须与飞书后台「网页应用 > 授权页面 > 重定向 URL」**完全一致**，
+    #    否则飞书会直接拒绝授权（错误在飞书侧，不在本地日志里）。
+    feishu_oauth_redirect_uris: str = ""
+    # state 签名密钥。留空时回退到 auth_token_secret。
+    # ⚠️ 独立配置的意义：state 与登录 token 的密钥**隔离**，
+    #    避免一处泄露波及另一处。
+    feishu_oauth_state_secret: str = ""
+    # state 有效期（秒）。建议 600（10 分钟）——
+    # 够用户完成授权，又不会给重放留太久窗口。
+    feishu_oauth_state_ttl_seconds: int = 600
+    # 申请的 OAuth scope（逗号分隔）。
+    # 免登只需要读用户基本信息；多申请会被飞书后台审核卡住。
+    feishu_oauth_scopes: str = "contact:user.base:readonly"
+    # 前端免登回调页地址（用于 /v1/feishu/auth/url 返回给前端跳转）。
+    feishu_oauth_frontend_callback: str = ""
+
+    # ─────────────────────────────────────────────────────────────
     # 同步失败告警
     #
     # 告警本身**总是**入库（可在接口里查询），外部通知（飞书 IM）

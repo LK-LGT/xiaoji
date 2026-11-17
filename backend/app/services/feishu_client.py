@@ -156,6 +156,23 @@ class FeishuClient:
         self.sleep = sleep
         self._access_token: str | None = None
         self._token_expires_at: datetime | None = None
+        # ─────────────────────────────────────────────────────────────
+        # ⚠️ 用户态 / 应用态 Token —— **独立槽位**，绝不与租户态共用
+        #
+        # 原因（RK3）：``_access_token`` 是**单槽位**。
+        # 若把 user_access_token 写进同一个字段，那么
+        # 「谁后调用谁中毒」—— 组织架构同步、审批回流会**随机 401**，
+        # 而且是**间歇性故障**，极难排查。
+        #
+        # 三类 token 的生命周期与用途完全不同：
+        #   - 租户态 tenant_access_token：应用身份（同步、审批回流）
+        #   - 用户态 user_access_token：某个用户授权后的身份（免登、问答）
+        #   - 应用态 app_access_token：应用身份（换 user_access_token）
+        # ─────────────────────────────────────────────────────────────
+        self._user_token: str | None = None
+        self._user_token_expires_at: datetime | None = None
+        self._app_token: str | None = None
+        self._app_token_expires_at: datetime | None = None
         self._http_client = httpx.Client(
             base_url=self.BASE_URL,
             timeout=timeout,
@@ -231,6 +248,145 @@ class FeishuClient:
         )
         return self._access_token
 
+    # ─────────────────────────────────────────────────────────────────
+    # 应用态 / 用户态 Token（FS-1 授权底座）
+    #
+    # ⚠️ 与租户态**完全独立** —— 见 __init__ 里关于 RK3 的说明。
+    # ─────────────────────────────────────────────────────────────────
+
+    def get_app_access_token(self, *, force_refresh: bool = False) -> str:
+        """获取应用身份凭证（app_access_token）。
+
+        用途：用 OAuth ``code`` 换 ``user_access_token`` 时，
+        需要以**应用身份**调用换取接口。
+
+        与租户态的区别：租户态代表「企业」，应用态代表「应用自身」。
+        两者不能互换 —— 用错会出现 99991688「租户 Access Token 不匹配」。
+        """
+        now = datetime.now(UTC)
+        if (
+            not force_refresh
+            and self._app_token
+            and self._app_token_expires_at
+            and now < self._app_token_expires_at
+        ):
+            return self._app_token
+
+        try:
+            resp = self._http_client.post(
+                "/auth/v3/app_access_token/internal",
+                json={"app_id": self.app_id, "app_secret": self.app_secret},
+            )
+        except httpx.TimeoutException as exc:
+            raise FeishuError("飞书应用 Token 请求超时", retryable=True) from exc
+        except httpx.HTTPError as exc:
+            raise FeishuTokenError("飞书应用 Token 请求失败") from exc
+
+        if resp.status_code == 429:
+            raise FeishuRateLimitError("飞书应用 Token 接口触发限流", self._retry_after(resp))
+        if resp.status_code >= 500:
+            raise FeishuError(
+                "飞书应用 Token 服务暂时不可用",
+                retryable=True,
+                status_code=resp.status_code,
+            )
+        try:
+            resp.raise_for_status()
+            data = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise FeishuTokenError("飞书应用 Token 获取失败") from exc
+
+        if data.get("code") != 0 or not data.get("app_access_token"):
+            raise FeishuTokenError(
+                describe_feishu_error(data.get("code"), "飞书应用 Token 获取失败")
+            )
+
+        expires_in = max(60, int(data.get("expire", 7200)))
+        self._app_token = str(data["app_access_token"])
+        self._app_token_expires_at = datetime.now(UTC) + timedelta(
+            seconds=float(min(expires_in, max(30, expires_in - 300)))
+        )
+        logger.info("飞书应用 Access Token 已刷新，有效期秒数=%s", expires_in)
+        return self._app_token
+
+    def exchange_user_token(self, code: str, *, grant_type: str = "authorization_code") -> dict[str, Any]:
+        """用 OAuth 授权码换 ``user_access_token``。
+
+        流程（FS-1）：
+            app_access_token（应用身份）
+              + code（用户授权回调带回）
+              → user_access_token（用户身份）
+
+        返回值含 ``access_token`` / ``refresh_token`` / ``expires_in`` /
+        ``refresh_token_expires_in`` / ``scope`` / ``token_type``。
+
+        ⚠️ 返回的 token 由调用方负责处置 —— **绝不能下发到前端**。
+        本系统只用它换取用户身份信息，随后立即丢弃。
+        """
+        if not code:
+            raise FeishuTokenError("OAuth 授权码为空")
+
+        try:
+            resp = self._http_client.post(
+                "/authen/v1/oidc/access_token",
+                json={
+                    "grant_type": grant_type,
+                    "code": code,
+                    "app_access_token": self.get_app_access_token(),
+                },
+            )
+        except httpx.TimeoutException as exc:
+            raise FeishuError("飞书用户 Token 换取超时", retryable=True) from exc
+        except httpx.HTTPError as exc:
+            raise FeishuTokenError("飞书用户 Token 换取失败") from exc
+
+        if resp.status_code == 429:
+            raise FeishuRateLimitError("飞书用户 Token 接口触发限流", self._retry_after(resp))
+        if resp.status_code >= 500:
+            raise FeishuError(
+                "飞书用户 Token 服务暂时不可用",
+                retryable=True,
+                status_code=resp.status_code,
+            )
+        try:
+            resp.raise_for_status()
+            data = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise FeishuTokenError("飞书用户 Token 换取失败") from exc
+
+        if data.get("code") != 0 or not data.get("access_token"):
+            raise FeishuTokenError(
+                describe_feishu_error(data.get("code"), "飞书用户 Token 换取失败")
+            )
+        return data
+
+    def get_user_info(self, user_access_token: str, user_id: str) -> dict[str, Any]:
+        """用 ``user_access_token`` 查询指定用户信息。
+
+        ⚠️⚠️ **必须带 ``user_id_type=user_id``**（2026-11-17 实测发现，F1）。
+
+        漏掉这个参数时，飞书会按 **open_id** 解析路径里的 ID，
+        于是传 user_id 会返回：
+
+            99992351  The request you send is not a valid {open_id} or not exists
+
+        这个错误信息**完全不指向「少传参数」**，极易排查半天。
+        已固化在 ``check_feishu_scopes.py`` 的探测项里做回归保护。
+
+        返回值含 ``open_id`` / ``union_id`` / ``user_id`` / ``name`` 等。
+        """
+        if not user_access_token:
+            raise FeishuTokenError("缺少 user_access_token")
+        if not user_id:
+            raise FeishuTokenError("缺少 user_id")
+
+        return self._request_with_token(
+            "GET",
+            f"/contact/v3/users/{user_id}",
+            params={"user_id_type": "user_id"},
+            token=user_access_token,
+        )
+
     @staticmethod
     def _retry_after(resp: httpx.Response) -> float | None:
         value = resp.headers.get("Retry-After")
@@ -255,11 +411,41 @@ class FeishuClient:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """发送认证请求；网络错误、429、5xx 自动退避重试。"""
+        """发送认证请求；网络错误、429、5xx 自动退避重试。
+
+        使用**租户态** token（应用身份）。用户态请求请用
+        ``_request_with_token`` —— 两者绝不能混用（RK3）。
+        """
+        return self._request_with_token(
+            method,
+            endpoint,
+            params=params,
+            json=json,
+            token=None,
+        )
+
+    def _request_with_token(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        token: str | None = None,
+    ) -> dict[str, Any]:
+        """发送认证请求，可显式指定 token。
+
+        ``token is None`` → 使用租户态 token（自动刷新 + 失效后重放）。
+        ``token`` 非空   → 使用**调用方传入**的 token（如 user_access_token）。
+
+        ⚠️ 显式 token 失效时**不做**自动刷新重放 —— 用户态 token 的刷新
+        方式（refresh_token）与租户态完全不同，盲目重放只会把同一个失败
+        放大成重试风暴。调用方应自行决定如何重新换取 token。
+        """
         token_refreshed = False
         for attempt in range(self.max_retries + 1):
             try:
-                token = self._get_access_token()
+                auth_token = token if token is not None else self._get_access_token()
             except FeishuRateLimitError as exc:
                 if attempt >= self.max_retries:
                     raise
@@ -276,7 +462,7 @@ class FeishuClient:
                     endpoint,
                     params=params,
                     json=json,
-                    headers={"Authorization": f"Bearer {token}"},
+                    headers={"Authorization": f"Bearer {auth_token}"},
                 )
             except httpx.TimeoutException as exc:
                 if attempt >= self.max_retries:
@@ -305,8 +491,13 @@ class FeishuClient:
                 self.sleep(self._backoff(attempt, self._retry_after(resp)))
                 continue
 
-            if resp.status_code in (401, 403) and not token_refreshed:
+            if (
+                resp.status_code in (401, 403)
+                and not token_refreshed
+                and token is None
+            ):
                 # Token 失效：强制刷新一次后重放原请求。
+                # ⚠️ 仅对**租户态** token 生效 —— 显式 token 无从刷新。
                 token_refreshed = True
                 self._access_token = None
                 self._token_expires_at = None
@@ -332,7 +523,7 @@ class FeishuClient:
                     code, str(data.get("msg") or "飞书接口返回错误")
                 )
                 token_invalid = code in TOKEN_INVALID_ERROR_CODES
-                if token_invalid and not token_refreshed:
+                if token_invalid and not token_refreshed and token is None:
                     token_refreshed = True
                     self._access_token = None
                     self._token_expires_at = None

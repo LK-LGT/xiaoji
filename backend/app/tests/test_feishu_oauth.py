@@ -1,0 +1,593 @@
+"""飞书 OAuth 授权底座测试（FS-1）。
+
+覆盖 Runbook `17` §2.3 要求的 7 个 OAuth 用例，外加：
+
+- **token 隔离**（RK3 回归）—— user / tenant token 交替调用 20 次不串味
+- **飞书 token 不外泄** —— 响应里绝不出现 user_access_token
+- **禁用/离职员工拒绝签发**
+
+⚠️ 测试全部用 ``MockTransport`` 注入录制响应 —— **不打真实飞书 API**。
+"""
+
+from __future__ import annotations
+
+import time
+
+import httpx
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from backend.app.core.config import settings
+from backend.app.core.db import get_db
+from backend.app.domain.models import Base, Employee, FeishuIdentity
+from backend.app.main import app
+from backend.app.services.feishu_client import FeishuClient, MockTransport
+from backend.app.services.feishu_oauth import FeishuOAuthError, FeishuOAuthService
+
+# ─────────────────────────────────────────────────────
+# 固定测试数据
+# ─────────────────────────────────────────────────────
+
+TEST_USER_ID = "u_test_001"
+TEST_OPEN_ID = "ou_test_open_001"
+TEST_UNION_ID = "on_test_union_001"
+TEST_REDIRECT = "https://perf.example.com/feishu/callback"
+TEST_APP_ID = "cli_test_app"
+TEST_APP_SECRET = "test_secret"
+
+# 录制响应
+APP_TOKEN_RESP = {
+    "status_code": 200,
+    "json": {"code": 0, "app_access_token": "app-token-xxx", "expire": 7200},
+}
+USER_TOKEN_RESP = {
+    "status_code": 200,
+    "json": {
+        "code": 0,
+        "access_token": "user-token-xxx",
+        "refresh_token": "refresh-xxx",
+        "expires_in": 7200,
+        "token_type": "Bearer",
+        "user_id": TEST_USER_ID,
+    },
+}
+USER_INFO_RESP = {
+    "status_code": 200,
+    "json": {
+        "code": 0,
+        "data": {
+            "user": {
+                "user_id": TEST_USER_ID,
+                "open_id": TEST_OPEN_ID,
+                "union_id": TEST_UNION_ID,
+                "name": "测试员工",
+            }
+        },
+    },
+}
+
+
+@pytest.fixture
+def db_session():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    yield session
+    session.close()
+    engine.dispose()
+
+
+@pytest.fixture
+def employee(db_session):
+    emp = Employee(
+        id="emp_test_001",
+        name="测试员工",
+        login_account="tester",
+        feishu_user_id=TEST_USER_ID,
+        feishu_open_id=TEST_OPEN_ID,
+        feishu_union_id=TEST_UNION_ID,
+        employment_status="active",
+        account_status="enabled",
+    )
+    db_session.add(emp)
+    db_session.commit()
+    return emp
+
+
+@pytest.fixture
+def identity(db_session, employee):
+    row = FeishuIdentity(
+        employee_id=employee.id,
+        identity_type="open_id",
+        identity_value=TEST_OPEN_ID,
+        active=True,
+    )
+    db_session.add(row)
+    db_session.commit()
+    return row
+
+
+@pytest.fixture(autouse=True)
+def oauth_settings(monkeypatch):
+    """把 OAuth 相关配置指到测试值。"""
+    monkeypatch.setattr(settings, "feishu_app_id", TEST_APP_ID)
+    monkeypatch.setattr(settings, "feishu_app_secret", TEST_APP_SECRET)
+    monkeypatch.setattr(settings, "feishu_oauth_redirect_uris", TEST_REDIRECT)
+    monkeypatch.setattr(settings, "feishu_oauth_state_secret", "state-secret-for-test")
+    monkeypatch.setattr(settings, "feishu_oauth_state_ttl_seconds", 600)
+
+
+def make_client(recordings: dict) -> FeishuClient:
+    return FeishuClient(
+        app_id=TEST_APP_ID,
+        app_secret=TEST_APP_SECRET,
+        transport=MockTransport(recordings),
+        sleep=lambda _s: None,
+    )
+
+
+# ===========================================================================
+# 用例 1：state 一次性
+# ===========================================================================
+
+
+def test_state_is_single_use(db_session):
+    """state 校验通过后立即作废 —— 第二次使用必须失败。"""
+    client = make_client({})
+    service = FeishuOAuthService(client, db_session)
+
+    state = service.issue_state(TEST_REDIRECT)
+    # 第一次：成功
+    service.consume_state(state)
+    # 第二次：必须失败（防重放）
+    with pytest.raises(FeishuOAuthError) as exc:
+        service.consume_state(state)
+    assert exc.value.code == "state_consumed"
+
+
+# ===========================================================================
+# 用例 2：state 过期
+# ===========================================================================
+
+
+def test_state_expires(db_session, monkeypatch):
+    """state 超过 TTL 后必须被拒绝。"""
+    client = make_client({})
+    service = FeishuOAuthService(client, db_session)
+
+    # ⚠️ 先把真实时间存下来**再**打补丁 ——
+    #    ``monkeypatch.setattr("...feishu_oauth.time.time", ...)`` 改的是
+    #    **全局 time 模块**，所以补丁里的 lambda 必须引用一个**已捕获**的
+    #    原函数，否则会自我递归（RecursionError）。
+    real_time = time.time
+
+    state = service.issue_state(TEST_REDIRECT)
+
+    # 把「当前时间」**往前推** 1 小时（TTL 是 600 秒）。
+    # ⚠️ 方向不能搞反：校验算的是 ``now - issued_at > ttl``，
+    #    必须让 now **变大**。若把 now 调小，差值是负数，
+    #    反而「没过期」—— 测试会假通过。
+    monkeypatch.setattr(
+        "backend.app.services.feishu_oauth.time.time",
+        lambda: real_time() + 3600,
+    )
+    with pytest.raises(FeishuOAuthError) as exc:
+        service.consume_state(state)
+    assert exc.value.code == "state_expired"
+
+
+# ===========================================================================
+# 用例 3：redirect 不匹配 / 不在白名单
+# ===========================================================================
+
+
+def test_redirect_not_in_whitelist(db_session):
+    """白名单外的 redirect_uri 必须被拒（开放重定向防护）。"""
+    client = make_client({})
+    service = FeishuOAuthService(client, db_session)
+
+    with pytest.raises(FeishuOAuthError) as exc:
+        service.issue_state("https://evil.example.com/steal")
+    assert exc.value.code == "redirect_not_allowed"
+
+
+def test_state_redirect_mismatch_rejected(db_session):
+    """state 里的 redirect_uri 被篡改 → 签名校验失败。"""
+    client = make_client({})
+    service = FeishuOAuthService(client, db_session)
+    state = service.issue_state(TEST_REDIRECT)
+
+    # 篡改 state 中的 redirect_uri 部分
+    parts = state.split(".")
+    tampered = ".".join(parts[:2] + ["ZXZpbC5leGFtcGxlLmNvbQ"] + parts[3:])
+
+    with pytest.raises(FeishuOAuthError) as exc:
+        service.consume_state(tampered)
+    assert exc.value.code == "state_invalid"
+
+
+def test_state_tampered_nonce_rejected(db_session):
+    """改 nonce → 签名对不上。"""
+    client = make_client({})
+    service = FeishuOAuthService(client, db_session)
+    state = service.issue_state(TEST_REDIRECT)
+
+    parts = state.split(".")
+    tampered = ".".join(["tampered_nonce"] + parts[1:])
+
+    with pytest.raises(FeishuOAuthError) as exc:
+        service.consume_state(tampered)
+    assert exc.value.code == "state_invalid"
+
+
+# ===========================================================================
+# 用例 4：code 换 token 成功
+# ===========================================================================
+
+
+def test_exchange_code_success(db_session, identity):
+    """正常流程：code → user_access_token → 用户信息 → 员工。"""
+    recordings = {
+        "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
+        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+    }
+    client = make_client(recordings)
+    service = FeishuOAuthService(client, db_session)
+
+    state = service.issue_state(TEST_REDIRECT)
+    result = service.exchange_code_for_employee("valid-code", state)
+
+    assert result.employee_id == "emp_test_001"
+    assert result.open_id == TEST_OPEN_ID
+    assert result.real_name == "测试员工"
+
+
+def test_exchange_sends_user_id_type_param(db_session, identity):
+    """⚠️ F1 回归：必须带 ``user_id_type=user_id``。
+
+    漏掉它飞书会按 open_id 解析 → 99992351「not a valid {open_id}」，
+    免登查不到人。这个错误信息完全不指向「少传参数」，极易排查半天。
+    """
+    recordings = {
+        "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
+        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+    }
+    client = make_client(recordings)
+    transport = client._http_client._transport  # type: ignore[union-attr]
+    service = FeishuOAuthService(client, db_session)
+
+    state = service.issue_state(TEST_REDIRECT)
+    service.exchange_code_for_employee("valid-code", state)
+
+    user_calls = [
+        req for req in transport.calls if "/contact/v3/users" in req.url.path  # type: ignore[union-attr]
+    ]
+    assert user_calls, "应发出查询用户信息的请求"
+    params = dict(user_calls[0].url.params)
+    assert params.get("user_id_type") == "user_id"
+
+
+def test_exchange_uses_user_token_not_tenant_token(db_session, identity):
+    """⚠️ RK3 回归：查询用户信息必须用**用户态** token，不是租户态。"""
+    recordings = {
+        "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
+        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+        "POST /auth/v3/tenant_access_token/internal": [
+            {"status_code": 200, "json": {"code": 0, "tenant_access_token": "tenant-yyy", "expire": 7200}}
+        ],
+    }
+    client = make_client(recordings)
+    transport = client._http_client._transport  # type: ignore[union-attr]
+    service = FeishuOAuthService(client, db_session)
+
+    state = service.issue_state(TEST_REDIRECT)
+    service.exchange_code_for_employee("valid-code", state)
+
+    user_call = next(
+        req for req in transport.calls if "/contact/v3/users" in req.url.path  # type: ignore[union-attr]
+    )
+    auth = user_call.headers.get("Authorization")
+    assert auth == "Bearer user-token-xxx", "查询用户信息必须用用户态 token"
+    assert "tenant-yyy" not in str(auth)
+
+
+# ===========================================================================
+# 用例 5/6：禁用 / 离职员工拒绝签发
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    ("employment_status", "account_status"),
+    [
+        ("exited", "disabled"),  # 离职（同步逻辑：离职必置 disabled）
+        ("inactive", "disabled"),  # 冻结/未激活（同步逻辑：冻结必置 disabled）
+        ("active", "disabled"),  # 账号被禁用
+        ("exited", "enabled"),  # 异常组合：离职但账号还开着
+    ],
+)
+def test_inactive_employee_cannot_login(
+    db_session, identity, employment_status, account_status
+):
+    """离职 / 冻结 / 禁用账号**不能**通过免登拿到 token。
+
+    ⚠️ 前三种组合是组织架构同步会产生的**真实**状态：
+    ``exited`` 与 ``inactive`` 都会把 ``account_status`` 置为 ``disabled``。
+    最后一种是防御性组合 —— 即使数据被手工改坏，也不该放行。
+    """
+    emp = db_session.get(Employee, "emp_test_001")
+    emp.employment_status = employment_status
+    emp.account_status = account_status
+    db_session.commit()
+
+    recordings = {
+        "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
+        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+    }
+    client = make_client(recordings)
+    service = FeishuOAuthService(client, db_session)
+
+    state = service.issue_state(TEST_REDIRECT)
+    with pytest.raises(FeishuOAuthError) as exc:
+        service.exchange_code_for_employee("valid-code", state)
+    assert exc.value.code == "identity_not_bound"
+
+
+# ===========================================================================
+# 用例 7：open_id 未绑定
+# ===========================================================================
+
+
+def test_unbound_open_id_rejected(db_session):
+    """没有绑定记录的 open_id → 明确报错，不签发 token。"""
+    emp = Employee(id="emp_other", name="别人", login_account="other")
+    db_session.add(emp)
+    db_session.commit()
+
+    recordings = {
+        "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
+        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+    }
+    client = make_client(recordings)
+    service = FeishuOAuthService(client, db_session)
+
+    state = service.issue_state(TEST_REDIRECT)
+    with pytest.raises(FeishuOAuthError) as exc:
+        service.exchange_code_for_employee("valid-code", state)
+    assert exc.value.code == "identity_not_bound"
+
+
+# ===========================================================================
+# RK3：token 隔离（核心回归）
+# ===========================================================================
+
+
+def test_user_and_tenant_tokens_do_not_contaminate(db_session):
+    """⚠️⚠️ **RK3 核心回归**。
+
+    用户态 token 与租户态 token 必须是**完全独立**的槽位。
+
+    若共用 ``_access_token``，那么「谁后调用谁中毒」——
+    组织架构同步、审批回流会**随机 401**，且是间歇性故障，极难排查。
+
+    本测试交替调用 20 次，断言：
+      1. 每次请求带的 Authorization 都对；
+      2. 用户态 token **没有**污染租户态缓存；
+      3. 租户态 token **没有**污染用户态缓存。
+    """
+    tenant_resp = {
+        "status_code": 200,
+        "json": {"code": 0, "tenant_access_token": "tenant-token", "expire": 7200},
+    }
+    user_resp = {
+        "status_code": 200,
+        "json": {
+            "code": 0,
+            "data": {"user": {"open_id": TEST_OPEN_ID, "user_id": TEST_USER_ID}},
+        },
+    }
+
+    transport = MockTransport(
+        {
+            "POST /auth/v3/tenant_access_token/internal": [tenant_resp] * 25,
+            f"GET /contact/v3/users/{TEST_USER_ID}": [user_resp] * 25,
+            "GET /contact/v3/departments/0/children": [
+                {"status_code": 200, "json": {"code": 0, "data": {"items": []}}}
+            ]
+            * 25,
+        }
+    )
+    client = FeishuClient(
+        app_id=TEST_APP_ID,
+        app_secret=TEST_APP_SECRET,
+        transport=transport,
+        sleep=lambda _s: None,
+    )
+
+    for _ in range(20):
+        # 租户态调用
+        client._request("GET", "/contact/v3/departments/0/children")
+        # 用户态调用（显式 token）
+        client._request_with_token(
+            "GET",
+            f"/contact/v3/users/{TEST_USER_ID}",
+            params={"user_id_type": "user_id"},
+            token="explicit-user-token",
+        )
+
+    user_calls = [req for req in transport.calls if "/contact/v3/users" in req.url.path]
+    tenant_calls = [
+        req for req in transport.calls if "/contact/v3/departments" in req.url.path
+    ]
+
+    assert len(user_calls) == 20
+    assert len(tenant_calls) == 20
+
+    for req in user_calls:
+        assert req.headers.get("Authorization") == "Bearer explicit-user-token"
+    for req in tenant_calls:
+        assert req.headers.get("Authorization") == "Bearer tenant-token"
+
+    # 缓存槽位必须互相独立
+    assert client._access_token == "tenant-token"
+    assert client._user_token is None
+
+
+def test_tenant_token_not_overwritten_by_user_flow(db_session, identity):
+    """⚠️ RK3：走完一遍用户态流程后，租户态 token 必须仍是原值。"""
+    tenant_resp = {
+        "status_code": 200,
+        "json": {"code": 0, "tenant_access_token": "tenant-original", "expire": 7200},
+    }
+    recordings = {
+        "POST /auth/v3/tenant_access_token/internal": [tenant_resp] * 5,
+        "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP] * 5,
+        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP] * 5,
+        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP] * 5,
+    }
+    client = make_client(recordings)
+    service = FeishuOAuthService(client, db_session)
+
+    # 先取一次租户态 token
+    assert client._get_access_token() == "tenant-original"
+
+    # 再走用户态流程
+    state = service.issue_state(TEST_REDIRECT)
+    service.exchange_code_for_employee("valid-code", state)
+
+    # 租户态 token 必须没被污染
+    assert client._access_token == "tenant-original"
+    assert client._get_access_token() == "tenant-original"
+
+
+# ===========================================================================
+# 飞书 token 不外泄
+# ===========================================================================
+
+
+def test_feishu_token_never_leaks_to_response(db_session, identity, monkeypatch):
+    """⚠️ 响应体里绝不能出现飞书的 user_access_token。"""
+    from fastapi.testclient import TestClient
+
+    recordings = {
+        "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
+        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+    }
+
+    # ⚠️ 用 ``app.dependency_overrides`` 注入 mock client ——
+    #    不能用 ``monkeypatch.setattr(feishu_auth, "get_feishu_client", ...)``：
+    #    路由里写的是 ``Depends(get_feishu_client)``，
+    #    FastAPI 在**导入时**就把函数对象抓进依赖图了，
+    #    之后再改模块属性对已注册的路由**不生效**。
+    from backend.app.routes import feishu_auth
+
+    app.dependency_overrides[feishu_auth.get_feishu_client] = lambda: make_client(
+        recordings
+    )
+    app.dependency_overrides[get_db] = lambda: db_session
+    client = TestClient(app)
+    try:
+        # 先拿一个合法 state（直接调服务层 —— state 存储是模块级共享的，
+        # 所以这里签发的 state，路由里新建的 service 实例也能消费到）
+        service = FeishuOAuthService(make_client({}), db_session)
+        state = service.issue_state(TEST_REDIRECT)
+
+        resp = client.post(
+            "/v1/feishu/auth/exchange",
+            json={"code": "valid-code", "state": state},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert "user-token-xxx" not in body, "飞书 user_access_token 绝不能出现在响应里"
+        assert "app-token-xxx" not in body, "飞书 app_access_token 绝不能出现在响应里"
+        # 本系统 token 应该有
+        assert "accessToken" in body
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_auth_url_endpoint_requires_configured_redirect(db_session, monkeypatch):
+    """未配置 redirect_uri 白名单 → 503（不放行）。"""
+    from fastapi.testclient import TestClient
+
+    from backend.app.routes import feishu_auth
+
+    monkeypatch.setattr(settings, "feishu_oauth_redirect_uris", "")
+    app.dependency_overrides[feishu_auth.get_feishu_client] = lambda: make_client({})
+    app.dependency_overrides[get_db] = lambda: db_session
+    client = TestClient(app)
+    try:
+        resp = client.get(f"/v1/feishu/auth/url?redirect_uri={TEST_REDIRECT}")
+        assert resp.status_code == 503
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_auth_url_rejects_whitelist_miss(db_session, monkeypatch):
+    """redirect_uri 不在白名单 → 400。"""
+    from fastapi.testclient import TestClient
+
+    from backend.app.routes import feishu_auth
+
+    app.dependency_overrides[feishu_auth.get_feishu_client] = lambda: make_client({})
+    app.dependency_overrides[get_db] = lambda: db_session
+    client = TestClient(app)
+    try:
+        resp = client.get(
+            "/v1/feishu/auth/url?redirect_uri=https://evil.example.com/steal"
+        )
+        assert resp.status_code == 400
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ===========================================================================
+# 客户端层：token 获取失败的处理
+# ===========================================================================
+
+
+def test_exchange_user_token_failure_raises(db_session):
+    """飞书返回 code != 0 → 抛 FeishuTokenError，不是静默通过。"""
+    from backend.app.services.feishu_client import FeishuTokenError
+
+    recordings = {
+        "POST /auth/v3/app_access_token/internal": [
+            {"status_code": 200, "json": {"code": 0, "app_access_token": "app-x", "expire": 7200}}
+        ],
+        "POST /authen/v1/oidc/access_token": [
+            {"status_code": 200, "json": {"code": 20021, "msg": "code invalid"}}
+        ],
+    }
+    client = make_client(recordings)
+    with pytest.raises(FeishuTokenError):
+        client.exchange_user_token("bad-code")
+
+
+def test_client_get_user_info_requires_token(db_session):
+    """缺 token / 缺 user_id → 明确报错。"""
+    from backend.app.services.feishu_client import FeishuTokenError
+
+    client = make_client({})
+    with pytest.raises(FeishuTokenError):
+        client.get_user_info("", TEST_USER_ID)
+    with pytest.raises(FeishuTokenError):
+        client.get_user_info("token", "")
+
+
+def test_http_client_uses_base_url():
+    """冒烟：客户端 BASE_URL 与端点常量正确。"""
+    assert FeishuClient.BASE_URL == "https://open.feishu.cn/open-apis"
+    assert FeishuClient.TOKEN_ENDPOINT == "/auth/v3/tenant_access_token/internal"
+    assert issubclass(httpx.HTTPError, Exception)

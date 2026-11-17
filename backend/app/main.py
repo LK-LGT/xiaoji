@@ -182,6 +182,16 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    # FS-1/FS-2：飞书免登 OAuth 路由
+    from .routes import feishu_auth as feishu_auth_routes
+    app.include_router(feishu_auth_routes.router)
+    print("[APP] Feishu auth router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register feishu auth router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     from .routes import messages as messages_routes
     app.include_router(messages_routes.router)
     print("[APP] Messages router registered successfully")
