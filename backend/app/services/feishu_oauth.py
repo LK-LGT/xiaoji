@@ -71,12 +71,29 @@ class OAuthResult:
 
 
 class FeishuOAuthError(Exception):
-    """OAuth 流程错误。"""
+    """OAuth 流程错误。
 
-    def __init__(self, message: str, *, code: str = "feishu_oauth_error") -> None:
+    ⚠️ ``reason`` 是**细粒度诊断码**（如 ``exited`` / ``disabled`` /
+    ``not_synced``），与 ``code``（粗粒度分类，决定 HTTP 状态码）分工不同。
+
+    为什么需要它：
+    同一个 ``code="identity_not_bound"`` 背后有**四种**要处理方式
+    完全不同的情况（已离职 / 已停用 / 未同步 / 数据冲突）。
+    只回一句中文文案，前端只能显示通用提示 ——
+    用户看到「未绑定」会以为要重新绑定，但**已离职的人根本不该绑定**。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "feishu_oauth_error",
+        reason: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
+        self.reason = reason
 
 
 # ⚠️⚠️ **state 存储必须是模块级共享的**（不是实例字段）。
@@ -360,7 +377,16 @@ class FeishuOAuthService:
 
         # ⚠️ 身份解析交给 resolve_employee —— 它只认**在职且启用**的员工。
         #    这一步是安全边界，不要绕过（约束 C3）。
-        employee = FeishuIdentityService(self.db).resolve_employee(open_id=open_id)
+        identity_service = FeishuIdentityService(self.db)
+
+        # ⚠️ 三种身份键都试一遍 —— 不同同步批次可能只落了其中一种。
+        identity_candidates = [("open_id", open_id)]
+        if user_id:
+            identity_candidates.append(("user_id", str(user_id)))
+        if union_id:
+            identity_candidates.append(("union_id", str(union_id)))
+
+        employee = identity_service.resolve_employee(open_id=open_id)
         if employee is None:
             # 再试一次 user_id / union_id —— 不同同步批次可能只落了其中一种。
             for kwargs in (
@@ -369,14 +395,46 @@ class FeishuOAuthService:
             ):
                 if not kwargs:
                     continue
-                employee = FeishuIdentityService(self.db).resolve_employee(**kwargs)
+                employee = identity_service.resolve_employee(**kwargs)
                 if employee is not None:
                     break
 
         if employee is None:
+            # ⚠️⚠️ **不能只报一句「尚未绑定」**（2026-11-17 实测发现）。
+            #
+            #    「解析不到人」有**四种**截然不同的原因，要做的处理完全不同：
+            #      not_synced       飞书里根本没这个人 → 该跑同步
+            #      exited           人已离职           → 走离职流程，不该再登录
+            #      disabled         账号被禁用         → 该找管理员解封
+            #      ambiguous        一个身份绑多人     → 人工解绑（数据冲突）
+            #
+            #    把它们混成一句话，会让排查方向**完全错** ——
+            #    例如「已离职」被当成「没绑定」，于是有人去反复跑同步（没用）。
+            #
+            #    ⚠️ 诊断必须用**全部**候选键 —— 单一键可能匹配不上，
+            #       但另一个键能匹配上（不同同步批次只落了其中一种）。
+            diagnosis = identity_service.diagnose_identity(
+                **{key: value for key, value in identity_candidates if value}
+            )
+            status = str(diagnosis.get("status") or "not_synced")
+
+            messages = {
+                "exited": "该账号对应的员工已离职，无法使用飞书免登登录。",
+                "disabled": "该员工账号已被停用，无法使用飞书免登登录，请联系管理员。",
+                "ambiguous": "该飞书账号在系统中存在多条绑定记录，请联系管理员处理。",
+                "inactive_binding": (
+                    "该飞书账号的绑定记录已失效，请联系管理员执行组织架构同步。"
+                ),
+                "not_synced": (
+                    "该飞书账号未同步到系统，请联系管理员执行组织架构同步后重试。"
+                ),
+            }
             raise FeishuOAuthError(
-                "该飞书账号尚未绑定员工身份，请先在系统中绑定",
+                messages.get(status, messages["not_synced"]),
                 code="identity_not_bound",
+                # ⚠️ 额外带上诊断码 —— 前端可据此给出**针对性**提示，
+                #    而不用从中文文案里猜。
+                reason=status,
             )
 
         return OAuthResult(

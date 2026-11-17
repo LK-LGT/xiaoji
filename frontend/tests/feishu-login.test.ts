@@ -253,3 +253,84 @@ test('回调页回跳目标做权限校验且排除回调页自身', () => {
 test('回调页回跳意图来自 sessionStorage 而非 URL 参数', () => {
   assert.match(callbackView, /consumeFeishuRedirectIntent\(\)/)
 })
+
+// ═══════════════════════════════════════════════════════════════════
+// ⚠️ 免登失败原因的**细粒度提示**（2026-11-17 新增）
+//
+// 背景：后端「identity_not_bound」背后有四种要处理方式完全不同的情况
+//       （已离职 / 已停用 / 未同步 / 数据冲突）。
+//       原来只显示一句「请检查重定向 URL」—— 对已离职的人纯属误导。
+// ═══════════════════════════════════════════════════════════════════
+
+test('回调页按后端诊断码给出针对性提示', () => {
+  // ⚠️ 必须消费后端传来的 reason，而不是从中文文案里猜。
+  assert.match(callbackView, /applyReason/)
+  assert.match(callbackView, /REASON_HINTS/)
+  // 四种诊断码都要有对应的提示
+  for (const reason of ['exited', 'disabled', 'not_synced', 'ambiguous']) {
+    assert.ok(
+      callbackView.includes(`${reason}:`),
+      `缺少「${reason}」的针对性提示`,
+    )
+  }
+  // ⚠️ 关键：必须有**实际调用** —— 只声明 REASON_HINTS 而不调用，
+  //   提示永远不生效。上一版护栏就栽在这（只查字符串存在）。
+  assert.match(
+    callbackView,
+    /applyReason\(\(err as \{ reason\?: string \} \| null\)\?\.reason\)/,
+    'catch 块里必须调用 applyReason 传入后端返回的 reason',
+  )
+})
+
+test('回调页按诊断码决定「重新发起」按钮是否展示', () => {
+  // ⚠️ 已离职 / 已停用时重试必然还是同样结果 ——
+  //   展示一个注定失败的按钮只会让人反复点，还以为是网络问题。
+  assert.match(callbackView, /retryable/)
+  assert.match(callbackView, /v-if="retryable"/)
+  // ⚠️ exited / disabled / ambiguous 三种都必须 **不可重试**。
+  //    只断言「存在某个 retryable: false」是不够的 ——
+  //    哪怕 exited 写成了 true，这条断言也会通过。
+  //
+  //    ⚠️ 用「切块」而不是一条正则：REASON_HINTS 的值里有换行和中文标点，
+  //    正则的 `{0,N}` 量词跨不过去（实测三种 reason 全都匹配失败）。
+  const keys = ['exited', 'disabled', 'ambiguous', 'not_synced', 'inactive_binding']
+  const positions = keys
+    .map((k) => ({ k, idx: callbackView.indexOf(`\n  ${k}: {`) }))
+    .filter((x) => x.idx >= 0)
+    .sort((a, b) => a.idx - b.idx)
+
+  assert.equal(positions.length, keys.length, '五种诊断码都必须有对应的配置块')
+
+  for (let i = 0; i < positions.length; i += 1) {
+    const { k, idx } = positions[i]
+    const end = i + 1 < positions.length ? positions[i + 1].idx : callbackView.length
+    const block = callbackView.slice(idx, end)
+    // ⚠️ 这三种**不可重试**（重试必然还是同样结果）——
+    //    其余两种（未同步 / 绑定失效）重跑同步可能能修好 → 可重试。
+    const shouldBeRetryable = k === 'not_synced' || k === 'inactive_binding'
+    const actual = /retryable:\s*(true|false)/.exec(block)?.[1]
+    assert.ok(actual, `「${k}」的配置块里必须有 retryable`)
+    assert.equal(
+      actual,
+      shouldBeRetryable ? 'true' : 'false',
+      `「${k}」的 retryable 应该是 ${shouldBeRetryable ? 'true' : 'false'}`,
+    )
+  }
+})
+
+test('HTTP 层能从结构化 detail 里取出 message 与 reason', () => {
+  // ⚠️ 后端把 reason 放在 detail 对象里（{"detail":{"message":..,"reason":..}}）。
+  //   旧代码只认字符串 detail —— 对象会退化成「请求失败」，把信息全丢了。
+  assert.match(httpApi, /detail\?\.message/)
+  // ⚠️ 必须是**实际赋值** —— 声明一个 `reason` 字段但从不赋值，
+  //   前端拿到的 reason 永远是 undefined。
+  assert.match(
+    httpApi,
+    /requestError\.reason\s*=\s*\n?\s*\(typeof detail === 'object' && detail !== null \? detail\.reason : undefined\)/,
+    'requestError.reason 必须从结构化 detail 里取到',
+  )
+})
+
+test('HTTP 层对字符串 detail 仍然正常（不能因新增对象分支而回退）', () => {
+  assert.match(httpApi, /typeof detail === 'string'/)
+})

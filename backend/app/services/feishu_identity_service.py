@@ -288,6 +288,105 @@ class FeishuIdentityService:
             return None
         return employee
 
+    def diagnose_identity(self, **identity_values: str) -> dict[str, Any]:
+        """诊断「为什么解析不到员工」，区分**三种**完全不同的原因。
+
+        ⚠️ **为什么需要这个**：
+
+        ``resolve_employee`` 返回 ``None`` 时，调用方只能报一句
+        「该飞书账号尚未绑定员工身份」—— 但这三种原因**要做的处理完全不同**：
+
+        | 原因 | 真实含义 | 该找谁 |
+        |---|---|---|
+        | ``not_synced`` | 飞书里根本没有这个人（组织架构没同步到） | 跑同步 / 联系管理员 |
+        | ``exited`` | 人已离职 | 走离职流程，**不该**再登录 |
+        | ``disabled`` | 账号被禁用（在职但被停用） | 联系管理员解封 |
+        | ``ambiguous`` | 一个身份绑了多个人（数据冲突） | 人工解绑 |
+
+        ⚠️ 把它们混成一句话会导致**排查方向完全错** ——
+        例如「已离职」被当成「没绑定」，于是有人去反复跑同步（没用），
+        或者反过来去催人绑定（人已离职，不该绑定）。
+
+        返回字典：
+            - ``status``: 上述状态之一（``resolved`` 表示能解析到）
+            - ``employee``: 解析到的员工（仅 ``resolved``）
+            - ``matched_employee_ids``: 匹配到的员工 ID 列表
+              （诊断用；⚠️ **不要**直接信任它做鉴权 —— 见 ``resolve_employee``）
+        """
+        if not identity_values:
+            return {"status": "not_synced", "employee": None, "matched_employee_ids": []}
+
+        clauses = []
+        for identity_type, value in identity_values.items():
+            if identity_type not in IDENTITY_TYPES or not value:
+                continue
+            clauses.append(
+                (FeishuIdentity.identity_type == identity_type)
+                & (FeishuIdentity.identity_value == value)
+            )
+        if not clauses:
+            return {"status": "not_synced", "employee": None, "matched_employee_ids": []}
+
+        # ⚠️ 这里**故意不**加 ``active=True`` 过滤 ——
+        #    要看到「行存在但被置为 inactive」这种情况，
+        #    否则离职/停用的人会退化成「not_synced」，诊断就白做了。
+        rows = self.db.execute(
+            select(FeishuIdentity).where(or_(*clauses))
+        ).scalars().all()
+        employee_ids = {row.employee_id for row in rows}
+
+        if not employee_ids:
+            return {
+                "status": "not_synced",
+                "employee": None,
+                "matched_employee_ids": [],
+            }
+
+        if len(employee_ids) != 1:
+            return {
+                "status": "ambiguous",
+                "employee": None,
+                "matched_employee_ids": sorted(employee_ids),
+            }
+
+        employee = self.db.get(Employee, next(iter(employee_ids)))
+        if employee is None:
+            return {
+                "status": "not_synced",
+                "employee": None,
+                "matched_employee_ids": sorted(employee_ids),
+            }
+
+        if employee.employment_status == "exited":
+            return {
+                "status": "exited",
+                "employee": employee,
+                "matched_employee_ids": sorted(employee_ids),
+            }
+
+        if employee.account_status and employee.account_status != "enabled":
+            return {
+                "status": "disabled",
+                "employee": employee,
+                "matched_employee_ids": sorted(employee_ids),
+            }
+
+        # ⚠️ 行存在、员工在职且启用，但身份行是 inactive ——
+        #    说明身份绑定与员工状态**不同步**（同步逻辑漏了，或并发写导致）。
+        active_rows = [r for r in rows if r.active]
+        if not active_rows:
+            return {
+                "status": "inactive_binding",
+                "employee": employee,
+                "matched_employee_ids": sorted(employee_ids),
+            }
+
+        return {
+            "status": "resolved",
+            "employee": employee,
+            "matched_employee_ids": sorted(employee_ids),
+        }
+
     def detect_conflicts(self) -> list[dict[str, Any]]:
         """检测一人多账号、账号多身份及失效员工绑定冲突。"""
         conflicts: list[dict[str, Any]] = []

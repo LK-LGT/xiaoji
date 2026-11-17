@@ -22,14 +22,29 @@
         <span class="feishu-callback__code feishu-callback__code--error">FAILED</span>
         <h1>免登未完成</h1>
         <el-alert :title="error" type="error" :closable="false" show-icon />
-        <p class="feishu-callback__hint">
+        <!--
+          ⚠️ **按诊断码给针对性提示**（2026-11-17 改）。
+
+          原来是一句通用文案：「若反复失败，多半是重定向 URL 不一致，请联系管理员」。
+          但「identity_not_bound」背后有四种要处理方式完全不同的情况 ——
+          把它们混成一句，会让用户和排查者都走错方向：
+
+            exited        人已离职   → 提「重新发起登录」是**无用**的
+            disabled      账号被停用 → 提「重定向 URL」更是**误导**
+            not_synced    未同步     → 该找管理员跑同步
+            ambiguous     数据冲突   → 该人工解绑
+        -->
+        <p v-if="hint" class="feishu-callback__hint">{{ hint }}</p>
+        <p v-else class="feishu-callback__hint">
           飞书免登失败不影响账号密码登录。<br />
           若反复失败，多半是「飞书后台的重定向 URL 与本系统配置不一致」，
           请联系管理员核对。
         </p>
         <div class="feishu-callback__actions">
-          <el-button type="primary" @click="retry">重新发起飞书登录</el-button>
-          <el-button @click="goPasswordLogin">改用账号密码登录</el-button>
+          <!-- ⚠️ 已离职 / 已停用时，「重新发起飞书登录」必然还是同样的结果 ——
+               展示一个注定失败的按钮只会让人反复点。 -->
+          <el-button v-if="retryable" type="primary" @click="retry">重新发起飞书登录</el-button>
+          <el-button type="primary" @click="goPasswordLogin">改用账号密码登录</el-button>
         </div>
       </template>
     </section>
@@ -79,12 +94,68 @@ const authStore = useAuthStore()
 const status = ref<CallbackStatus>('pending')
 const error = ref('')
 
+/**
+ * 针对具体失败原因的提示（空字符串 = 用默认通用文案）。
+ *
+ * ⚠️ **为什么要按诊断码分流**（2026-11-17 改）：
+ * 「identity_not_bound」背后有四种要处理方式**完全不同**的情况。
+ * 混成一句通用文案会让人走错方向 ——
+ * 比如「已离职」的人看到「请检查重定向 URL」纯属误导。
+ */
+const hint = ref('')
+
+/**
+ * 是否展示「重新发起飞书登录」按钮。
+ *
+ * ⚠️ 已离职 / 已停用 / 数据冲突时，**重试必然还是同样的结果** ——
+ * 展示一个注定失败的按钮只会让人反复点，还以为是网络问题。
+ */
+const retryable = ref(true)
+
+/** 后端诊断码 → (提示文案, 是否可重试)。 */
+const REASON_HINTS: Record<string, { hint: string; retryable: boolean }> = {
+  exited: {
+    hint: '该员工账号已离职，无法使用飞书免登登录。'
+      + '如需恢复，请联系管理员在系统中重新启用账号。',
+    retryable: false,
+  },
+  disabled: {
+    hint: '该员工账号已被停用，无法使用飞书免登登录。'
+      + '如需恢复，请联系管理员解除停用。',
+    retryable: false,
+  },
+  inactive_binding: {
+    hint: '该飞书账号在系统中的绑定记录已失效，'
+      + '请联系管理员执行一次组织架构同步后重试。',
+    retryable: true,
+  },
+  ambiguous: {
+    hint: '该飞书账号在系统中存在多条绑定记录，'
+      + '请联系管理员处理重复绑定后再试。',
+    retryable: false,
+  },
+  not_synced: {
+    hint: '该飞书账号尚未同步到系统，'
+      + '请联系管理员执行一次组织架构同步后重试。',
+    retryable: true,
+  },
+}
+
 /** 授权失败时飞书可能带上 `error` / `error_description`（用户点了「拒绝授权」）。 */
 function readQuery(key: string): string {
   const value = route.query[key]
   if (typeof value === 'string') return value
   if (Array.isArray(value) && typeof value[0] === 'string') return value[0]
   return ''
+}
+
+/** 按后端诊断码填入针对性提示。 */
+function applyReason(reason: string | undefined): void {
+  if (!reason) return
+  const matched = REASON_HINTS[reason]
+  if (!matched) return
+  hint.value = matched.hint
+  retryable.value = matched.retryable
 }
 
 onMounted(async () => {
@@ -127,6 +198,9 @@ onMounted(async () => {
   catch (err) {
     status.value = 'error'
     error.value = err instanceof Error ? err.message : '免登失败，请重试或改用账号密码登录。'
+    // ⚠️ 后端会带上细粒度诊断码（exited / disabled / not_synced / ambiguous …）——
+    //   据此给针对性提示，并决定「重新发起」按钮是否值得展示。
+    applyReason((err as { reason?: string } | null)?.reason)
   }
 })
 

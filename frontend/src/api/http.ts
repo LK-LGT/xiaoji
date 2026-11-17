@@ -133,10 +133,28 @@ http.interceptors.response.use((response) => {
   // ⚠️ 同上：FastAPI HTTPException 的错误体是 ``{"detail": "..."}``，
   //   本项目自定义错误体是 ``{"code": ..., "message": ...}``。
   //   两个都兜住，否则用户看到的是 "Request failed with status code XXX"。
+  //
+  // ⚠️⚠️ **detail 可能是对象**（2026-11-17 新增）：
+  //   免登的 ``identity_not_bound`` 需要区分「已离职 / 已停用 / 未同步 / 数据冲突」，
+  //   所以后端返回 ``{"detail": {"message": "...", "reason": "exited"}}``。
+  //   旧代码只认字符串 —— 对象会退化成 "请求失败"，把有用信息全丢了。
   const data = error?.response?.data
-  const rawMessage = data?.message || data?.detail || error?.message || '请求失败'
+  const detail = data?.detail
+  const rawMessage =
+    data?.message ||
+    (typeof detail === 'string' ? detail : detail?.message) ||
+    error?.message ||
+    '请求失败'
   const message = typeof rawMessage === 'string' ? rawMessage : '请求失败'
-  const requestError = new Error(message) as Error & { code?: number }
+  const requestError = new Error(message) as Error & {
+    code?: number
+    reason?: string
+  }
   requestError.code = data?.code
+  // ⚠️ 透传细粒度诊断码（exited / disabled / not_synced / ambiguous）——
+  //   让页面能给出**针对性**提示，而不是显示一句通用文案。
+  requestError.reason =
+    (typeof detail === 'object' && detail !== null ? detail.reason : undefined) ??
+    data?.reason
   return Promise.reject(requestError)
 })

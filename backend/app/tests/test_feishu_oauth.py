@@ -391,6 +391,177 @@ def test_inactive_employee_cannot_login(
 
 
 # ===========================================================================
+# ⚠️ 免登失败原因的**细粒度诊断**（2026-11-17 新增）
+# ===========================================================================
+
+
+def _exchange_and_get_error(db_session, identity):
+    """跑一次免登交换，返回抛出的 ``FeishuOAuthError``。"""
+    recordings = {
+        "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
+        "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
+        "GET /authen/v1/user_info": [USER_INFO_RESP],
+    }
+    client = make_client(recordings)
+    service = FeishuOAuthService(client, db_session)
+    state = service.issue_state(TEST_REDIRECT)
+    with pytest.raises(FeishuOAuthError) as exc:
+        service.exchange_code_for_employee("valid-code", state)
+    return exc.value
+
+
+def test_leaver_gets_distinct_reason_not_generic_unbound(db_session, identity):
+    """⚠️ **离职**的人必须拿到专门的提示，不能是笼统的「尚未绑定」。
+
+    为什么重要：
+    「已离职」被当成「没绑定」→ 有人会去反复跑组织架构同步（**没用**），
+    或者反过来去催人绑定（人已离职，**不该**绑定）。
+    两种都会把排查带偏。
+    """
+    emp = db_session.get(Employee, "emp_test_001")
+    emp.employment_status = "exited"
+    emp.account_status = "disabled"
+    db_session.commit()
+
+    err = _exchange_and_get_error(db_session, identity)
+    assert err.code == "identity_not_bound"
+    assert err.reason == "exited"
+    assert "离职" in err.message
+    assert "同步" not in err.message, "离职的人不该被引导去跑同步"
+
+
+def test_disabled_account_gets_distinct_reason(db_session, identity):
+    """⚠️ **在职但账号被停用** → 与离职区分开（处理方式不同：解封 vs 离职流程）。"""
+    emp = db_session.get(Employee, "emp_test_001")
+    emp.employment_status = "active"
+    emp.account_status = "disabled"
+    db_session.commit()
+
+    err = _exchange_and_get_error(db_session, identity)
+    assert err.reason == "disabled"
+    assert "停用" in err.message
+    assert "离职" not in err.message
+
+
+def test_not_synced_gets_sync_guidance(db_session):
+    """⚠️ **飞书里根本没这个人** → 该引导去跑同步（而不是说「去绑定」）。"""
+    emp = Employee(id="emp_other", name="别人", login_account="other")
+    db_session.add(emp)
+    db_session.commit()
+
+    err = _exchange_and_get_error(db_session, None)
+    assert err.reason == "not_synced"
+    assert "同步" in err.message
+
+
+def test_ambiguous_binding_gets_distinct_reason(db_session, identity):
+    """⚠️ **不同身份键指向不同员工**（数据冲突）→ 该人工解绑，且绝不放行。
+
+    ⚠️ 怎么才会发生：
+    数据库对 ``(identity_type, identity_value)`` 有 UNIQUE 约束，
+    所以**同一个 open_id 不可能绑到两个人**（DB 层就挡住了）。
+    但**跨类型**可能错位 —— 例如 ``open_id`` 指向员工 A、
+    而 ``union_id`` 指向员工 B（换绑写了一半 / 同步并发导致）。
+
+    此时 ``resolve_employee`` 因 ``len(employee_ids) != 1`` 返回 None
+    ⇒ 落入 ambiguous 分支 ⇒ **绝不能放行**（放行等于随便挑一个人登录）。
+    """
+    other = Employee(id="emp_dup", name="另一个人", login_account="dup")
+    db_session.add(other)
+    db_session.commit()
+    # 不同类型、不同值 → 不触发 UNIQUE 约束，但会指向不同员工
+    db_session.add(
+        FeishuIdentity(
+            employee_id="emp_dup",
+            identity_type="union_id",
+            identity_value="on_test_union_002",
+            active=True,
+        )
+    )
+    db_session.commit()
+
+    from backend.app.services.feishu_identity_service import FeishuIdentityService
+
+    svc = FeishuIdentityService(db_session)
+    result = svc.diagnose_identity(
+        open_id=TEST_OPEN_ID, union_id="on_test_union_002"
+    )
+    assert result["status"] == "ambiguous"
+    assert len(result["matched_employee_ids"]) == 2
+    assert result["employee"] is None, "冲突时绝不能返回某个员工（会被当成放行）"
+
+    # ⚠️ resolve_employee 同样必须拒绝 —— 这是安全边界
+    assert svc.resolve_employee(open_id=TEST_OPEN_ID, union_id="on_test_union_002") is None
+
+
+def test_diagnose_identity_resolves_when_healthy(db_session, identity):
+    """⚠️ 正常路径下诊断必须返回 ``resolved``，且给出员工。"""
+    from backend.app.services.feishu_identity_service import FeishuIdentityService
+
+    result = FeishuIdentityService(db_session).diagnose_identity(open_id=TEST_OPEN_ID)
+    assert result["status"] == "resolved"
+    assert result["employee"] is not None
+    assert result["employee"].id == "emp_test_001"
+
+
+def test_diagnose_identity_reports_inactive_binding(db_session, identity):
+    """⚠️ 身份行存在但 ``active=False``、员工却在职且启用 → ``inactive_binding``。
+
+    这是**不同步**的信号（同步逻辑漏了，或并发写导致），
+    与「未同步」的处理方式不同：重跑同步可能能修好。
+    """
+    emp = db_session.get(Employee, "emp_test_001")
+    emp.employment_status = "active"
+    emp.account_status = "enabled"
+    identity.active = False
+    db_session.commit()
+
+    from backend.app.services.feishu_identity_service import FeishuIdentityService
+
+    result = FeishuIdentityService(db_session).diagnose_identity(open_id=TEST_OPEN_ID)
+    assert result["status"] == "inactive_binding"
+
+    err = _exchange_and_get_error(db_session, identity)
+    assert err.reason == "inactive_binding"
+    assert "同步" in err.message
+
+
+def test_identity_not_bound_error_carries_reason_through_route(db_session):
+    """⚠️ 路由层必须把 ``reason`` 透出（结构化 detail）。
+
+    少了它，前端只能显示通用文案 —— 那正是本次要修的问题。
+    """
+    from fastapi.testclient import TestClient
+
+    from backend.app.main import app
+    from backend.app.routes import feishu_auth
+
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[feishu_auth.get_feishu_client] = lambda: make_client(
+        {
+            "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
+            "GET /authen/v1/user_info": [USER_INFO_RESP],
+        }
+    )
+    client = TestClient(app)
+    try:
+        service = FeishuOAuthService(make_client({}), db_session)
+        state = service.issue_state(TEST_REDIRECT)
+
+        resp = client.post(
+            "/v1/feishu/auth/exchange",
+            json={"code": "valid-code", "state": state},
+        )
+        assert resp.status_code == 403
+        detail = resp.json()["detail"]
+        assert isinstance(detail, dict), "detail 必须是结构化的，才能带上 reason"
+        assert detail["reason"] == "not_synced"
+        assert "message" in detail
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ===========================================================================
 # 用例 7：open_id 未绑定
 # ===========================================================================
 

@@ -165,7 +165,19 @@ def exchange(
             "state_mismatch",
         ):
             status = 400
-        raise HTTPException(status_code=status, detail=exc.message) from exc
+        # ⚠️⚠️ **detail 里带上细粒度诊断码**（2026-11-17 改）。
+        #
+        #    为什么：``identity_not_bound`` 背后有四种要处理方式完全不同的情况
+        #    （已离职 / 已停用 / 未同步 / 数据冲突）。
+        #    只回一句中文文案，前端只能显示通用提示 ——
+        #    用户看到「未绑定」会以为要重新绑定，但**已离职的人根本不该绑定**。
+        #
+        #    前端可据此给出针对性引导（见 ``FeishuCallback.vue``）。
+        #    ⚠️ 用 dict 而非纯字符串 —— FastAPI 的 detail 支持结构化内容。
+        detail: Any = exc.message
+        if exc.reason:
+            detail = {"message": exc.message, "reason": exc.reason}
+        raise HTTPException(status_code=status, detail=detail) from exc
 
     employee = db.get(Employee, result.employee_id)
     if employee is None:  # pragma: no cover - resolve_employee 已保证存在
