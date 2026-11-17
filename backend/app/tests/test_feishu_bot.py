@@ -281,8 +281,12 @@ def test_missing_token_returns_503(http, client_db, monkeypatch):
     """未配置 Token → 503，**绝不放行**。
 
     放行的后果：任何人都能伪造卡片回调，把草稿写进别人名下。
+
+    ⚠️ 机器人 Token 留空时会**回退**到审批 Token，所以两个都得为空才是
+    「真的没配」。
     """
     monkeypatch.setattr(settings, "feishu_bot_event_token", "")
+    monkeypatch.setattr(settings, "feishu_approval_webhook_token", "")
 
     resp = http.post(EVENTS_URL, json=_message_event("填月计划"))
 
@@ -311,26 +315,71 @@ def test_url_verification_returns_challenge(http):
     assert resp.json() == {"challenge": "abc-challenge-123"}
 
 
-def test_bot_uses_dedicated_token_not_approval_token(http, client_db, monkeypatch):
-    """⚠️ 约束 C2：机器人用**独立**的 Verification Token。
+def test_bot_token_falls_back_to_approval_token(http, client_db, monkeypatch):
+    """⚠️ **Verification Token 是应用级的** —— 三条链路只能共用一个。
 
-    不能复用审批的 —— 三条事件源混用一个 Token 时，
-    排障根本分不清是哪条链路被调，一次泄露就全线失守。
+    飞书官方原文：「Verification Token 是应用的验证标识。开发者后台会为应用
+    自动生成 Verification Token」—— 一个应用只有一个；且
+    「每个应用只能配置一个请求地址，该应用订阅的所有事件都会发送到该请求地址」。
+
+    ⇒ 运维时配了一个 Token 却漏配另一个，**不该导致 503**。
+    机器人 Token 留空时回退用审批 Token（同一个应用下二者本就相同）。
     """
-    from backend.app.core.config import settings as real_settings
+    monkeypatch.setattr(settings, "feishu_bot_event_token", "")
+    monkeypatch.setattr(settings, "feishu_approval_webhook_token", "APP-LEVEL-TOKEN")
 
-    monkeypatch.setattr(real_settings, "feishu_approval_webhook_token", "APPROVAL-TOKEN-XYZ")
-
-    # 把机器人 Token 设成与审批不同的值
-    monkeypatch.setattr(settings, "feishu_bot_event_token", BOT_TOKEN)
-
-    assert settings.feishu_bot_event_token != settings.feishu_approval_webhook_token
-
-    # 审批 Token 不该被机器人端点接受
     body = _message_event("填月计划")
-    body["header"]["token"] = "APPROVAL-TOKEN-XYZ"
+    body["header"]["token"] = "APP-LEVEL-TOKEN"
+
     resp = http.post(EVENTS_URL, json=body)
-    assert resp.status_code == 401, "机器人端点接受了审批 Token"
+
+    assert resp.status_code == 200, "回退到审批 Token 后不该 503"
+    assert resp.json()["code"] == 0
+
+
+def test_bot_token_takes_precedence_when_set(http, client_db, monkeypatch):
+    """机器人 Token **有配就用它**（独立应用部署场景）。"""
+    monkeypatch.setattr(settings, "feishu_bot_event_token", BOT_TOKEN)
+    monkeypatch.setattr(settings, "feishu_approval_webhook_token", "APP-LEVEL-TOKEN")
+
+    # 审批 Token 在机器人端点上应被拒（因为配了机器人专属 Token）
+    body = _message_event("填月计划")
+    body["header"]["token"] = "APP-LEVEL-TOKEN"
+    resp = http.post(EVENTS_URL, json=body)
+    assert resp.status_code == 401
+
+    # 机器人 Token 应被接受
+    body2 = _message_event("填月计划", message_id="om_bot_token_ok")
+    resp2 = http.post(EVENTS_URL, json=body2)
+    assert resp2.status_code == 200
+
+
+def test_bot_endpoint_ignores_other_chains_event_types(http, client_db, org):
+    """⚠️ **隔离靠事件类型，不靠 Token**（Token 是应用级的）。
+
+    审批 / 通讯录的事件即使带着合法 Token 打到机器人端点，
+    也必须被**忽略** —— 机器人端点不是审批回流的入口。
+    """
+    body = _message_event("填月计划")
+    # 换成审批事件类型（同一个应用，共用同一个 Token）
+    body["header"]["event_type"] = "approval.approval.updated_v4"
+
+    resp = http.post(EVENTS_URL, json=body)
+
+    assert resp.status_code == 200
+    assert resp.json()["code"] == 0
+    # 没建会话、没发卡片、没写草稿
+    assert client_db.execute(select(BotSession)).scalars().all() == []
+    assert http.feishu_sent == []
+
+
+def test_bot_event_type_whitelist_is_explicit():
+    """白名单本身要被钉住 —— 加新事件类型时必须显式改这里。"""
+    assert feishu_bot_routes.EVENT_MESSAGE_RECEIVE in feishu_bot_routes.BOT_EVENT_TYPES
+    assert feishu_bot_routes.EVENT_CARD_ACTION in feishu_bot_routes.BOT_EVENT_TYPES
+    # 审批 / 通讯录的事件类型**绝不能**进白名单
+    assert "approval.approval.updated_v4" not in feishu_bot_routes.BOT_EVENT_TYPES
+    assert not any(t.startswith("contact.") for t in feishu_bot_routes.BOT_EVENT_TYPES)
 
 
 # ===========================================================================

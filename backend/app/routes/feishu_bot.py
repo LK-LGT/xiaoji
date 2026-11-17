@@ -15,18 +15,36 @@
 --------
 与 A8 审批 webhook **同一套机制**（约束 C1）：
 
-- **明文模式**（未配 Encrypt Key）→ 比对 ``header.token`` == ``FEISHU_BOT_EVENT_TOKEN``
+- **明文模式**（未配 Encrypt Key）→ 比对 ``header.token`` == 应用 Verification Token
 - **加密模式**（配了 Encrypt Key）→ 先验签（``X-Lark-Signature``）再解密
 
-⚠️ **机器人用独立的 Verification Token**（约束 C2）——
-**不**复用审批的 ``FEISHU_APPROVAL_WEBHOOK_TOKEN``。
-三条事件源（审批 / 通讯录 / 机器人）混用 Token 的话，
-排障时根本分不清是哪条链路被调；一次泄露就是全线失守。
+⚠️ **Verification Token 是「应用级」的 —— 只能共用**（约束 C2 的修正）
+--------------------------------------------------------------
+飞书官方原文（开放平台「将事件发送至开发者服务器」）：
+
+    「Verification Token 是**应用的验证标识**。开发者后台会为应用自动生成
+     Verification Token」
+    「**每个应用只能配置一个请求地址，该应用订阅的所有事件都会发送到
+     该请求地址。**」
+
+⇒ 一个应用只有一个 Token、一个请求地址。
+⇒ 审批 / 通讯录 / 机器人**必然共用**同一个 Token —— 这是飞书的机制，
+   不是配置问题。
+
+⇒ 所以**隔离靠「端点路径 + 事件类型白名单」，不靠 Token**：
+   本模块只处理 ``im.message.receive_v1`` 与 ``card.action.trigger``，
+   其余事件类型**一律忽略**（返回 ``{"code": 0}``）。
+
+⇒ Token 取值：``FEISHU_BOT_EVENT_TOKEN`` 优先，留空则**回退**用
+   ``FEISHU_APPROVAL_WEBHOOK_TOKEN``（同一应用下二者本就相同，
+   避免「配了一个漏配另一个」导致 503）。
 
 握手
 ----
 飞书保存回调地址时会 POST 一个带 ``challenge`` 的请求，
 **必须在 1 秒内**原样返回 ``{"challenge": "<值>"}``。
+⚠️ 握手**必须早于 Token 校验** —— 飞书保存地址时 body 里没有业务 token，
+   先校验 Token 会直接 401，飞书就**保存不了地址**。
 
 安全边界
 --------
@@ -64,6 +82,16 @@ EVENT_MESSAGE_RECEIVE = "im.message.receive_v1"
 #: 卡片交互事件
 EVENT_CARD_ACTION = "card.action.trigger"
 
+#: ⚠️ **本端点处理的事件类型白名单**。
+#:
+#: 飞书的 Verification Token 是**应用级**的，且「每个应用只能配置一个请求地址，
+#: 该应用订阅的所有事件都会发送到该请求地址」——
+#: 所以审批 / 通讯录 / 机器人**共用**一个 Token，**隔离靠的是事件类型**。
+#:
+#: 本端点只处理下面两种事件，其余一律忽略（返回 code 0，不报错 ——
+#: 报错会让飞书反复重推）。审批与通讯录的事件落到各自端点。
+BOT_EVENT_TYPES = frozenset({EVENT_MESSAGE_RECEIVE, EVENT_CARD_ACTION})
+
 
 # ===========================================================================
 # 依赖
@@ -81,10 +109,30 @@ def _client() -> FeishuClient:
 
 
 def _require_bot_token() -> str:
-    """取机器人 Verification Token —— 未配置直接 503。"""
-    token = settings.feishu_bot_event_token
+    """取机器人事件的 Verification Token —— 没有可用 Token 就 503。
+
+    ⚠️ **Verification Token 是「应用级」的**（飞书官方）：
+    「Verification Token 是应用的验证标识。开发者后台会为应用自动生成
+    Verification Token」—— 一个应用只有一个，
+    且「每个应用只能配置一个请求地址，该应用订阅的所有事件都会发送到
+    该请求地址」。
+
+    ⇒ 同一个应用里，审批 / 通讯录 / 机器人**必然共用**一个 Token。
+    ⇒ 所以这里**回退**到 `feishu_approval_webhook_token`：
+    运维时配了一个 Token 却漏配另一个，不该导致 503。
+
+    ⇒ **隔离靠端点路径 + 事件类型白名单，不靠 Token**：
+    本端点只处理 `im.message.receive_v1` 与 `card.action.trigger`，
+    其余事件类型一律忽略（见 `_handle_message_event` / `_handle_card_action`）。
+
+    独立部署（机器人单独一个飞书应用）时，填 `FEISHU_BOT_EVENT_TOKEN` 即可。
+    """
+    token = settings.feishu_bot_event_token or settings.feishu_approval_webhook_token
     if not token:
-        logger.error("飞书机器人 webhook 收到事件但未配置 FEISHU_BOT_EVENT_TOKEN")
+        logger.error(
+            "飞书机器人 webhook 收到事件但未配置 "
+            "FEISHU_BOT_EVENT_TOKEN / FEISHU_APPROVAL_WEBHOOK_TOKEN"
+        )
         raise HTTPException(
             status_code=503,
             detail="飞书机器人 webhook 未配置 Verification Token",

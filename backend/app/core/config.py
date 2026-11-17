@@ -69,6 +69,15 @@ class Settings(BaseSettings):
     # 飞书审批 webhook 的 Verification Token。
     # 未配置时 `/v1/feishu/approval/events` 返回 503（不放行），
     # 避免出现任何人都能改审批状态的未鉴权写入入口。
+    #
+    # ⚠️ **Verification Token 是「应用级」的，不是「订阅级」的** ——
+    #    飞书后台「开发配置 > 事件与回调 > 加密策略」里，**一个应用只有一个**。
+    #    官方原文：「Verification Token 是应用的验证标识。开发者后台会为应用
+    #    自动生成 Verification Token」。
+    #    且「每个应用只能配置一个请求地址，该应用订阅的所有事件都会发送到
+    #    该请求地址」—— 所以审批 / 通讯录 / 机器人**共用同一个 Token**。
+    #
+    #    隔离靠的是**端点路径 + 事件类型白名单**，不是 Token。
     feishu_approval_webhook_token: str = ""
     # 飞书事件的 Encrypt Key（后台「事件与回调 > 加密策略」）。
     # 配置了加密策略时，飞书推送的 body 只有 `{"encrypt": "..."}`，
@@ -79,6 +88,8 @@ class Settings(BaseSettings):
     # 飞书通讯录事件的 Verification Token（R18 事件驱动增量）。
     # 未配置时 `/v1/feishu/contact/events` 返回 503（不放行）——
     # 否则任何人都能伪造通讯录变更把员工改成离职。
+    #
+    # ⚠️ 同上：Token 是应用级的，三条链路共用同一个。
     feishu_contact_event_token: str = ""
     # 事件队列消费间隔（秒）：后台消费者多久扫一次待处理事件。
     feishu_event_consume_interval_seconds: int = 60
@@ -89,13 +100,31 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────────────────────
     # 飞书机器人（FS-3 工作台会话填表）
     #
-    # ⚠️ 机器人事件用**独立**的 Verification Token（C2 约束）。
-    #   理由：审批、通讯录、机器人是**三条独立的事件源**，
-    #   共用一个 Token 的话，排障时根本分不清是哪条链路被调。
-    #   混用的代价 —— 一次泄露就全线失守，一次误配就三处同时报错。
+    # ⚠️ **Verification Token 是应用级的 —— 三条链路只能共用一个**。
+    #   官方原文（飞书开放平台「将事件发送至开发者服务器」）：
+    #   「Verification Token 是应用的验证标识。开发者后台会为应用自动生成
+    #    Verification Token」；且「每个应用只能配置一个请求地址，
+    #    该应用订阅的所有事件都会发送到该请求地址」。
+    #
+    #   ⇒ 同一个飞书应用里，审批 / 通讯录 / 机器人**必然共用**一个 Token。
+    #   ⇒ 想给机器人「独立 Token」只有一条路：**新建一个飞书应用**。
+    #     本项目当前**只有一个**应用，所以：
+    #
+    #   **隔离靠端点路径 + 事件类型白名单，不靠 Token。**
+    #   - `/v1/feishu/bot/events` 只处理 `im.message.receive_v1` 与
+    #     `card.action.trigger`，其余事件类型一律忽略；
+    #   - `/v1/feishu/approval/events` 只处理 `approval.approval.updated_v4`；
+    #   - `/v1/feishu/contact/events` 只处理 `contact.*`。
+    #
+    #   ⇒ 排障时靠**日志里的事件类型**分辨是哪条链路，不是靠 Token。
+    #
+    #   ⚠️ 本配置项**留空时回退到审批 Token**（同一个应用下两者本就相同），
+    #   避免运维时「配了一个 Token 却漏配另一个」导致 503。
+    #   独立应用部署时，填**该应用自己的** Token 即可。
     # ─────────────────────────────────────────────────────────────
     # 机器人事件的 Verification Token。
-    # 未配置时 `/v1/feishu/bot/events` 返回 503（不放行）——
+    # 留空 → 回退用 `feishu_approval_webhook_token`（同一应用下二者相同）。
+    # 两者都为空 → `/v1/feishu/bot/events` 返回 503（不放行）——
     # 否则任何人都能伪造卡片回调写入草稿。
     feishu_bot_event_token: str = ""
     # 机器人会话有效期（分钟）。超过则视为过期，员工重新发起即可。
