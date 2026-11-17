@@ -119,6 +119,54 @@ class NotifyRequest(BaseModel):
 # ===========================================================================
 
 
+def _try_dispatch_to_bot(db: Session, body: dict[str, Any]) -> dict[str, Any] | None:
+    """把机器人事件转给机器人处理器；**不是**机器人事件则返回 ``None``。
+
+    ⚠️ **为什么需要这个函数**：
+
+    飞书官方：「**每个应用只能配置一个请求地址，该应用订阅的所有事件
+    都会发送到该请求地址**。」
+
+    ⇒ 审批 / 通讯录 / 机器人**必然共用**一个地址 —— 这是飞书的机制，
+    不是配置问题。**任何**「给机器人单独配一个地址」的想法都不成立。
+
+    实测现状（2026-11-17）：
+    - 后台的请求地址指向 ``/v1/feishu/approval/events``
+      （审批 Token 已配、握手通过；通讯录 Token 反而是空的）
+    - ⇒ 机器人端点 ``/v1/feishu/bot/events`` **收不到任何事件**
+
+    ⇒ 所以**统一入口必须能分发**，否则订阅了
+      ``im.message.receive_v1`` 也会打到这里，然后被当成审批事件
+      解析 → 找不到计划 → 事件被丢弃，**机器人永远收不到员工消息**。
+
+    ⚠️ **为什么放在 Token 校验之后**：
+    机器人事件与审批事件**共用同一个 Verification Token**
+    （应用级，见 FS-3 的 C2 修正）。校验放在分发之前，
+    保证「来源不可信」的事件在任何处理器里都进不去。
+
+    Returns:
+        ``dict`` —— 是机器人事件且已处理（含忽略）。
+        ``None`` —— 不是机器人事件，调用方应继续走审批回流。
+    """
+    # ⚠️ 延迟导入：避免审批路由与机器人路由**循环导入**
+    #   （机器人路由本身不导入审批路由，但反向导入容易埋雷）。
+    from .feishu_bot import (
+        EVENT_CARD_ACTION,
+        EVENT_MESSAGE_RECEIVE,
+        extract_event_type,
+        receive_bot_event_body,
+    )
+
+    event_type = extract_event_type(body)
+    if event_type not in (EVENT_MESSAGE_RECEIVE, EVENT_CARD_ACTION):
+        return None
+
+    logger.info("统一入口分发：命中机器人事件类型 %s", event_type)
+    # ⚠️ 复用机器人端点自己的处理逻辑 —— **不复制一份**。
+    #   复制会导致两边行为漂移（比如幂等键规则改了只改一处）。
+    return receive_bot_event_body(db, body)
+
+
 @router.post("/approval/events")
 async def receive_approval_event(
     request: Request,
@@ -200,6 +248,27 @@ async def receive_approval_event(
     if not event.token or event.token != expected_token:
         logger.warning("飞书审批 webhook token 校验失败")
         raise HTTPException(status_code=401, detail="Verification Token 校验失败")
+
+    # ── 4.5 ⚠️⚠️ **统一入口的事件类型分发**（2026-11-17 新增）────────
+    #
+    #   **为什么必须有这一步**：
+    #   飞书官方：「**每个应用只能配置一个请求地址，该应用订阅的所有事件
+    #   都会发送到该请求地址**。」⇒ 审批 / 通讯录 / 机器人**共用**一个地址。
+    #
+    #   实测现状（2026-11-17）：
+    #     - 后台请求地址 → 指向本端点（审批 Token 已配、握手通；通讯录 Token 却是空的）
+    #     - 机器人端点 `/v1/feishu/bot/events` **收不到任何事件**
+    #       —— 因为飞书只往这一个地址发。
+    #
+    #   ⇒ 若不在此分发：订阅了 `im.message.receive_v1` 也会打到这里，
+    #     然后被当成审批事件解析 → 找不到计划 → 事件被丢弃，
+    #     **机器人永远收不到员工消息**。
+    #
+    #   ⇒ 分发后：机器人事件转到机器人处理器，其余仍走审批回流。
+    #     **不改**现有审批链路的行为（审批事件类型不匹配 → 原样处理）。
+    bot_result = _try_dispatch_to_bot(db, body)
+    if bot_result is not None:
+        return bot_result
 
     # ── 5. 解析事件字段 ────────────────────────────────────────
     plan_type = event.plan_type

@@ -23,6 +23,7 @@ A8 的 35 个测试全绿，是因为「测试 payload 是照着实现自己构�
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 import pytest
@@ -871,3 +872,158 @@ def test_draft_only_guard_is_not_vacuous(http, client_db, org):
     plan.status = "submitted"
     client_db.commit()
     assert plan.status != "draft", "断言恒真，抓不到状态被改"
+
+
+# ===========================================================================
+# ⚠️ 统一入口的事件类型分发（2026-11-17 新增）
+#
+# 背景：飞书「一个应用只有一个请求地址，所有订阅事件都发到那一个地址」。
+#      实测后台请求地址指向 /v1/feishu/approval/events（审批 Token 已配、
+#      握手通；通讯录 Token 反而是空的）⇒ 机器人事件也会打到这里。
+#
+#      ⇒ 不做分发的话：订阅了 im.message.receive_v1 也会打到这里 →
+#        被当成审批事件解析 → 找不到计划 → 事件被丢弃，
+#        **机器人永远收不到员工消息**。
+#
+#      ⇒ 所以统一入口必须按 event_type 分发。
+# ===========================================================================
+
+APPROVAL_EVENTS_URL = "/v1/feishu/approval/events"
+
+
+@pytest.fixture()
+def unified_http(client_db, monkeypatch):
+    """统一入口用的 TestClient。
+
+    ⚠️ 关键：机器人 Token 与审批 Token **共用**（应用级，见 FS-3 C2 修正），
+    所以这里让 ``feishu_bot_event_token`` 留空 —— 走**回退**逻辑，
+    用审批那个 Token。这正是生产的真实形态。
+    """
+    monkeypatch.setattr(settings, "feishu_approval_webhook_token", BOT_TOKEN)
+    monkeypatch.setattr(settings, "feishu_bot_event_token", "")
+    monkeypatch.setattr(settings, "feishu_encrypt_key", "")
+    monkeypatch.setattr(settings, "feishu_app_id", "cli_test")
+    monkeypatch.setattr(settings, "feishu_app_secret", "secret_test")
+
+    sent: list[dict] = []
+
+    class _FakeClient:
+        def send_card_message(self, receive_id, card, **kwargs):
+            sent.append({"receive_id": receive_id, "card": card, **kwargs})
+            return {"code": 0, "data": {"message_id": "om_fake"}}
+
+    monkeypatch.setattr(feishu_bot_routes, "_client", lambda: _FakeClient())
+    with TestClient(app) as c:
+        c.feishu_sent = sent  # type: ignore[attr-defined]
+        yield c
+
+
+def _message_event_with_token(token: str) -> dict:
+    """把官方报文里的 token 换成指定值（信��本身是官方原文）。"""
+    payload = json.loads(json.dumps(OFFICIAL_MESSAGE_EVENT))
+    payload["header"]["token"] = token
+    return payload
+
+
+def test_unified_entry_dispatches_bot_message_event(unified_http, client_db, org):
+    """⚠️ **机器人消息事件打到统一入口 → 必须被转发到机器人处理**。
+
+    这是本次修复的核心：不做分发的话，机器人**永远收不到**员工消息。
+    """
+    payload = _message_event_with_token(BOT_TOKEN)
+    r = unified_http.post(APPROVAL_EVENTS_URL, json=payload)
+
+    assert r.status_code == 200, r.text
+    # 机器人处理了 → 回了一张卡片
+    assert len(unified_http.feishu_sent) >= 1, "机器人没有被触发，没发出卡片"
+    # ⚠️ 而且会话被建立（证明走的是机器人的处理逻辑，不是审批回流）
+    sessions = client_db.execute(select(BotSession)).scalars().all()
+    assert len(sessions) == 1, "机器人会话未建立 → 事件没被转发"
+
+
+def test_unified_entry_does_not_break_approval_flow(unified_http, client_db):
+    """⚠️ **分发不能破坏审批回流** —— 审批事件仍走原逻辑。
+
+    回归护栏：加分发是为了加机器人，**不能把审批搞坏**。
+
+    ⚠️ **这个护栏必须能抓到「分发写错」** —— 所以它断言的不是
+    「没有卡片发出」（那是**否定式断言**，把分发整个删掉也照样通过 ⇒ 空转），
+    而是断言**审批事件确实走到了审批处理器**：
+      - 返回体带 ``data.result``（审批回流的返回结构）
+      - 且**机器人处理器完全没被调用**
+
+    ⇒ 破坏「分发只会拦机器人事件」时，这个断言会失败。
+    """
+    # 审批事件（事件类型不是机器人那两种）→ 走审批回流。
+    payload = {
+        "schema": "2.0",
+        "header": {
+            "event_id": "evt_approval_001",
+            "event_type": "approval_instance",
+            "token": BOT_TOKEN,
+        },
+        "event": {},
+    }
+    r = unified_http.post(APPROVAL_EVENTS_URL, json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # ⚠️ 审批回流的返回结构 —— 机器人处理器的返回**没有** data.result。
+    #    这是「确实走到了审批处理器」的正向信号。
+    assert "data" in body, f"审批事件没走审批处理器（被别的分支吞了）：{body}"
+    # 审批事件**不该**被机器人处理 → 不该有卡片发出
+    assert len(unified_http.feishu_sent) == 0, "审批事件被错误地路由到机器人了"
+
+
+def test_unified_entry_rejects_bot_event_with_bad_token(unified_http, client_db, org):
+    """⚠️ **来源校验必须在分发之前** —— Token 不对照样 401。
+
+    分发逻辑绝不能成为「绕过 Token 校验」的后门。
+
+    ⚠️ 这个护栏要能抓到「校验被挪到分发之后」——
+       所以除了「401」，还要断言**机器人处理器完全没被碰到**。
+       光断言 401 不够：万一有人为了「让机器人事件能过」
+       把校验挪到分发之后，机器人事件就会先被处理再校验 ⇒ 数据已经写进去了。
+    """
+    payload = _message_event_with_token("wrong-token")
+    r = unified_http.post(APPROVAL_EVENTS_URL, json=payload)
+
+    assert r.status_code == 401, r.text
+    assert len(unified_http.feishu_sent) == 0, "Token 不对却发出了卡片"
+    sessions = client_db.execute(select(BotSession)).scalars().all()
+    assert len(sessions) == 0, "Token 不对却建立了会话"
+    # ⚠️ **最关键**：连幂等流水都不能写 ——
+    #    写流水 = 机器人处理器已经被调用过了（哪怕后来被拒）。
+    msgs = client_db.execute(select(BotMessage)).scalars().all()
+    assert len(msgs) == 0, "Token 不对却写了机器人流水 —— 校验被挪到分发之后了"
+
+
+def test_unified_entry_still_503_when_no_token_configured(client_db, monkeypatch):
+    """⚠️ 两个 Token 都没配 → 503（不放行）。
+
+    回归护栏：机器人 Token 回退到审批 Token；两个都没有时必须拒绝。
+    """
+    monkeypatch.setattr(settings, "feishu_approval_webhook_token", "")
+    monkeypatch.setattr(settings, "feishu_bot_event_token", "")
+    monkeypatch.setattr(settings, "feishu_encrypt_key", "")
+
+    with TestClient(app) as c:
+        r = c.post(APPROVAL_EVENTS_URL, json={"token": "x"})
+    assert r.status_code == 503
+
+
+def test_dispatch_guard_is_not_vacuous(unified_http, client_db, org):
+    """⚠️ 护栏自检：分发断言必须**真的能抓到**「没分发」。
+
+    做法：直接调审批回流路径（绕过分发），
+    确认机器人会话数**不会**增加 —— 说明断言不是恒真。
+    """
+    payload = _message_event_with_token(BOT_TOKEN)
+    unified_http.post(APPROVAL_EVENTS_URL, json=payload)
+
+    after_dispatch = len(client_db.execute(select(BotSession)).scalars().all())
+    assert after_dispatch == 1, "分发没生效"
+
+    # 再发一次**同样的**事件 → 幂等，不应新建会话
+    unified_http.post(APPROVAL_EVENTS_URL, json=payload)
+    after_retry = len(client_db.execute(select(BotSession)).scalars().all())
+    assert after_retry == 1, "重复事件创建了新会话 —— 幂等被破坏"

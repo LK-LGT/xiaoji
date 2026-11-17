@@ -577,6 +577,23 @@ async def receive_bot_event(
     if feishu_event.is_url_verification(body):
         return {"challenge": feishu_event.extract_challenge(body)}
 
+    return receive_bot_event_body(db, body)
+
+
+def receive_bot_event_body(db: Session, body: dict[str, Any]) -> dict[str, Any]:
+    """处理**已通过来源校验**的机器人事件体。
+
+    ⚠️ **为什么抽成独立函数**（2026-11-17）：
+
+    飞书「一个应用只有一个请求地址」⇒ 机器人事件与审批事件会打到**同一个**
+    端点。所以统一入口（``/approval/events``）需要把机器人事件**转交**到这里。
+
+    ⇒ **复用**而不是复制 —— 复制一份会导致两边行为漂移
+    （比如幂等键规则改了只改一处 ⇒ 出现「有的事件被处理两次」）。
+
+    ⚠️ **调用方必须已完成来源校验**（Verification Token / 验签 / 解密）。
+       本函数**不再**重复校验 —— 统一入口已经校验过了。
+    """
     # ⚠️ 应急开关：机器人关闭时**只握手不处理业务**。
     #   返回 code 0 而不是报错 —— 报错会让飞书反复重推。
     if not settings.feishu_bot_enabled:
