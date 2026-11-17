@@ -107,8 +107,11 @@ class Settings(BaseSettings):
     # 申请的 OAuth scope（逗号分隔）。
     # 免登只需要读用户基本信息；多申请会被飞书后台审核卡住。
     feishu_oauth_scopes: str = "contact:user.base:readonly"
-    # 前端免登回调页地址（用于 /v1/feishu/auth/url 返回给前端跳转）。
-    feishu_oauth_frontend_callback: str = ""
+    # ⚠️ **不要在这里加「前端免登回调页地址」配置** ——
+    #   `/v1/feishu/auth/url` 的 `redirect_uri` 是**请求参数**（走白名单校验），
+    #   前端传什么就跳回什么。多一个「服务端配置的默认回调」只会造成
+    #   两套来源互相打架 —— 且那个值根本没人读（配置了也不生效，纯误导）。
+    #   前端免登入口本身是 FS-2 的任务。
 
     # ─────────────────────────────────────────────────────────────
     # 同步失败告警

@@ -591,3 +591,93 @@ def test_http_client_uses_base_url():
     assert FeishuClient.BASE_URL == "https://open.feishu.cn/open-apis"
     assert FeishuClient.TOKEN_ENDPOINT == "/auth/v3/tenant_access_token/internal"
     assert issubclass(httpx.HTTPError, Exception)
+
+
+# ===========================================================================
+# 配置面回归（FS-1 收尾）
+# ===========================================================================
+
+
+def test_oauth_config_surface_has_no_dead_settings():
+    """⚠️ **配置面不得有「定义了但没人读」的项**。
+
+    为什么这条重要：
+    一个**配了也不生效**的配置项比没有更糟 —— 运维会以为「配了就生效」，
+    配完发现没反应，转而去查代码，浪费时间还可能得出错误结论。
+
+    FS-1 收尾时实测发现过一个这样的死配置：
+    ``feishu_oauth_frontend_callback`` —— 定义在 ``config.py``，
+    但 ``/v1/feishu/auth/url`` 的 ``redirect_uri`` 是**请求参数**
+    （走白名单校验），前端传什么就跳回什么，那个值**根本没人读**。
+    已删除，并在 config.py 里留了「不要再加回来」的警示注释。
+
+    本测试扫描 ``Settings`` 的全部字段，任何**只在 config.py 里出现、
+    在业务代码里从不被读取**的配置项都会失败。
+    """
+    import re
+    from pathlib import Path
+
+    from backend.app.core import config as config_mod
+
+    backend_root = Path(__file__).resolve().parents[2]
+    app_dir = backend_root / "app"
+
+    # 扫描业务代码（排除 config.py 自身与测试目录 —— 配置项"被定义"不算"被使用"）
+    source_files = [
+        p
+        for p in app_dir.rglob("*.py")
+        if "tests" not in p.parts and p.name != "config.py"
+    ]
+    sources = "\n".join(p.read_text(encoding="utf-8") for p in source_files)
+
+    # 找出所有以 feishu_ 开头的配置字段
+    field_pattern = re.compile(r"^\s{4}(feishu_\w+)\s*:\s*", re.MULTILINE)
+    declared = set(field_pattern.findall(config_mod.__file__ and Path(config_mod.__file__).read_text(encoding="utf-8")))
+
+    # 这些字段由框架/其他模块直接消费，不在本测试的「业务代码」范围内
+    exempt = {
+        "feishu_app_id",
+        "feishu_app_secret",
+        "feishu_tenant_id",
+        "feishu_encrypt_key",
+    }
+
+    dead = []
+    for field in sorted(declared - exempt):
+        # 配置项有两种合法的「被消费」写法，**两种都要认**：
+        #   1. 属性访问：settings.<field>
+        #   2. getattr 访问：getattr(settings, "<field>", ...)
+        #      —— 后者在 offboarding_policy.py 里就是这么写的，
+        #      只认属性访问会把它误判成死配置（假阳性）。
+        if re.search(rf"settings\.{re.escape(field)}\b", sources):
+            continue
+        if re.search(rf"""getattr\(\s*settings\s*,\s*["']{re.escape(field)}["']""", sources):
+            continue
+        dead.append(field)
+
+    assert not dead, (
+        f"发现「定义了但无人读取」的死配置项: {dead} —— "
+        "要么接上业务逻辑，要么从 config.py 删除（配了不生效比没有更糟）"
+    )
+
+
+def test_oauth_config_items_are_documented_in_env_example():
+    """OAuth 配置项必须在 ``.env.example`` 里有对应说明。
+
+    运维要照着 ``.env.example`` 配环境 —— 配置项只存在于代码里，
+    等于让运维去读 Python 源码才能知道要配什么。
+    """
+    from pathlib import Path
+
+    backend_root = Path(__file__).resolve().parents[2]
+    env_example = backend_root / ".env.example"
+    assert env_example.exists(), "backend/.env.example 不存在"
+
+    content = env_example.read_text(encoding="utf-8")
+    for env_key in (
+        "FEISHU_OAUTH_REDIRECT_URIS",
+        "FEISHU_OAUTH_STATE_SECRET",
+        "FEISHU_OAUTH_STATE_TTL_SECONDS",
+        "FEISHU_OAUTH_SCOPES",
+    ):
+        assert env_key in content, f".env.example 缺少 OAuth 配置项说明: {env_key}"
