@@ -211,9 +211,16 @@ export function rejectDepartmentWeekPlanApi(id: string, versionNo: number, comme
   return http.post<unknown, WeekPlanAction>(`/department/week-plan-approvals/${id}/reject`, { versionNo, comment })
 }
 
-export function listDepartmentWeekPlansApi(params?: WeekPlanListQuery) {
-  return http.get<unknown, PageResponse<WeekPlanSummary>>('/department/week-plans', { params })
-}
+// ⚠️ 原本这里还有一个 `listDepartmentWeekPlansApi`，
+//    调 `GET /department/week-plans` —— **后端从来没有这个列表端点**
+//    （后端只有 `GET /department/week-plans/{plan_id}` 详情，
+//      以及 `GET /department/week-plan-approvals` 审批列表）。
+//    它只被一个同样从未真正上线的「周计划台账」页使用，
+//    两者一并移除（详见 docs/11-待完善清单.md）。
+//
+//    部门侧看周计划的正确入口是 `/department/week-plan-approval`
+//    （复用主管的 WeekPlanApproval.vue），走
+//    `listDepartmentWeekPlanApprovalsApi`。
 
 export function getDepartmentWeekPlanApi(id: string) {
   return http.get<unknown, WeekPlanDetail>(`/department/week-plans/${id}`)

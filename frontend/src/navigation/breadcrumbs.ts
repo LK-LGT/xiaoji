@@ -48,7 +48,6 @@ const SECTION_TITLES: Record<string, string> = {
   '/department/standard': '验收标准',
   '/department/score-rule': '参考分规则',
   '/department/department-ledger': '部门台账',
-  '/department/week-plan-ledger': '周计划台账',
   '/department/export-tasks': '导出任务',
   '/leader/my-month-plans': '我的月计划',
   '/leader/my-week-plans': '我的周计划',

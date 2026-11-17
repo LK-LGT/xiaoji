@@ -96,11 +96,27 @@ test('table rows are directly editable without a separate edit state', () => {
   assert.match(editor, /class="compact-task-cell compact-task-cell--standard"[\s\S]*v-model="row\.deliverable"[\s\S]*v-model="row\.quality"/)
   assert.match(editor, /class="compact-task-cell compact-task-cell--period"[\s\S]*class="period-separator">-<\/span>/)
   assert.match(editor, /\.compact-task-row \{ min-height:48px;/)
-  assert.match(editor, /v-model="row\.taskContent" type="textarea" :autosize="\{ minRows: 1 \}"/)
-  assert.match(editor, /v-model="row\.deliverable" type="textarea" :autosize="\{ minRows: 1 \}"/)
-  assert.match(editor, /v-model="row\.quality" type="textarea" :autosize="\{ minRows: 1 \}"/)
   assert.doesNotMatch(editor, /v-model="row\.taskContent"[^>]*maxRows/)
   assert.doesNotMatch(editor, /v-model="row\.(?:taskContent|deliverable|quality)"[^>]*maxRows/)
+  // ⚠️ 断言原先写死属性**相邻**：
+  //    `v-model="row.taskContent" type="textarea" :autosize="..."`
+  //    但实现后来给任务内容输入框加了 `class="month-task-content-input"`，
+  //    属性顺序变成 v-model → class → type → :autosize（且是多行写法）。
+  //    **行为完全没变** —— 绑定、类型、自适应行数都一样，
+  //    所以断言改为「不依赖属性顺序」，而不是回退实现。
+  assert.match(
+    editor,
+    /v-model="row\.taskContent"[\s\S]{0,120}?type="textarea"[\s\S]{0,120}?:autosize="\{ minRows: 1 \}"/,
+  )
+  // 交付物 / 质量输入框：同样是「不依赖属性顺序」的口径
+  assert.match(
+    editor,
+    /v-model="row\.deliverable"[\s\S]{0,120}?type="textarea"[\s\S]{0,120}?:autosize="\{ minRows: 1 \}"/,
+  )
+  assert.match(
+    editor,
+    /v-model="row\.quality"[\s\S]{0,120}?type="textarea"[\s\S]{0,120}?:autosize="\{ minRows: 1 \}"/,
+  )
   assert.match(editor, /\.compact-task-row \{ min-height:48px; align-items:stretch;/)
   assert.match(editor, /\.compact-task-cell--index \{ display:grid; place-items:center;/)
 })

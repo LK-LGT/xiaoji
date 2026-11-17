@@ -1,0 +1,101 @@
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+INFO:     Started server process [30260]
+INFO:     Waiting for application startup.
+2026-11-16 18:59:19,831 INFO [app.services.feishu_scheduler] 飞书组织架构定时同步已启动, 间隔秒数=3600
+2026-11-16 18:59:19,833 INFO [app.services.org_event_scheduler] 飞书事件消费调度器已启动, 间隔秒数=60
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+2026-11-16 18:59:19,860 INFO [app.services.feishu_scheduler] 定时同步跳过：已有批次在运行或幂等命中, batch_id=1d91bf60-31ff-4d53-b2ff-e4048ad0835f
+2026-11-16 18:59:19,861 INFO [app.services.feishu_scheduler] 飞书定时同步首轮执行完成, 结果=skipped_already_running
+2026-11-16 19:00:19,258 INFO [app.routes.auth] 员工 2aaf32ea 修改密码成功，token_version → 4
+2026-11-16 19:00:31,909 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:00:31,914 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:00:36,771 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:02:02,188 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:02:02,192 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:02:23,495 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:02:28,329 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:02:32,197 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:02:34,193 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:02:41,797 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:02:50,401 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:02:53,703 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:02:59,256 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:03:02,203 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:03:04,814 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:03:15,408 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:03:22,021 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:03:22,022 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:03:27,081 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:03:51,274 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:03:51,275 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:03:52,029 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:03:57,159 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:04:21,325 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:04:22,031 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:04:51,318 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:04:52,039 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:05:21,311 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:05:22,036 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:05:52,035 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:06:22,032 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:06:52,041 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:07:22,029 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:07:52,028 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:08:22,035 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:08:52,039 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:09:22,029 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:09:52,032 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:10:22,028 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:10:52,043 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:11:22,038 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:11:52,037 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:12:22,029 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:12:52,032 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:13:22,035 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:13:52,033 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:14:22,034 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:14:52,029 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:15:22,027 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:15:52,029 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:16:22,029 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:16:52,036 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:17:22,032 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:17:52,038 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:18:22,034 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:18:52,041 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:19:22,037 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:19:52,035 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:20:22,036 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:20:27,844 INFO [httpx] HTTP Request: POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal "HTTP/1.1 200 OK"
+2026-11-16 19:20:27,844 INFO [app.services.feishu_client] 飞书 Access Token 已刷新，有效期秒数=7200 本地有效期秒数=6900.0
+2026-11-16 19:20:28,078 INFO [httpx] HTTP Request: GET https://open.feishu.cn/open-apis/contact/v3/users/ou_live_002 "HTTP/1.1 400 Bad Request"
+2026-11-16 19:20:28,079 WARNING [app.services.org_change_consumer] 处理组织变更事件失败: event_id=55533de2-d886-46fc-b7ae-14bb8a2d192a type=user_updated resource=ou_live_002 error=The request you send is not a valid {open_id} or not exists, and the example value is {ou_da5****************dfe}. Invalid ids: [ou_live_002] . Please see field_violations for details and refer to API documentation to correct accordingly and resubmit（错误码 99992351）
+2026-11-16 19:20:28,294 INFO [httpx] HTTP Request: GET https://open.feishu.cn/open-apis/contact/v3/users/ou_v1_001 "HTTP/1.1 400 Bad Request"
+2026-11-16 19:20:28,295 WARNING [app.services.org_change_consumer] 处理组织变更事件失败: event_id=b07aea6d-eb9f-49f0-af4e-20abbd29ff0a type=user_updated resource=ou_v1_001 error=The request you send is not a valid {open_id} or not exists, and the example value is {ou_da5****************dfe}. Invalid ids: [ou_v1_001] . Please see field_violations for details and refer to API documentation to correct accordingly and resubmit（错误码 99992351）
+2026-11-16 19:20:28,607 INFO [httpx] HTTP Request: GET https://open.feishu.cn/open-apis/contact/v3/departments/od_v1_001 "HTTP/1.1 400 Bad Request"
+2026-11-16 19:20:28,607 WARNING [app.services.org_change_consumer] 处理组织变更事件失败: event_id=14e055df-d7a8-4bfe-a039-99b7562ab63a type=department_updated resource=od_v1_001 error=The request you send is not a valid {open_department_id} or not exists, and the example value is {od-da5****************dfe}. Invalid ids: [od_v1_001] . Please see field_violations for details and refer to API documentation to correct accordingly and resubmit（错误码 99992357）
+2026-11-16 19:20:28,858 INFO [httpx] HTTP Request: GET https://open.feishu.cn/open-apis/contact/v3/users/ou_v2_001 "HTTP/1.1 400 Bad Request"
+2026-11-16 19:20:28,858 WARNING [app.services.org_change_consumer] 处理组织变更事件失败: event_id=7cf8a0c5-f8c7-487b-a3c7-4799da3cb933 type=user_created resource=ou_v2_001 error=The request you send is not a valid {open_id} or not exists, and the example value is {ou_da5****************dfe}. Invalid ids: [ou_v2_001] . Please see field_violations for details and refer to API documentation to correct accordingly and resubmit（错误码 99992351）
+2026-11-16 19:20:29,088 INFO [httpx] HTTP Request: GET https://open.feishu.cn/open-apis/contact/v3/users/ou_dedup "HTTP/1.1 400 Bad Request"
+2026-11-16 19:20:29,088 WARNING [app.services.org_change_consumer] 处理组织变更事件失败: event_id=f0b268d2-4540-4487-b0eb-4bc2d9199b27 type=user_updated resource=ou_dedup error=The request you send is not a valid {open_id} or not exists, and the example value is {ou_da5****************dfe}. Invalid ids: [ou_dedup] . Please see field_violations for details and refer to API documentation to correct accordingly and resubmit（错误码 99992351）
+2026-11-16 19:20:52,031 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:21:22,033 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-16 19:21:29,380 INFO [httpx] HTTP Request: POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal "HTTP/1.1 200 OK"
+2026-11-16 19:21:29,381 INFO [app.services.feishu_client] 飞书 Access Token 已刷新，有效期秒数=7138 本地有效期秒数=6838.0
+2026-11-16 19:21:29,610 INFO [httpx] HTTP Request: GET https://open.feishu.cn/open-apis/contact/v3/users/ou_live_002 "HTTP/1.1 400 Bad Request"
+2026-11-16 19:21:29,611 WARNING [app.services.org_change_consumer] 处理组织变更事件失败: event_id=55533de2-d886-46fc-b7ae-14bb8a2d192a type=user_updated resource=ou_live_002 error=The request you send is not a valid {open_id} or not exists, and the example value is {ou_da5****************dfe}. Invalid ids: [ou_live_002] . Please see field_violations for details and refer to API documentation to correct accordingly and resubmit（错误码 99992351）
+2026-11-16 19:21:29,856 INFO [httpx] HTTP Request: GET https://open.feishu.cn/open-apis/contact/v3/users/ou_v1_001 "HTTP/1.1 400 Bad Request"
+2026-11-16 19:21:29,856 WARNING [app.services.org_change_consumer] 处理组织变更事件失败: event_id=b07aea6d-eb9f-49f0-af4e-20abbd29ff0a type=user_updated resource=ou_v1_001 error=The request you send is not a valid {open_id} or not exists, and the example value is {ou_da5****************dfe}. Invalid ids: [ou_v1_001] . Please see field_violations for details and refer to API documentation to correct accordingly and resubmit（错误码 99992351）
+2026-11-16 19:21:30,094 INFO [httpx] HTTP Request: GET https://open.feishu.cn/open-apis/contact/v3/departments/od_v1_001 "HTTP/1.1 400 Bad Request"
+2026-11-16 19:21:30,094 WARNING [app.services.org_change_consumer] 处理组织变更事件失败: event_id=14e055df-d7a8-4bfe-a039-99b7562ab63a type=department_updated resource=od_v1_001 error=The request you send is not a valid {open_department_id} or not exists, and the example value is {od-da5****************dfe}. Invalid ids: [od_v1_001] . Please see field_violations for details and refer to API documentation to correct accordingly and resubmit（错误码 99992357）
+2026-11-16 19:21:30,319 INFO [httpx] HTTP Request: GET https://open.feishu.cn/open-apis/contact/v3/users/ou_v2_001 "HTTP/1.1 400 Bad Request"
+2026-11-16 19:21:30,319 WARNING [app.services.org_change_consumer] 处理组织变更事件失败: event_id=7cf8a0c5-f8c7-487b-a3c7-4799da3cb933 type=user_created resource=ou_v2_001 error=The request you send is not a valid {open_id} or not exists, and the example value is {ou_da5****************dfe}. Invalid ids: [ou_v2_001] . Please see field_violations for details and refer to API documentation to correct accordingly and resubmit（错误码 99992351）
+2026-11-16 19:21:30,537 INFO [httpx] HTTP Request: GET https://open.feishu.cn/open-apis/contact/v3/users/ou_dedup "HTTP/1.1 400 Bad Request"
+2026-11-16 19:21:30,537 WARNING [app.services.org_change_consumer] 处理组织变更事件失败: event_id=f0b268d2-4540-4487-b0eb-4bc2d9199b27 type=user_updated resource=ou_dedup error=The request you send is not a valid {open_id} or not exists, and the example value is {ou_da5****************dfe}. Invalid ids: [ou_dedup] . Please see field_violations for details and refer to API documentation to correct accordingly and resubmit（错误码 99992351）
+2026-11-16 19:21:52,040 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)

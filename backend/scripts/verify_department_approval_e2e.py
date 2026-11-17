@@ -18,16 +18,31 @@
 - 部门负责人**不能**审批自己提交的计划。
 """
 
-from fastapi.testclient import TestClient
-from sqlalchemy import select
+import sys
+from pathlib import Path
 
-from backend.app.core.db import get_db, get_sessionmaker
-from backend.app.dependencies import get_current_user
-from backend.app.domain.enums import PlanStatus
-from backend.app.domain.models import Employee, MonthPlan
-from backend.app.domain.plan_models import PlanApproval
-from backend.app.main import app
-from backend.app.services.access_control import build_access_context
+# ⚠️ **必须让脚本能从仓库根目录直接运行**。
+#
+#   Python 把**脚本所在目录**（``backend/scripts/``）设为 ``sys.path[0]``，
+#   所以直接跑 ``python backend/scripts/verify_department_approval_e2e.py`` 时，
+#   ``import backend.app...`` 会 ``ModuleNotFoundError: No module named 'backend'``。
+#
+#   没有这段引导，脚本**根本跑不起来**。
+#   做法：把仓库根（``parents[2]``）插到 ``sys.path`` 最前面。
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import select  # noqa: E402
+
+from backend.app.core.db import get_db, get_sessionmaker  # noqa: E402
+from backend.app.dependencies import get_current_user  # noqa: E402
+from backend.app.domain.enums import PlanStatus  # noqa: E402
+from backend.app.domain.models import Employee, MonthPlan  # noqa: E402
+from backend.app.domain.plan_models import PlanApproval  # noqa: E402
+from backend.app.main import app  # noqa: E402
+from backend.app.services.access_control import build_access_context  # noqa: E402
 
 db = get_sessionmaker()()
 
@@ -48,9 +63,64 @@ if approver is None or owner_id is None:
 
 print(f"审批人: {approver.name} ({approver.id[:8]}) | 计划归属人: {owner_id[:8]}")
 
+# ── 清理上次运行的历史残留 ─────────────────────────────────────────────────
+# ⚠️ **脚本必须可重复运行**。
+#
+#   `month_plan` 上有 ``UNIQUE(owner_id, plan_month)`` 约束，
+#   本脚本用固定的 ``plan_month`` 建计划 ——
+#   第二次运行就会撞唯一约束直接崩掉。
+#
+#   验证工具必须随时能重跑，所以先把上一轮自己造的数据清干净。
+_VERIFY_MONTH = "2099-09"
+# ⚠️ **月份必须与其他 e2e 脚本错开**。
+#
+#   `month_plan` 有 ``UNIQUE(owner_id, plan_month)``，而这些脚本
+#   会**随机挑同一个 owner**（第一个有直属下属的员工）——
+#   于是多个脚本可能选到同一个人 + 同一个月份 → 互相撞唯一约束。
+#
+#   实际踩过的坑：A3 脚本与 A4 脚本都用 ``2099-08``，
+#   A4 先跑插入，A3 再跑就崩 —— 看起来像「A3 脚本不幂等」，
+#   实际是**脚本间互相干扰**。
+#
+#   分配：A4 = 2099-08，A1/A2 = 2099-07，A3 = 2099-09。
+
+# ⚠️ **要清理两个 owner 的计划**：
+#   1. ``owner_id`` —— 计划归属人（下属）的那条；
+#   2. ``emp_id``（审批人自己）—— 「禁止自审批」用例造的那条。
+#
+#   只清 1 会漏掉 2 —— 第二次运行就在自审批那条上撞唯一约束。
+_old_plans = db.execute(
+    select(MonthPlan).where(
+        MonthPlan.plan_month == _VERIFY_MONTH,
+        MonthPlan.owner_id.in_([owner_id, approver.id]),
+    )
+).scalars().all()
+for _old in _old_plans:
+    # ⚠️ PlanApproval 是**多态**的（month / week 共用一张表），
+    #    必须按 plan_id 精确定位 —— 否则会误删别人的审批流水。
+    db.execute(
+        select(PlanApproval).where(
+            PlanApproval.plan_type == "month",
+            PlanApproval.plan_id == _old.id,
+        )
+    ).scalars().all()
+    # 审批流水没有外键到 plan（多态设计），所以要**显式删除**，
+    #    不能只 select 出来。
+    for _appr in db.execute(
+        select(PlanApproval).where(
+            PlanApproval.plan_type == "month",
+            PlanApproval.plan_id == _old.id,
+        )
+    ).scalars().all():
+        db.delete(_appr)
+    db.delete(_old)
+db.commit()
+if _old_plans:
+    print(f"已清理历史残留：月计划 {len(_old_plans)} 条")
+
 plan = MonthPlan(
     owner_id=owner_id,
-    plan_month="2099-08",
+    plan_month=_VERIFY_MONTH,
     title="A3 端到端验证",
     status=PlanStatus.SUBMITTED.value,
 )

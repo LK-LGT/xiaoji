@@ -169,8 +169,11 @@ def frontend_checks() -> list[Check]:
             REPO_ROOT / "frontend",
         ),
         Check(
-            "前端单元测试（基线感知）",
-            ["node", "scripts/run-tests-with-baseline.mjs"],
+            # ⚠️ 2026-11-16：从「基线感知」改为**零失败硬门槛**。
+            #    10 个历史遗留失败已全部修完，基线机制（tests-baseline.json
+            #    + scripts/run-tests-with-baseline.mjs）已删除。
+            "前端单元测试（零失败硬门槛）",
+            ["node", "--experimental-strip-types", "--test", "tests/*.test.ts"],
             REPO_ROOT / "frontend",
         ),
     ]

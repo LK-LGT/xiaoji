@@ -270,7 +270,15 @@ test('month editor keeps persisted task ids in the local comparison snapshot', (
 })
 
 test('month week and day explicit saves request versions while internal saves opt out', () => {
-  assert.match(month, /saveDraft\(true, true\)/)
+  // ⚠️ 月计划的 `saveDraft` 签名已扩为三参：
+  //    `saveDraft(showMessage = true, recordVersion = false, syncRoute = true)`
+  //    （第三参 syncRoute 用于「保存后不回写路由」）
+  //
+  //    **要断言的语义没变** —— 显式保存仍然要记版本（第二参 = true），
+  //    自动保存 / 内部保存仍然不记版本（recordVersion: false）。
+  //    原断言写死 `saveDraft(true, true)`（两参、无尾逗号），
+  //    扩参后匹配不上，故改为「不依赖参数个数」的写法。
+  assert.match(month, /saveDraft\(true, true(, false)?\)/)
   assert.match(month, /recordVersion: false/)
   assert.match(week, /persistDraft\(true\)/)
   assert.match(week, /persistDraft\(false\)/)

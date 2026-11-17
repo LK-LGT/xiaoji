@@ -6,8 +6,9 @@ name: CI
 # 设计目标：
 #   1. 本地绿灯 ≠ 线上绿灯 —— 同一套命令在 CI 里再跑一遍；
 #   2. 契约脱节必须立即暴露（后端新增/改名端点但前端没跟上 → 直接红）；
-#   3. 不允许「基线失败」静默累积 —— 前端历史失败用基线文件锁定，
-#      失败数超过基线即红灯，等于把技术债变成显式契约。
+#   3. **零失败硬门槛** —— 前端测试不允许任何失败（2026-11-16 起）。
+#      此前用基线文件锁定 10 个历史遗留失败，基线已全部修完并删除，
+#      往后新增任何失败都直接让 CI 变红。
 #
 # 注意：本仓库**没有** `.github/workflows` 目录，本文件是首个 CI 定义。
 # ─────────────────────────────────────────────────────────────
@@ -211,12 +212,22 @@ jobs:
         working-directory: frontend
         run: npx vue-tsc --noEmit
 
-      - name: 前端单元测试（基线感知）
-        # 历史遗留失败由 frontend/tests-baseline.json 锁定：
-        # 失败数 ≤ 基线 → 绿；超过基线 → 红。
-        # 这样既不阻塞迭代，又不允许技术债悄悄变大。
+      - name: 前端单元测试（零失败硬门槛）
+        # ⚠️ 2026-11-16：从「基线感知」改为**零失败硬门槛**。
+        #
+        #    此前用 `scripts/run-tests-with-baseline.mjs` + `tests-baseline.json`
+        #    锁定 10 个历史遗留失败（失败数 ≤ 基线即绿）。
+        #    那套机制的问题：**基线本身会掩盖新问题**，
+        #    且基线里的 10 条长期躺在那里没人修 —— 技术债静默固化。
+        #
+        #    现已全部修完（10 个失败 → 0），基线机制删除。
+        #    往后新增任何失败都会直接让 CI 变红。
+        #
+        #    ⚠️ 必须直接跑 `node --test`（不能用 shell 通配符 ——
+        #    Windows 下 `shell: true` 不会展开 glob；
+        #    node --test 自身支持目录参数，跨平台行为一致）。
         working-directory: frontend
-        run: node scripts/run-tests-with-baseline.mjs
+        run: node --experimental-strip-types --test tests/*.test.ts
 
       - name: 构建产物
         working-directory: frontend

@@ -69,7 +69,6 @@ import DeliverableTemplate from '@/views/department/DeliverableTemplate.vue'
 import AcceptanceStandard from '@/views/department/AcceptanceStandard.vue'
 import ScoreRule from '@/views/department/ScoreRule.vue'
 import DepartmentLedger from '@/views/department/DepartmentLedger.vue'
-import WeekPlanLedger from '@/views/department/WeekPlanLedger.vue'
 import ExportTasks from '@/views/department/ExportTasks.vue'
 
 import SystemDashboard from '@/views/system/SystemDashboard.vue'
@@ -161,7 +160,6 @@ const router = createRouter({
     withAppShell('/department/standard', AcceptanceStandard, { permission: 'department:standard:view' }),
     withAppShell('/department/score-rule', ScoreRule, { permission: 'department:score-rule:view' }),
     withAppShell('/department/department-ledger', DepartmentLedger, { permission: 'department:department-ledger:view' }),
-    withAppShell('/department/week-plan-ledger', WeekPlanLedger, { permission: 'department:dashboard:view' }),
     withAppShell('/department/export-tasks', ExportTasks, { permission: 'department:export-task:view' }),
 
     // --- 员工工作台 ---

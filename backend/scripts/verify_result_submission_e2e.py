@@ -25,28 +25,45 @@
 from __future__ import annotations
 
 import io
+import sys
 from datetime import date
+from pathlib import Path
 
-from fastapi.testclient import TestClient
-from sqlalchemy import select
+# ⚠️ **必须让脚本能从仓库根目录直接运行**。
+#
+#   Python 把**脚本所在目录**（``backend/scripts/``）设为 ``sys.path[0]``，
+#   所以直接跑 ``python backend/scripts/verify_result_submission_e2e.py`` 时，
+#   ``import backend.app...`` 会 ``ModuleNotFoundError: No module named 'backend'``。
+#
+#   ��有这段引导，脚本**根本跑不起来** —— 表现为「台账说脚本已交付，
+#   但实际一执行就崩」。
+#
+#   做法：把仓库根（``parents[2]``）插到 ``sys.path`` 最前面。
+#   （其他 verify_* 脚本都是这么写的。）
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from backend.app.core.db import get_db, get_sessionmaker
-from backend.app.dependencies import get_current_user
-from backend.app.domain.models import (
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import select  # noqa: E402
+
+from backend.app.core.db import get_db, get_sessionmaker  # noqa: E402
+from backend.app.dependencies import get_current_user  # noqa: E402
+from backend.app.domain.models import (  # noqa: E402
     Employee,
     MonthPlan,
     MonthPlanItem,
     WeekPlan,
     WeekPlanItem,
 )
-from backend.app.domain.result_models import (
+from backend.app.domain.result_models import (  # noqa: E402
     RESULT_STATUS_CONFIRMED,
     RESULT_STATUS_SUBMITTED,
     Result,
     ResultEvidence,
 )
-from backend.app.main import app
-from backend.app.services.access_control import build_access_context
+from backend.app.main import app  # noqa: E402
+from backend.app.services.access_control import build_access_context  # noqa: E402
 
 db = get_sessionmaker()()
 
@@ -67,10 +84,100 @@ if approver is None or owner_id is None:
 
 print(f"审批人: {approver.name} ({approver.id[:8]}) | 成果归属人: {owner_id[:8]}")
 
+# ── 清理上次运行的历史残留 ─────────────────────────────────────────────────
+# ⚠️ **脚本必须可重复运行**。
+#
+#   `month_plan` 上有 ``UNIQUE(owner_id, plan_month)`` 约束，
+#   而本脚本用固定的 ``plan_month="2099-08"`` 建计划 ——
+#   第二次运行就会撞唯一约束直接崩掉。
+#
+#   这不是「跑一次就够」的脚本 —— 它是**验证工具**，必须随时能重跑。
+#   所以先把上一轮自己造的数据清干净，再重新造。
+_VERIFY_MONTH = "2099-08"
+_VERIFY_WEEK_START = date(2099, 8, 3)
+
+
+def _cleanup_previous_run() -> None:
+    """删除上一轮本脚本造的数据。
+
+    ⚠️ 只删**本脚本自己造的东西**（固定的 plan_id / 固定周起始日），
+    绝不碰真实业务数据。
+    """
+    from backend.app.domain.result_models import Result, ResultEvidence
+
+    # 1) 先删成果（外键指向 plan_item）
+    #    ⚠️ Result 是**多态**的（month / week 共用一张表），
+    #    所以要按 plan_id 删，不能按 period 删 —— Result 上没有 period 列。
+    old_week_plans_pre = db.execute(
+        select(WeekPlan.id).where(
+            WeekPlan.owner_id == owner_id,
+            WeekPlan.week_start == _VERIFY_WEEK_START,
+        )
+    ).scalars().all()
+    old_month_plans_pre = db.execute(
+        select(MonthPlan.id).where(
+            MonthPlan.owner_id == owner_id,
+            MonthPlan.plan_month == _VERIFY_MONTH,
+        )
+    ).scalars().all()
+
+    old_results = db.execute(
+        select(Result).where(
+            Result.owner_id == owner_id,
+            Result.plan_id.in_(list(old_month_plans_pre) + list(old_week_plans_pre)),
+        )
+    ).scalars().all()
+    for result in old_results:
+        # 证据是独立表，先删它再删 result（避免留下孤儿）
+        for evidence in db.execute(
+            select(ResultEvidence).where(ResultEvidence.result_id == result.id)
+        ).scalars().all():
+            db.delete(evidence)
+        db.delete(result)
+    db.flush()
+
+    # 2) 删月计划的条目与计划
+    old_month_plans = db.execute(
+        select(MonthPlan).where(
+            MonthPlan.owner_id == owner_id,
+            MonthPlan.plan_month == _VERIFY_MONTH,
+        )
+    ).scalars().all()
+    for plan in old_month_plans:
+        db.execute(
+            select(MonthPlanItem).where(MonthPlanItem.plan_id == plan.id)
+        )
+        db.delete(plan)
+    db.flush()
+
+    # 3) 删周计划的条目与计划
+    old_week_plans = db.execute(
+        select(WeekPlan).where(
+            WeekPlan.owner_id == owner_id,
+            WeekPlan.week_start == _VERIFY_WEEK_START,
+        )
+    ).scalars().all()
+    for plan in old_week_plans:
+        db.execute(
+            select(WeekPlanItem).where(WeekPlanItem.plan_id == plan.id)
+        )
+        db.delete(plan)
+    db.flush()
+
+    db.commit()
+    if old_results or old_month_plans or old_week_plans:
+        print(
+            f"已清理历史残留：成果 {len(old_results)} 条、"
+            f"月计划 {len(old_month_plans)} 条、周计划 {len(old_week_plans)} 条"
+        )
+
+
+_cleanup_previous_run()
+
 # ── 造月计划 + 条目 ─────────────────────────────────────────────────────────
 month_plan = MonthPlan(
     owner_id=owner_id,
-    plan_month="2099-08",
+    plan_month=_VERIFY_MONTH,
     title="A4 端到端验证月计划",
     status="APPROVED",
 )

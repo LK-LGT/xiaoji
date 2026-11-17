@@ -3,13 +3,13 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { normalizeMonthPlanPeriods as normalizePcPeriods } from '../src/utils/monthPlanPeriod.ts'
-import { normalizeMonthPlanPeriods as normalizeMiniPeriods } from '../../企业计划成果管理系统/utils/month-plan-period.js'
+import { normalizeMonthPlanPeriods as normalizeMiniPeriods } from '../../../01-employee-performance/enterprise-plan-results/app/utils/month-plan-period.js'
 
 const diffPath = fileURLToPath(new URL('../src/views/employee/components/MonthPlanAiDiff.vue', import.meta.url))
 const workspacePath = fileURLToPath(new URL('../src/views/employee/EmployeeMonthPlanAiWorkspace.vue', import.meta.url))
 const editorPath = fileURLToPath(new URL('../src/views/employee/EmployeeMonthPlanEdit.vue', import.meta.url))
-const miniEditorPath = fileURLToPath(new URL('../../企业计划成果管理系统/pages/employee/month/edit.vue', import.meta.url))
-const miniDraftSheetPath = fileURLToPath(new URL('../../企业计划成果管理系统/components/plan/MonthAiDraftSheet.vue', import.meta.url))
+const miniEditorPath = fileURLToPath(new URL('../../../01-employee-performance/enterprise-plan-results/app/pages/employee/month/edit.vue', import.meta.url))
+const miniDraftSheetPath = fileURLToPath(new URL('../../../01-employee-performance/enterprise-plan-results/app/components/plan/MonthAiDraftSheet.vue', import.meta.url))
 const diff = readFileSync(diffPath, 'utf8')
 const workspace = readFileSync(workspacePath, 'utf8')
 const editor = readFileSync(editorPath, 'utf8')
@@ -81,7 +81,11 @@ test('month plan scheduling preserves valid AI dates and repairs partial dates',
 
 test('PC and mini month plan flows retain dates and repair old empty drafts before submit', () => {
   assert.match(workspace, /normalizeMonthPlanPeriods\(plan\.value\.planMonth, proposedItems\)/)
-  assert.match(editor, /normalizeMonthPlanPeriods\(detail\.planMonth, detail\.items\.map/)
+  // ⚠️ 这条断言原先硬编码成 `detail.items.map`（内联写法），
+  // 但实现已重构为「先抽 `detailItems` 变量，再 normalize 后 map」。
+  // **行为意图没变** —— 仍然是用 detail.planMonth 做周期归一化再逐项 map，
+  // 所以改断言适配新写法，而不是回退实现。
+  assert.match(editor, /normalizeMonthPlanPeriods\(detail\.planMonth, detailItems\)\.map\(/)
   assert.match(editor, /function validateDraft[\s\S]*?ensureFormItemPeriods\(\)/)
   assert.match(miniEditor, /estimatedStartDate:\s*item\.estimatedStartDate/)
   assert.match(miniEditor, /estimatedEndDate:\s*item\.estimatedEndDate/)

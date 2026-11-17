@@ -39,8 +39,66 @@ FRONTEND_API_DIR = REPO_ROOT / "frontend" / "src" / "api"
 #
 # 因此改为「括号配对扫描」：找到 http.<method>( 后，按深度找到匹配的右括号，
 # 再从参数区里提取第一个字符串/模板字面量。
-HTTP_METHOD_RE = re.compile(r"http\.(get|post|put|delete)\s*(?:<[^>]*>)?\s*\(", re.S)
+#
+# ⚠️⚠️ **泛型参数必须用括号配对，不能用 `[^>]*`**（2026-11-16 修复）
+#
+#    原写法 ``(?:<[^>]*>)?`` 假设泛型里没有嵌套的 `>`，于是：
+#      http.get<unknown, PageResponse<WeekPlanSummary>>('/department/week-plans', ...)
+#    这个 `[^>]*` 只吃到第一个 `>` 就停了 —— **整个正则匹配不上**，
+#    于是这个调用被**静默漏检**：既不进「已对齐」，也不进「缺失」。
+#
+#    实测漏检 **14 处**（全部是 `PageResponse<X>` / `PageResult<X>` /
+#    `Record<string, X>` 这类嵌套泛型），其中一处是真的契约缺口：
+#      GET /department/week-plans —— 前端调了，后端**没有**这个端点。
+#    修复后前端端点数从 282 → 296，缺失从 0 → 1（缺口被如实暴露）。
+#
+#    现在改为：先匹配 `http.<method>`，再**按深度**跳过配对的 `<...>`。
+HTTP_METHOD_RE = re.compile(r"http\.(get|post|put|delete)\s*", re.S)
 HTTP_METHODS = ("GET", "POST", "PUT", "DELETE")
+
+
+def _skip_generic(text: str, idx: int) -> int:
+    """从 ``text[idx] == '<'`` 处按括号配对跳过整个泛型参数。
+
+    支持嵌套：``<unknown, PageResponse<WeekPlanSummary>>``。
+
+    Returns:
+        泛型结束后的下标（即 `>` 的后一位）。若未配对闭合，返回原下标。
+    """
+    n = len(text)
+    depth = 0
+    i = idx
+    while i < n:
+        ch = text[i]
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return idx
+
+
+def _find_call_paren(text: str, after_method: int) -> int | None:
+    """定位 ``http.<method><泛型>(`` 里的左括号下标。
+
+    Returns:
+        左括号下标；找不到返回 None。
+    """
+    i = after_method
+    n = len(text)
+    # 跳过空白
+    while i < n and text[i].isspace():
+        i += 1
+    # 跳过泛型参数（可能嵌套）
+    if i < n and text[i] == "<":
+        i = _skip_generic(text, i)
+        while i < n and text[i].isspace():
+            i += 1
+    if i < n and text[i] == "(":
+        return i
+    return None
 
 
 def _extract_path_after_call(text: str, open_paren_idx: int) -> str | None:
@@ -90,7 +148,12 @@ def collect_frontend_endpoints() -> set[tuple[str, str]]:
         text = path.read_text(encoding="utf-8", errors="ignore")
         for match in HTTP_METHOD_RE.finditer(text):
             method = match.group(1).upper()
-            raw = _extract_path_after_call(text, match.end() - 1)
+            # ⚠️ 泛型参数要用**括号配对**跳过（可能嵌套 `>`），
+            #    否则 `http.get<unknown, PageResponse<X>>(...)` 整条会被漏检。
+            open_paren = _find_call_paren(text, match.end())
+            if open_paren is None:
+                continue
+            raw = _extract_path_after_call(text, open_paren)
             if raw is None:
                 continue
             raw = raw.split("?")[0]

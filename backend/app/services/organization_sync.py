@@ -751,8 +751,14 @@ class OrganizationSyncService:
         resume_token = state.page_token if self.mode == "incremental" else None
 
         def _persist(token: str) -> None:
+            # ⚠️ 传了 token = 该部门**还在分页中**，未拉完整 →
+            #    snapshot_complete 必须显式置 False。
+            #    （见 BUG-R6-45：分部门游标的 snapshot_complete 从未被正确维护）
             self.cursors.save_page_token(
-                resource, token or None, batch_id=batch.id if batch else None
+                resource,
+                token or None,
+                batch_id=batch.id if batch else None,
+                snapshot_complete=not token,
             )
             try:
                 self.db.commit()
@@ -769,7 +775,14 @@ class OrganizationSyncService:
             #    下次从这一页重来，而不是跳过整批员工。
             raise
         # 该部门拉完了 → 清掉它的分页游标（下次从头拉这个部门）。
-        self.cursors.save_page_token(resource, None, batch_id=batch.id if batch else None)
+        # ⚠️ 同时把 snapshot_complete 置 True —— 该部门的员工列表已完整。
+        #    见 BUG-R6-45：这条游标之前从未被标记为完整。
+        self.cursors.save_page_token(
+            resource,
+            None,
+            batch_id=batch.id if batch else None,
+            snapshot_complete=True,
+        )
         return users
 
     def _snapshot_is_complete(self) -> bool:

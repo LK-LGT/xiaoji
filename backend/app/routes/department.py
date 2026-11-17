@@ -39,14 +39,21 @@ def _normalize_plan_month(plan_month: str | None) -> str:
     ⚠️ 必须返回 **非空 str**：响应模型 `ProjectMonthPlanPackage.planMonth`
     是必填 `str`，若这里返回 `None` → Pydantic 校验失败 → 整个端点 500。
     缺失时用当前月份兜底（前端 `packageMonth` 默认也是 `currentMonth()`）。
+
+    ⚠️ **BUG-R6-26**：这里**统一产出 ``YYYY-MM``**（``month_plan.plan_month``
+    的库内格式），但**两种入参都接受**（``YYYY-MM`` 与 ``YYYYMM``）——
+    只认一种的话，另一种会 422 或**静默查不到数据**。
     """
     if plan_month is None or str(plan_month).strip() == "":
         return _current_month()
     text = str(plan_month).strip()
+    # 接受 YYYY-MM 与 YYYYMM，统一产出 YYYY-MM（库内格式）
+    if re.fullmatch(r"\d{6}", text):
+        text = f"{text[:4]}-{text[4:]}"
     if not re.fullmatch(r"\d{4}-\d{2}", text):
         raise HTTPException(
             status_code=422,
-            detail=f"planMonth 格式非法，应为 YYYY-MM，收到: {text}",
+            detail=f"planMonth 格式非法，应为 YYYY-MM 或 YYYYMM，收到: {text}",
         )
     return text
 

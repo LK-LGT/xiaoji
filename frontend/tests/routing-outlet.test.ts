@@ -7,6 +7,10 @@ const routerSource = readFileSync(
   fileURLToPath(new URL('../src/router/index.ts', import.meta.url)),
   'utf8',
 )
+const layoutSource = readFileSync(
+  fileURLToPath(new URL('../src/router/layout.ts', import.meta.url)),
+  'utf8',
+)
 const appSource = readFileSync(
   fileURLToPath(new URL('../src/App.vue', import.meta.url)),
   'utf8',
@@ -20,11 +24,36 @@ const viteConfigSource = readFileSync(
   'utf8',
 )
 
+/**
+ * 去掉源码里的注释，只留真实代码。
+ *
+ * ⚠️ 为什么必须去注释：
+ *   路由文件里有一段**注释**在解释「为什么不用 `() => import(...)` 懒加载」，
+ *   注释里偏偏写了 `() => import(...)` 这几个字 —— 直接对原文做
+ *   `doesNotMatch(/\(\)\s*=>\s*import\(/)` 会**命中这段注释**，
+ *   于是断言「代码里还有懒加载」，而实际代码一行懒加载都没有。
+ *
+ *   同文件的 App.vue / AppShell.vue 断言早就有同样的处理，
+ *   这里补齐路由侧，口径保持一致。
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+}
+
+// 只看真实代码（去注释）
+const routerCode = stripComments(routerSource)
+const layoutCode = stripComments(layoutSource)
+
 test('所有路由组件使用静态 import，不存在懒加载 import()', () => {
   // 止血方案：动态 import() 在本项目的 Vite/HMR 组合下可能返回 default=undefined，
   // 导致 RouterView 渲染出空注释。全部改为顶层静态 import。
-  assert.doesNotMatch(routerSource, /\(\)\s*=>\s*import\(/, '路由中不应再有 () => import(...)')
-  assert.doesNotMatch(routerSource, /\bimport\s*\(/, '路由中不应再有任意 import() 调用')
+  //
+  // ⚠️ 断言对象是「去注释后的代码」—— 路由文件里的注释恰好写着
+  //    `() => import(...)` 这几个字（解释历史原因），对原文匹配会误判。
+  assert.doesNotMatch(routerCode, /\(\)\s*=>\s*import\(/, '路由中不应再有 () => import(...)')
+  assert.doesNotMatch(routerCode, /\bimport\s*\(/, '路由中不应再有任意 import() 调用')
 
   const staticViewImports = routerSource.match(/from\s*['"][^'"]*views\/[^'"]+['"]/g) || []
   assert.ok(
@@ -33,7 +62,7 @@ test('所有路由组件使用静态 import，不存在懒加载 import()', () =
   )
 
   // 每个静态引入都必须是独立的组件名（没有重名带 2 的后缀残留）
-  assert.doesNotMatch(routerSource, /\w+2\b/, '不应残留 X2 之类的重命名别名')
+  assert.doesNotMatch(routerCode, /\w+2\b/, '不应残留 X2 之类的重命名别名')
 })
 
 test('后台页面统一挂在 AppShell 布局路由的 children 下', () => {
@@ -41,15 +70,32 @@ test('后台页面统一挂在 AppShell 布局路由的 children 下', () => {
   // 若页面组件仍挂在顶层，而 AppShell 内部又只有 router-view，
   // 那个 router-view 会去匹配 depth=1 —— 匹配不到记录就渲染空注释，
   // 表现为「点击任意左侧菜单，右侧内容区全部空白」。
-  assert.match(routerSource, /component:\s*AppShell/, '应存在以 AppShell 为布局组件的路由')
-  assert.match(routerSource, /children\s*:\s*\[/, 'AppShell 路由应包含 children')
+  //
+  // ⚠️ **实现位置已重构** —— 原先是在 router/index.ts 里逐条手写
+  //    `component: AppShell` + `children: [...]`，现在统一收口到
+  //    `router/layout.ts` 的 `withAppShell()` 工厂（路由表用
+  //    `withAppShell('/system/dashboard', SystemDashboard, ...)` 声明）。
+  //    **行为完全一致** —— 工厂产出的就是「AppShell 父路由 + 空 path 子路由」。
+  //
+  //    为什么改成工厂：见 layout.ts 的注释 —— 逐条手写时所有后台路由
+  //    会共用同一个 AppShell 实例，路由切换时「旧 AppShell 被卸载」与
+  //    「页面组件的响应式更新」时序冲突，Vue 的 DOM patch 会抛
+  //    "Cannot read properties of null (reading 'parentName')"，
+  //    patch 中断后内容区会永远停在旧页面 —— 表现为
+  //    「左侧菜单能点、右侧内容区一直空白 / 停在上一页」。
+  //
+  //    所以断言改为「**跨两个文件**验证同一件事」：
+  //    工厂负责产出 AppShell 父路由 + children，路由表负责调用工厂。
+  assert.match(layoutCode, /component:\s*AppShell/, 'withAppShell 工厂应产出以 AppShell 为布局组件的路由')
+  assert.match(layoutCode, /children\s*:\s*\[/, 'AppShell 路由应包含 children')
+  assert.match(routerCode, /withAppShell\(/, '路由表应通过 withAppShell 工厂声明后台页面路由')
 
   // 登录 / 修改密码是独立路由，不套后台框架
-  assert.match(routerSource, /path:\s*'\/login'[\s\S]{0,80}meta:\s*\{\s*public:\s*true/, '/login 应为 public 独立路由')
-  assert.match(routerSource, /path:\s*'\/change-password'/, '/change-password 应存在')
+  assert.match(routerCode, /path:\s*'\/login'[\s\S]{0,80}meta:\s*\{\s*public:\s*true/, '/login 应为 public 独立路由')
+  assert.match(routerCode, /path:\s*'\/change-password'/, '/change-password 应存在')
 
   // 后台页面不能再以顶层路由出现
-  const topLevelSystemRoute = /^\s{4}\{ path: '\/system\/dashboard'/m.test(routerSource)
+  const topLevelSystemRoute = /^\s{4}\{ path: '\/system\/dashboard'/m.test(routerCode)
   assert.equal(topLevelSystemRoute, false, '后台页面不应再作为顶层路由')
 })
 

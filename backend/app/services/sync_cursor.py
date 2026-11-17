@@ -157,16 +157,36 @@ class CursorManager:
         page_token: str | None,
         *,
         batch_id: str | None = None,
+        snapshot_complete: bool | None = None,
     ) -> None:
         """持久化**分页游标**（拉取中断后的续传点）。
 
         ⚠️ 传空字符串表示「已拉完最后一页」—— 必须把旧 token **清掉**，
         否则下次续传会拿一个**已失效**的 `page_token` 去请求 → 400。
+
+        ⚠️ **BUG-R6-45 修复**：分部门粒度游标（``employee:<部门ID>``）
+        的 ``snapshot_complete`` 之前**从未被写入** ——
+        ``save_page_token`` 只碰 ``page_token``，不碰 ``snapshot_complete``。
+
+        后果：真实库里 30 条分部门游标的 ``snapshot_complete`` **恒为 False**，
+        导致「远端缺失 = 离职/删除」这一判定的**前提从未成立**，
+        离职链路至今没有被真实验证过。
+
+        这里的语义是「**这个部门的员工列表已完整拉取**（无分页残留）」：
+        - 传 ``page_token=None`` → 该部门已拉完 → ``snapshot_complete=True``；
+        - 传了 token → 还在分页中 → ``snapshot_complete=False``。
         """
         row = self._row(resource_type)
         row.page_token = page_token or None
         if batch_id:
             row.last_batch_id = batch_id
+        if snapshot_complete is not None:
+            row.snapshot_complete = snapshot_complete
+        elif page_token is None:
+            # ⚠️ 拉完最后一页 → 该部门已完整。
+            #    这里必须显式置 True，否则该游标的 snapshot_complete
+            #    永远是初始值 False。
+            row.snapshot_complete = True
         row.updated_at = _now()
         self.db.flush()
 

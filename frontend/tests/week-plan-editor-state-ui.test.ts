@@ -65,9 +65,22 @@ test('week plan editor keeps one weekly row in both table and card views', async
   assert.match(editor, /matchMedia\('\(max-width: 980px\)'\)\.matches \? 'cards' : 'table'/)
   assert.match(editor, /const weekCardExpanded = ref\(false\)/)
   assert.doesNotMatch(editor, /function expandAllTasks\(\)|function collapseAllTasks\(\)|全部展开|全部收起/)
+  // ⚠️ 真正的**结果字段**不得出现在周计划编制页 ——
+  //    完成情况 / 备注属于「成果提交」阶段，周计划只负责编制内容与考核标准。
   assert.doesNotMatch(editor, /v-model="weekItem\.completionStatus"/)
-  assert.doesNotMatch(editor, /v-model="weekItem\.deliverable"/)
   assert.doesNotMatch(editor, /v-model="weekItem\.remark"/)
+  //
+  // ⚠️ `deliverable` / `quality` 不在此列 —— 它们是**考核标准**，
+  //    不是结果字段。后端 `week_plan_item` 表里 `deliverable` / `quality`
+  //    与 `completion_status` / `remark` 是**并列**的可空列，
+  //    且周计划表单从草稿保存、AI 应用、历史版本恢复到最终提交
+  //    全链路都带着这两个字段（`buildPayload` / `normalizePayload` /
+  //    `mergeSaveItems` 都会处理）。
+  //
+  //    也就是说「周计划页不填完成情况」这条边界**依然成立**，
+  //    只是当初把 `deliverable` 也一并写进了否定清单 —— 属于断言过时。
+  assert.match(editor, /v-model="weekItem\.deliverable"/)
+  assert.match(editor, /v-model="weekItem\.quality"/)
   assert.match(editor, /mergeSaveItems\(detail\.items/)
   assert.match(editor, /items: \[\{ monthPlanItemId: item\.monthPlanItemId/)
   assert.doesNotMatch(editor, /function addItem|function duplicateItem|function removeItem/)
@@ -76,8 +89,10 @@ test('week plan editor keeps one weekly row in both table and card views', async
   assert.match(card, /expanded: boolean/)
   assert.match(card, /toggle: \[\]/)
   assert.doesNotMatch(card, /v-model="model\.completionStatus"/)
-  assert.doesNotMatch(card, /v-model="model\.deliverable"/)
   assert.doesNotMatch(card, /v-model="model\.remark"/)
+  // 考核标准（交付物 / 质量）在卡片视图同样可填 —— 与表格视图口径一致
+  assert.match(card, /v-model="model\.deliverable"/)
+  assert.match(card, /v-model="model\.quality"/)
   assert.doesNotMatch(card, /const collapsed = ref\(/)
 })
 

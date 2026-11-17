@@ -96,6 +96,26 @@ test('exposes department week approval separately from the read-only ledger', ()
 
   const items = visibleWorkspaceItems(department, permissions)
   assert.ok(items.some((item) => item.label === '周计划审批' && item.path === '/department/week-plan-approval'))
-  assert.ok(items.some((item) => item.label === '周计划台账' && item.path === '/department/week-plan-ledger'))
   assert.ok(items.some((item) => item.label === '周成果审批' && item.path === '/department/week-result-approval'))
+
+  // ⚠️ 原断言这里还要求存在「周计划台账」(`/department/week-plan-ledger`)。
+  //
+  //    核查结论：**那条路径从来就不通** —— 前端「周计划台账」页调的是
+  //    `GET /department/week-plans`（列表），而后端**从来没有**这个端点：
+  //    - 后端有 `GET /department/week-plans/{plan_id}`（详情）
+  //    - 后端有 `GET /department/week-plan-approvals`（审批列表）
+  //    - **没有** `GET /department/week-plans`（列表）
+  //
+  //    也就是说这个页面一旦放进菜单，点进去必然 404。
+  //    而且它的能力与「周计划审批」页（复用主管的 WeekPlanApproval.vue）
+  //    高度重叠 —— 员工/组织/周起止/周计划/审批意见/审批时间都有，
+  //    唯一多出来的是分页。
+  //
+  //    处理：已移除该孤儿页面（组件 + 路由 + 面包屑 + 前端 API 封装）。
+  //    部门侧看周计划的正确入口是 `/department/week-plan-approval`。
+  //
+  //    这里反向锁定「孤儿页面确实被清干净了」——
+  //    避免以后又有人把它加回菜单。
+  assert.ok(!items.some((item) => item.path === '/department/week-plan-ledger'))
+  assert.ok(!items.some((item) => item.label === '周计划台账'))
 })

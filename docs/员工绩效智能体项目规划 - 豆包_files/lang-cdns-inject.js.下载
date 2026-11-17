@@ -1,0 +1,28 @@
+window.langCdns = {
+  "fileNames": {
+    "ar-AR": "ar-AR.6b7d0ecbf73f4e67.js",
+    "de-DE": "de-DE.3fbd4842df89e931.js",
+    "en-GB": "en-GB.84382aea038ed4b2.js",
+    "en-US": "en-US.92deffd2a2592096.js",
+    "es-419": "es-419.a6f903e15bc1de9b.js",
+    "es-ES": "es-ES.d7b4641f72ecd5a3.js",
+    "fil-PH": "fil-PH.b9b7ea796a5d2012.js",
+    "fr-FR": "fr-FR.15876ea5f44df6e8.js",
+    "hi-IN": "hi-IN.b488ab7eb9c21ac0.js",
+    "id-ID": "id-ID.efc16c30fc9854ac.js",
+    "it-IT": "it-IT.a0bea40be254478f.js",
+    "ja-JP": "ja-JP.07c7a8d87dda7c6c.js",
+    "ko-KR": "ko-KR.d5282cf2a31700c8.js",
+    "ms-MY": "ms-MY.63ac79f8e6882047.js",
+    "pt-BR": "pt-BR.5c3dd275a3d82941.js",
+    "ru-RU": "ru-RU.6c90b08fdba49f75.js",
+    "th-TH": "th-TH.f7f87b2254ad8fd9.js",
+    "tr-TR": "tr-TR.b1691dacca4b7a67.js",
+    "uz-UZ": "uz-UZ.1cef9da883b44723.js",
+    "vi-VN": "vi-VN.d0039e6cca2d74ee.js",
+    "zh-CN": "zh-CN.046cc803a3e52eb4.js",
+    "zh-HK": "zh-HK.ef2ea1d4a8c21aaa.js",
+    "zh-TW": "zh-TW.0812ee5267c0e11c.js"
+  },
+  "pathPrefix": "/ccm-vmok/web/office/lang/"
+}

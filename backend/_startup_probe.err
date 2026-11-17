@@ -1,0 +1,172 @@
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+INFO:     Started server process [24616]
+INFO:     Waiting for application startup.
+2026-11-17 12:26:19,534 INFO [app.services.feishu_scheduler] 飞书组织架构定时同步已启动, 间隔秒数=3600
+2026-11-17 12:26:19,536 INFO [app.services.org_event_scheduler] 飞书事件消费调度器已启动, 间隔秒数=60
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+2026-11-17 12:26:19,595 INFO [app.services.feishu_scheduler] 定时同步跳过：已有批次在运行或幂等命中, batch_id=ad684368-367d-403c-bfac-2d25a9889350
+2026-11-17 12:26:19,596 INFO [app.services.feishu_scheduler] 飞书定时同步首轮执行完成, 结果=skipped_already_running
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\Program Files\Python312\Lib\site-packages\pydantic\_internal\_config.py:408: UserWarning: Valid config keys have changed in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+2026-11-17 12:30:29,943 INFO [app.dependencies] Auth success: 林雅静 (b8663c7c)
+2026-11-17 12:30:29,980 INFO [app.dependencies] Auth success: 林雅静 (b8663c7c)
+2026-11-17 12:30:30,010 INFO [app.dependencies] Auth success: 林雅静 (b8663c7c)
+2026-11-17 12:30:30,107 INFO [app.dependencies] Auth success: 林雅静 (b8663c7c)
+2026-11-17 12:30:30,123 INFO [app.dependencies] Auth success: 林雅静 (b8663c7c)
+2026-11-17 12:30:30,133 INFO [app.dependencies] Auth success: 林雅静 (b8663c7c)
+2026-11-17 12:30:30,153 INFO [app.dependencies] Auth success: 林雅静 (b8663c7c)
+2026-11-17 12:35:14,829 INFO [app.routes.auth] 员工 e76874b3 已从明文口令迁移到哈希，并标记强制改密
+2026-11-17 12:35:15,071 INFO [app.routes.auth] 员工 c2dgbb76 已从明文口令迁移到哈希，并标记强制改密
+2026-11-17 12:35:15,267 INFO [app.routes.auth] 员工 5g396f5b 已从明文口令迁移到哈希，并标记强制改密
+2026-11-17 12:36:47,271 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:36:47,276 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:36:53,205 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:36:53,218 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:36:53,223 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:36:53,231 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:36:57,468 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:36:59,844 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:00,745 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:00,747 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:03,668 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:04,745 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:04,748 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:06,358 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:08,565 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:08,566 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:15,679 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:15,682 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:16,119 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:16,120 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:16,336 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:16,337 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:17,284 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:17,422 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:19,915 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:21,951 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:21,961 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:28,647 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:28,649 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:31,239 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:31,815 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:32,044 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:37:47,314 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:38:17,317 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:38:47,327 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:39:17,320 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)
+2026-11-17 12:39:47,315 INFO [app.dependencies] Auth success: 李凯 (2aaf32ea)

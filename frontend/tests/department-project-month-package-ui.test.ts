@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const dashboardUrl = new URL('../src/views/department/DepartmentDashboard.vue', import.meta.url)
 const appUrl = new URL('../src/App.vue', import.meta.url)
+const mainUrl = new URL('../src/main.ts', import.meta.url)
 const departmentApiUrl = new URL('../src/api/department.ts', import.meta.url)
 const approvalUrl = new URL('../src/views/department/MonthPlanApproval.vue', import.meta.url)
 const resultConfirmUrl = new URL('../src/views/department/ResultConfirm.vue', import.meta.url)
@@ -27,17 +28,32 @@ test('department dashboard gates complete project month plans by approval progre
 })
 
 test('department dashboard exposes an obvious Chinese month filter', async () => {
-  const [dashboard, app] = await Promise.all([
+  const [dashboard, app, main] = await Promise.all([
     readFile(dashboardUrl, 'utf8'),
     readFile(appUrl, 'utf8'),
+    readFile(mainUrl, 'utf8'),
   ])
 
   assert.match(dashboard, /class="package-month-filter"/)
   assert.match(dashboard, /计划月份/)
   assert.match(dashboard, /同步筛选月计划与成果/)
   assert.match(dashboard, /format="YYYY年MM月"/)
-  assert.match(app, /el-config-provider :locale="zhCn"/)
-  assert.match(app, /locale\/lang\/zh-cn/)
+  // ⚠️ 中文 locale 的配置位置已迁移：
+  //    原断言要求 `App.vue` 里有 `<el-config-provider :locale="zhCn">`。
+  //    现在改成在 `main.ts` 里**全局**配置
+  //    （`app.use(ElementPlus, { locale: zhCn })`）。
+  //
+  //    为什么迁走：Element Plus 的 `<el-config-provider>` 默认 slot
+  //    会缓存已渲染的分支 vnode，与 Vue Router 卸载布局组件的时机冲突，
+  //    退出登录时抛 "Cannot read properties of null (reading 'parentNode')"，
+  //    DOM patch 中断、后台框架残留在登录页上。
+  //    （AppShell.vue 的模板注释里记着同一件事。）
+  //
+  //    所以断言改为检查 `main.ts` 的全局配置 —— 那才是现在的真实实现。
+  assert.doesNotMatch(app, /el-config-provider/)
+  assert.match(main, /\.use\(ElementPlus, \{ locale: zhCn \}\)/)
+  assert.match(main, /import zhCn from 'element-plus\/es\/locale\/lang\/zh-cn'/)
+  assert.match(main, /dayjs\.locale\('zh-cn'\)/)
 })
 
 test('department month plan approval only handles plans assigned to the department owner', async () => {

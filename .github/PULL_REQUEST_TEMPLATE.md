@@ -34,10 +34,8 @@ python backend/scripts/run_ci_locally.py
 - [ ] API 契约校验通过（`check_api_contract.py --strict`，缺失 0）
 - [ ] 后端测试通过
 - [ ] 前端类型检查通过（`vue-tsc --noEmit` 无错误）
-- [ ] 前端测试未引入基线之外的新失败
+- [ ] 前端测试**全部通过**（零失败硬门槛，2026-11-16 起不再有基线豁免）
 - [ ] Alembic 迁移升级 / 降级往返无损
-- [ ] 已运行 `node frontend/scripts/run-tests-with-baseline.mjs --update`
-      （**仅当**本次修复了前端历史遗留失败时）
 
 ## 契约影响
 
