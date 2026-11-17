@@ -32,6 +32,11 @@ extend-exclude = [
     "_acceptance_*.py",
     "_check_*.py",
     "_selfcheck_*.py",
+    # ⚠️ feishu/ —— 本地飞书 Go SDK 试验目录（IDE scratch project）。
+    #    `feishu/feishu.py` 实际是 **Go 源码**（`package main` +
+    #    larksuite/oapi-sdk-go），只是被误存成了 .py 扩展名。
+    #    排掉它，Ruff 才不会对着 Go 语法报一堆 invalid-syntax。
+    "feishu",
 ]
 
 [tool.ruff.lint]

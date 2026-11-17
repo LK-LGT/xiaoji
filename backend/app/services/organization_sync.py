@@ -68,6 +68,17 @@ RETRY_BACKOFF_SECONDS = (30, 120, 600, 1800, 3600)
 _FINAL_COMMIT_RETRIES = 5
 _FINAL_COMMIT_BACKOFF_SECONDS = 0.5
 
+# 写入阶段**分块提交**的每块记录数（BUG-R6-48）。
+#
+# SQLite 的写锁是库级别的：持有期间其它连接全都写不了。
+# 同步的写入阶段（80+ 部门、90+ 员工）若全程一个事务，
+# 锁会被持有十几秒 → 主线程的写请求全部撞 `database is locked`。
+#
+# 每 N 条提交一次，把锁持有时间切成短片段。
+# N=20 是权衡：太小则提交开销占比高，太大则单次持锁仍偏久
+# （实测 20 条 ≈ 1~2 秒，远小于 busy_timeout）。
+_WRITE_CHUNK_SIZE = 20
+
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
@@ -220,6 +231,44 @@ class OrganizationSyncService:
             savepoint.rollback()
         except Exception:  # pragma: no cover - savepoint 已失效时兜底
             logger.warning("SAVEPOINT 回滚失败，继续处理后续记录", exc_info=True)
+
+    def _commit_write_chunk(self, batch: OrganizationSyncBatch) -> None:
+        """写入阶段**周期性提交**，缩短写锁持有时间（BUG-R6-48）。
+
+        为什么必须分块提交：
+        ``_sync_departments`` / ``_sync_employees`` 全程在一个长事务里
+        （每条记录一个 SAVEPOINT，最后统一 commit）。
+        这保证了「单条失败只回滚该条，不影响其它已成功的数据」——
+        但代价是**写锁被持有整个写入阶段**。
+        实测 80+ 部门 / 90+ 员工的同步里，锁持有十几秒，
+        期间主线程的所有写请求全部撞 ``database is locked``。
+
+        分块提交把锁持有时间切成 ``_WRITE_CHUNK_SIZE`` 条一块：
+        每块独立提交，块内仍用 SAVEPOINT 保住「单条失败隔离」。
+
+        ⚠️ 分块提交后，**前面块的数据已经落库** ——
+        这与原来「全批原子提交」不同。但对同步语义是**正确**的：
+        同步本来就是**幂等可重入**的，中断后重跑会补齐缺失的部分。
+        反而全批原子提交在中断时会丢掉整批工作。
+
+        ⚠️ 失败记录（``_record_error``）在块内用 ``commit=False`` 留在
+        外层事务里，随块一起提交 —— 不会丢。
+        """
+        try:
+            self.db.commit()
+        except OperationalError as exc:
+            # 提交时撞锁 —— 回滚重来，让未提交的这块丢失（下次同步会补）。
+            try:
+                self.db.rollback()
+            except Exception:  # pragma: no cover - 回滚失败兜底
+                pass
+            if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                raise
+            logger.warning(
+                "写入分块提交遇到写锁冲突，批次将失败并由后续同步重做: batch_id=%s",
+                batch.id,
+            )
+            raise
 
     def _commit_final(self, batch: OrganizationSyncBatch) -> None:
         """提交批次终态，带锁冲突重试。
@@ -844,6 +893,9 @@ class OrganizationSyncService:
         stats: dict[str, int],
         identity_map: dict[str, str] | None = None,
     ) -> None:
+        # ⚠️ 分块提交计数（BUG-R6-48）—— 每 _WRITE_CHUNK_SIZE 条提交一次，
+        #    缩短写锁持有时间，避免主线程的写请求撞 `database is locked`。
+        chunk_count = 0
         for item in departments:
             dept_id = str(item.get("department_id") or "").strip()
             if not dept_id:
@@ -859,7 +911,17 @@ class OrganizationSyncService:
                 else:
                     stats["departments_skipped"] += 1
                 savepoint.commit()
+                chunk_count += 1
+                if chunk_count >= _WRITE_CHUNK_SIZE:
+                    self._commit_write_chunk(batch)
+                    chunk_count = 0
             except Exception as exc:
+                # 分块提交的锁冲突不是单条部门错误，不能吞掉；
+                # 必须让批次失败，由后续幂等同步重做这一块。
+                if isinstance(exc, OperationalError) and (
+                    "locked" in str(exc).lower() or "busy" in str(exc).lower()
+                ):
+                    raise
                 # 只回滚这一条部门，不能连带撤销外层事务里已写入的数据。
                 self._rollback_savepoint(savepoint)
                 stats["departments_failed"] += 1
@@ -872,6 +934,14 @@ class OrganizationSyncService:
                     commit=False,
                 )
 
+        # 提交不足一个完整块的尾部记录，避免锁一直持有到员工阶段。
+        if chunk_count:
+            self._commit_write_chunk(batch)
+
+        # ⚠️ 分块提交后，前面块的数据**已经落库** ——
+        #    这里必须重新读一次，否则「本批次没见过的部门」
+        #    会被误判为「飞书已删除」而停用！
+        #    （原来全程一个事务，内存里的对象就是最新状态，没有这个问题。）
         # 只有完整目录视图才能判定“飞书中已删除”。
         # 增量模式不能误删；快照不完整（有部门拉取失败）时同样不能删。
         if self.mode == "full" and self._snapshot_is_complete():
@@ -976,6 +1046,9 @@ class OrganizationSyncService:
         employees = self._current_employees
         # 第一轮：写入员工自身数据，暂不设置 manager_id。
         pending: list[tuple[str, str | None]] = []
+        # ⚠️ 分块提交计数（BUG-R6-48）—— 每 _WRITE_CHUNK_SIZE 条提交一次，
+        #    缩短写锁持有时间，避免主线程的写请求撞 `database is locked`。
+        chunk_count = 0
         for item in employees:
             user_id = str(item.get("user_id") or "").strip()
             if not user_id:
@@ -995,7 +1068,17 @@ class OrganizationSyncService:
                 )
                 pending.append((user_id, manager_id))
                 savepoint.commit()
+                chunk_count += 1
+                if chunk_count >= _WRITE_CHUNK_SIZE:
+                    self._commit_write_chunk(batch)
+                    chunk_count = 0
             except Exception as exc:
+                # 分块提交的锁冲突不是单条员工错误，不能吞掉；
+                # 必须让批次失败，由后续幂等同步重做这一块。
+                if isinstance(exc, OperationalError) and (
+                    "locked" in str(exc).lower() or "busy" in str(exc).lower()
+                ):
+                    raise
                 # 单条失败不能阻断批次，也不应回滚其他已成功的数据。
                 # 只回滚当前这条记录的 SAVEPOINT —— 部门写入和已成功的
                 # 员工都保留在外层事务里（修复前 rollback 会把它们一并撤销，
@@ -1011,8 +1094,13 @@ class OrganizationSyncService:
                     commit=False,
                 )
 
+        # 提交第一轮不足一个完整块的尾部记录。
+        if chunk_count:
+            self._commit_write_chunk(batch)
+
         # 第二轮：回填 manager_id（此时所有员工均已落库）。
         # manager_id 的变化不额外计数，避免同一员工被统计两次。
+        chunk_count = 0
         for user_id, manager_id in pending:
             if not manager_id:
                 continue
@@ -1027,7 +1115,16 @@ class OrganizationSyncService:
                     employee.manager_id = manager_id
                     self.db.flush()
                 savepoint.commit()
+                chunk_count += 1
+                if chunk_count >= _WRITE_CHUNK_SIZE:
+                    self._commit_write_chunk(batch)
+                    chunk_count = 0
             except Exception as exc:
+                # 回填阶段的锁冲突同样不能被当成单条员工错误吞掉。
+                if isinstance(exc, OperationalError) and (
+                    "locked" in str(exc).lower() or "busy" in str(exc).lower()
+                ):
+                    raise
                 self._rollback_savepoint(savepoint)
                 stats["employees_failed"] += 1
                 self._record_error(
@@ -1038,6 +1135,10 @@ class OrganizationSyncService:
                     None,
                     commit=False,
                 )
+
+        # 提交第二轮不足一个完整块的尾部记录.
+        if chunk_count:
+            self._commit_write_chunk(batch)
 
         # 第三轮：处理「远端已不存在」的员工（离职/删除）。
         # 只在**完整快照**下才允许执行 —— 否则某个部门接口抖动

@@ -41,6 +41,18 @@ dist/
 *.swp
 .DS_Store
 
+# ⚠️ feishu/ —— 本地飞书 Go SDK 试验目录（IDE scratch project）。
+#
+# 它不是 Python 代码：`feishu/feishu.py` 实际是 **Go 源码**
+# （`package main` + larksuite/oapi-sdk-go），被误存成了 .py 扩展名。
+#
+# 后果：
+# 1. `ruff check .` 会在上面报 55 个语法错误 → CI 直接红；
+# 2. 里面有硬编码的飞书 App ID / App Secret。
+#
+# 所以整目录既不入版本库，也不进静态检查范围。
+feishu/
+
 # CI 本地产物
 .coverage
 coverage.xml
