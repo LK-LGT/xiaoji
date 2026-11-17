@@ -376,22 +376,6 @@ class FeishuClient:
                 retryable=True,
                 status_code=resp.status_code,
             )
-        # ── TEMP DIAGNOSTIC (2026-11-17) ─────────────────────────────
-        # 定位 502：只打印**字段名**与**非敏感标识**，不打印 token 值。
-        try:
-            _dbg = resp.json()
-            logger.warning(
-                "[DIAG] token 响应字段=%s open_id=%r union_id=%r user_id=%r code=%r msg=%r",
-                sorted(_dbg.keys()),
-                _dbg.get("open_id"),
-                _dbg.get("union_id"),
-                _dbg.get("user_id"),
-                _dbg.get("code"),
-                _dbg.get("msg"),
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning("[DIAG] token 响应非 JSON")
-        # ── END TEMP DIAGNOSTIC ──────────────────────────────────────
         try:
             resp.raise_for_status()
         except httpx.HTTPError:
