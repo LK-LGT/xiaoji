@@ -273,7 +273,9 @@ def _mark_batch_failed(db: Session, batch_id: str, message: str) -> None:
             batch = db.get(OrganizationSyncBatch, batch_id)
             if batch is None:
                 return
-            if batch.status in ("ok", "partial_failed", "failed"):
+            # ⚠️ **BUG-R6-47**：`superseded` 也是终态 —— 已被后续成功批次取代的
+            # 历史异常痕迹，不该再被改写成 failed。
+            if batch.status in ("ok", "partial_failed", "failed", "superseded"):
                 return
             batch.status = "failed"
             batch.error_message = message[:1000]
@@ -368,7 +370,18 @@ def get_sync_status(db: Session) -> dict[str, Any]:
 
     from ..domain.models import OrganizationSyncCursor
 
-    cursors = db.execute(select(OrganizationSyncCursor)).scalars().all()
+    # ⚠️ **BUG-R6-26 / BUG-R6-46**：
+    # ``/status`` 是**概览**接口，不该把全部游标（每部门一条，条数随部门数增长）
+    # 整包塞进响应。游标明细请走分页端点 ``GET /sync-organization/cursors``。
+    #
+    # 这里**只保留非「全局」粒度的游标**（``department`` / ``employee`` 两种），
+    # 它们代表「这一轮整体推进到哪了」；分部门粒度的
+    # ``employee:<部门ID>`` 条目数量最多，不进概览。
+    cursors = db.execute(
+        select(OrganizationSyncCursor)
+        .where(OrganizationSyncCursor.resource_type.in_(("department", "employee")))
+        .order_by(OrganizationSyncCursor.resource_type.asc())
+    ).scalars().all()
 
     interval = max(60, settings.feishu_sync_interval_seconds)
     next_run = None

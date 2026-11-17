@@ -91,7 +91,7 @@
           <p>各资源上一次成功推进到的位置，用于增量同步的断点续传。</p>
         </div>
       </div>
-      <el-table :data="status?.cursors ?? []" empty-text="暂无游标记录">
+      <el-table :data="cursorPage.records" empty-text="暂无游标记录" v-loading="cursorLoading">
         <el-table-column prop="resourceType" label="资源类型" min-width="140" />
         <el-table-column label="检查点" min-width="200">
           <template #default="{ row }">
@@ -115,8 +115,18 @@
           <template #default="{ row }">{{ formatTime(row.updatedAt) }}</template>
         </el-table-column>
       </el-table>
+      <div class="pagination-row">
+        <span>共 {{ cursorPage.total }} 个游标</span>
+        <el-pagination
+          v-model:current-page="cursorQuery.page"
+          :page-size="cursorQuery.pageSize"
+          layout="prev, pager, next"
+          :total="cursorPage.total"
+          @current-change="loadCursors"
+        />
+      </div>
       <el-alert
-        v-if="status?.cursors?.some((cursor) => !cursor.snapshotComplete)"
+        v-if="incompleteCursorCount > 0"
         type="warning"
         show-icon
         :closable="false"
@@ -382,6 +392,7 @@ import {
   getOrganizationSyncStatus,
   getSyncSchedulerStatus,
   listSyncBatches,
+  listSyncCursors,
   listSyncErrors,
   recoverStaleSyncBatches,
   retryFailedSyncItems,
@@ -390,6 +401,7 @@ import {
   type SchedulerStatus,
   type SyncBatch,
   type SyncBatchStatus,
+  type SyncCursor,
   type SyncErrorCategory,
   type SyncErrorItem,
   type SyncReconciliation,
@@ -403,6 +415,7 @@ const recovering = ref(false)
 const retrying = ref(false)
 const batchLoading = ref(false)
 const errorLoading = ref(false)
+const cursorLoading = ref(false)
 
 const status = ref<SyncStatus | null>(null)
 const scheduler = ref<SchedulerStatus | null>(null)
@@ -412,8 +425,16 @@ const detailBatch = ref<SyncBatch | null>(null)
 
 const batchQuery = reactive({ page: 1, pageSize: 20, status: '' as string | '', mode: '' as string | '' })
 const errorQuery = reactive({ page: 1, pageSize: 20, status: '' as string | '', errorCategory: '' as string | '' })
+// ⚠️ **BUG-R6-46**：游标表改走**分页**端点 `listSyncCursors`（每部门一条，条数随部门数增长）。
+const cursorQuery = reactive({ page: 1, pageSize: 20 })
 const batchPage = ref<PageResult<SyncBatch>>({ records: [], total: 0, page: 1, pageSize: 20 })
 const errorPage = ref<PageResult<SyncErrorItem>>({ records: [], total: 0, page: 1, pageSize: 20 })
+const cursorPage = ref<PageResult<SyncCursor>>({ records: [], total: 0, page: 1, pageSize: 20 })
+
+/** 快照不完整的游标数量 —— 用来决定要不要显示「已跳过离职判定」告警。 */
+const incompleteCursorCount = computed(
+  () => status.value?.cursors?.filter((cursor) => !cursor.snapshotComplete).length ?? 0,
+)
 
 const batchStatusOptions: Array<{ value: SyncBatchStatus; label: string }> = [
   { value: 'pending', label: '待执行' },
@@ -421,6 +442,8 @@ const batchStatusOptions: Array<{ value: SyncBatchStatus; label: string }> = [
   { value: 'ok', label: '成功' },
   { value: 'partial_failed', label: '部分失败' },
   { value: 'failed', label: '失败' },
+  // ⚠️ **BUG-R6-47**：「已被后续成功批次取代」的历史异常痕迹。
+  { value: 'superseded', label: '已被取代' },
 ]
 
 const errorCategoryOptions: Array<{ value: SyncErrorCategory; label: string }> = [
@@ -467,6 +490,8 @@ function batchStatusType(value: SyncBatchStatus): 'success' | 'warning' | 'dange
   if (value === 'ok') return 'success'
   if (value === 'partial_failed') return 'warning'
   if (value === 'failed') return 'danger'
+  // ⚠️ **BUG-R6-47**：`superseded` 是「历史异常痕迹」，
+  // 不该和真正的失败一样标红 —— 用中性灰，避免看板上一片告警。
   return 'info'
 }
 
@@ -591,10 +616,35 @@ async function loadErrors() {
   }
 }
 
+/**
+ * 加载同步游标（**分页**）。
+ *
+ * ⚠️ **BUG-R6-46**：游标是「每部门一条」的粒度，条数随部门数增长 ——
+ * 一次性全量拉会让响应体与表格渲染都线性膨胀。
+ */
+async function loadCursors() {
+  cursorLoading.value = true
+  try {
+    cursorPage.value = await listSyncCursors({
+      page: cursorQuery.page,
+      pageSize: cursorQuery.pageSize,
+    })
+  } finally {
+    cursorLoading.value = false
+  }
+}
+
 async function refreshAll() {
   refreshing.value = true
   try {
-    await Promise.all([loadStatus(), loadScheduler(), loadReconciliation(), loadBatches(), loadErrors()])
+    await Promise.all([
+      loadStatus(),
+      loadScheduler(),
+      loadReconciliation(),
+      loadBatches(),
+      loadErrors(),
+      loadCursors(),
+    ])
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '同步数据加载失败')
   } finally {

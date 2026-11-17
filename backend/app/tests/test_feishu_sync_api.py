@@ -270,11 +270,20 @@ def test_list_errors_supports_category_filter(client_and_db):
 
 
 def test_list_cursors_endpoint(client_and_db):
-    """游标接口应返回游标列表。"""
+    """游标接口应返回**分页信封**（BUG-R6-46）。
+
+    ⚠️ 以前是裸数组（一次性返回全部游标），现在改为
+    ``{ records, total, page, pageSize }`` —— 与批次/失败记录端点口径一致。
+    """
     client, _db, headers, _emp = client_and_db
     response = client.get("/v1/feishu/sync-organization/cursors", headers=headers)
     assert response.status_code == 200
-    assert isinstance(response.json()["data"], list)
+    data = response.json()["data"]
+    assert isinstance(data, dict)
+    assert isinstance(data["records"], list)
+    assert data["total"] == len(data["records"])
+    assert data["page"] == 1
+    assert data["pageSize"] >= 1
 
 
 def test_latest_reconciliation_returns_null_when_absent(client_and_db):

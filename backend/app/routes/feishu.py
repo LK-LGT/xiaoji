@@ -14,7 +14,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.config import settings
@@ -227,6 +226,25 @@ def _serialize_batch(row: OrganizationSyncBatch) -> dict[str, Any]:
     }
 
 
+def _serialize_cursor(row: OrganizationSyncCursor) -> dict[str, Any]:
+    """游标序列化。统一使用 camelCase，与前端契约一致。
+
+    ⚠️ **BUG-R6-46**：抽成独立函数，让
+    ``GET /sync-organization/cursors``（分页）与
+    ``GET /sync-organization/status``（概览）**共用同一套字段口径** ——
+    以前两处各写一份字面量，改一处忘另一处就会出现字段漂移。
+    """
+    return {
+        "resourceType": row.resource_type,
+        "checkpointValue": row.checkpoint_value,
+        "cursorValue": row.cursor_value,
+        "pageToken": row.page_token,
+        "snapshotComplete": row.snapshot_complete,
+        "lastBatchId": row.last_batch_id,
+        "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
 @router.get("/sync-organization/batches")
 def list_sync_batches(
     page: int = Query(default=1, ge=1),
@@ -278,26 +296,48 @@ def get_sync_batch(
 
 @router.get("/sync-organization/cursors")
 def list_sync_cursors(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    pageSize: int | None = Query(default=None, ge=1, le=200),
+    resourceType: str | None = Query(default=None),
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """同步游标：各资源上一次成功推进的位置。"""
+    """同步游标：各资源上一次成功推进的位置（**分页**）。
+
+    ⚠️ **BUG-R6-46**：以前这个端点**一次性返回全部游标**（不分页）。
+    游标是「每部门一条」的粒度（``employee:<部门ID>``），
+    部门一多就会涨到几百条 —— 响应体线性膨胀，前端表格一次渲染全部行。
+
+    现在**分页返回**，与 ``/sync-organization/batches`` 的分页口径对齐：
+    - ``page`` / ``pageSize``（也接受 snake_case 的 ``page_size``）；
+    - ``resourceType`` 可按资源类型过滤（精确匹配）。
+
+    ⚠️ **响应形状变了**（列表 → 分页信封），这是**有意的破坏性变更**：
+    旧形状没有 ``total``，前端无法做分页控件。
+    前端 ``listSyncCursors`` 已同步改为读 ``records``。
+    """
     _require_admin(db, current_user)
-    rows = db.execute(select(OrganizationSyncCursor)).scalars().all()
+    size = pageSize if pageSize is not None else page_size
+
+    query = db.query(OrganizationSyncCursor)
+    if resourceType:
+        query = query.filter(OrganizationSyncCursor.resource_type == resourceType)
+    total = query.count()
+    rows = (
+        query.order_by(OrganizationSyncCursor.resource_type.asc())
+        .offset((page - 1) * size)
+        .limit(size)
+        .all()
+    )
     return {
         "code": 0,
-        "data": [
-            {
-                "resourceType": row.resource_type,
-                "checkpointValue": row.checkpoint_value,
-                "cursorValue": row.cursor_value,
-                "pageToken": row.page_token,
-                "snapshotComplete": row.snapshot_complete,
-                "lastBatchId": row.last_batch_id,
-                "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
-            }
-            for row in rows
-        ],
+        "data": {
+            "records": [_serialize_cursor(row) for row in rows],
+            "total": total,
+            "page": page,
+            "pageSize": size,
+        },
     }
 
 

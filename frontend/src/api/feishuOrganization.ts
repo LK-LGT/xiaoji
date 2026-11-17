@@ -1,7 +1,19 @@
 import { http } from './http'
 
-/** 同步批次状态。 */
-export type SyncBatchStatus = 'pending' | 'running' | 'ok' | 'partial_failed' | 'failed'
+/**
+ * 同步批次状态。
+ *
+ * ⚠️ **BUG-R6-47**：`superseded` = 「这条异常批次已被后续成功批次取代」，
+ * 由 `backend/scripts/clean_dirty_sync_batches.py` 标记 —— 用来把
+ * 「历史异常痕迹」和「真正的失败」区分开。
+ */
+export type SyncBatchStatus =
+  | 'pending'
+  | 'running'
+  | 'ok'
+  | 'partial_failed'
+  | 'failed'
+  | 'superseded'
 
 /** 同步模式。 */
 export type SyncMode = 'full' | 'incremental'
@@ -264,9 +276,19 @@ export const listSyncAudits = (params: {
 } = {}) =>
   http.get<unknown, PageResult<SyncAudit>>('/feishu/sync-organization/audits', { params })
 
-/** 查询同步游标。 */
-export const listSyncCursors = () =>
-  http.get<unknown, SyncCursor[]>('/feishu/sync-organization/cursors')
+/**
+ * 查询同步游标（**分页**）。
+ *
+ * ⚠️ **BUG-R6-46**：后端从「返回全部游标数组」改成「分页信封」
+ * （``{ records, total, page, pageSize }``）。
+ * 游标是「每部门一条」的粒度，部门一多就会到几百条。
+ */
+export const listSyncCursors = (params: {
+  page?: number
+  pageSize?: number
+  resourceType?: string
+} = {}) =>
+  http.get<unknown, PageResult<SyncCursor>>('/feishu/sync-organization/cursors', { params })
 
 /** 查询最近一次对账结果。 */
 export const getLatestReconciliation = () =>
