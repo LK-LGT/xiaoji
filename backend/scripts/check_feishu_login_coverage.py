@@ -110,23 +110,48 @@ def main() -> int:
                     Employee.id,
                     Employee.name,
                     Employee.account_status,
+                    Employee.employment_status,
                     Employee.login_account,
                 )
                 .where(Employee.id.notin_(active_open))
                 .limit(15)
             ).all()
             for r in rows:
-                print(f"  {r[0]:22} {r[1]:14} status={r[2]:10} login={r[3]}")
+                print(
+                    f"  {r[0]:22} {r[1]:14} account={r[2]:10} employment={r[3]:10} login={r[4]}"
+                )
             if unbound > len(rows):
                 print(f"  …… 共 {unbound} 人")
             print()
-            print("  💡 这些人点「飞书登录」会得到：")
-            print("     「该飞书账号尚未绑定员工身份，请先在系统中绑定」")
-            print("     → 跑一次**组织架构同步**即可补上 open_id。")
+            # ⚠️⚠️ **不要笼统说「未同步」**（2026-11-17 更正）。
+            #
+            #   实测这批人**全部**已经同步到（身份行都在，只是 active=False）——
+            #   真正的原因是**在职状态**决定了身份是否可用。
+            #   说「去跑同步」会让人白跑一趟，方向完全错。
+            #
+            #   实际原因分布（按 employment_status）：
+            #     inactive 冻结/未激活/未加入企业 → 临时状态，解冻后自动恢复
+            #     exited   离职                  → 永久，需人工复职
+            for status, count in db.execute(
+                select(Employee.employment_status, func.count(Employee.id))
+                .where(Employee.id.notin_(active_open))
+                .group_by(Employee.employment_status)
+            ).all():
+                meaning = {
+                    "exited": "离职 —— 永久禁用，需人工复职",
+                    "inactive": "冻结/未激活/未加入企业 —— 临时，解冻后自动恢复",
+                    "active": "在职但身份绑定失效 —— 重跑同步可能能修好",
+                }.get(str(status), "其它状态")
+                print(f"  · employment_status={status:10} : {count:3} 人 —— {meaning}")
+            print()
+            print("  💡 这些人点「飞书登录」会得到**针对性**提示（2026-11-17 已细分）：")
+            print("     · 已离职     → 「该账号对应的员工已离职…」")
+            print("     · 账号被停用 → 「该员工账号已被停用…」")
+            print("     · 未同步     → 「该飞书账号未同步到系统…」")
             print()
 
         if disabled:
-            print("=== 账号被禁用的员工（抽样 15 个）===")
+            print("=== 账号被禁用但身份仍 active 的员工（抽样 15 个）===")
             rows = db.execute(
                 select(Employee.id, Employee.name, Employee.account_status)
                 .where(Employee.id.in_(active_open))
@@ -139,7 +164,6 @@ def main() -> int:
                 print(f"  …… 共 {disabled} 人")
             print()
             print("  💡 这是**设计如此** —— 离职/停用账号不该能登录（安全边界）。")
-            print()
 
         # ── 冲突检查 ────────────────────────────────────────────────
         conflicts = db.execute(

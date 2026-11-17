@@ -504,6 +504,43 @@ def test_diagnose_identity_resolves_when_healthy(db_session, identity):
     assert result["employee"].id == "emp_test_001"
 
 
+def test_frozen_employee_gets_disabled_reason(db_session, identity):
+    """⚠️⚠️ **冻结/未激活**（飞书 ``is_activated=False``）—— 真实库里的主场景。
+
+    实测本地 93 人里有 13 人是这种状态：
+        account_status=disabled + employment_status=inactive
+    且飞书侧 ``is_exited=False`` / ``is_frozen=False`` / ``is_activated=False``
+    ⇒ **不是离职**，是「停用/未加入企业」。
+
+    ⇒ 提示必须是「已停用」而不是「已离职」——
+       说成离职会让人去走复职流程（那是**永久**禁用），而实际解冻后就能恢复。
+
+    ⚠️ ``employment_status=inactive`` 的账号 ``account_status`` 也是 disabled，
+       所以诊断落 ``disabled`` 分支（账号被停用）—— 这是对的。
+    """
+    emp = db_session.get(Employee, "emp_test_001")
+    emp.employment_status = "inactive"
+    emp.account_status = "disabled"
+    db_session.commit()
+
+    err = _exchange_and_get_error(db_session, identity)
+    assert err.reason == "disabled"
+    assert "停用" in err.message
+    assert "离职" not in err.message, "冻结 ≠ 离职，不能引导去走复职流程"
+
+
+def test_exited_employee_gets_exited_reason(db_session, identity):
+    """⚠️ **真离职**（飞书 ``is_exited=True``）→ 提示「已离职」，且需人工复职。"""
+    emp = db_session.get(Employee, "emp_test_001")
+    emp.employment_status = "exited"
+    emp.account_status = "disabled"
+    db_session.commit()
+
+    err = _exchange_and_get_error(db_session, identity)
+    assert err.reason == "exited"
+    assert "离职" in err.message
+
+
 def test_diagnose_identity_reports_inactive_binding(db_session, identity):
     """⚠️ 身份行存在但 ``active=False``、员工却在职且启用 → ``inactive_binding``。
 
