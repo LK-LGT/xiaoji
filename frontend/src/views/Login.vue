@@ -43,6 +43,21 @@
         <el-alert v-if="error" :title="error" type="error" :closable="false" />
         <el-button class="login-button" type="primary" size="large" :loading="loading" :disabled="loading" @click="submit">进入工作空间</el-button>
       </el-form>
+
+      <!-- ═══ 飞书免登（FS-2）═══ -->
+      <div class="login-divider"><span>或</span></div>
+      <el-button
+        class="login-feishu-button"
+        size="large"
+        :loading="feishuLoading"
+        :disabled="loading || feishuLoading"
+        @click="feishuLogin"
+      >
+        <el-icon class="login-feishu-button__icon"><Promotion /></el-icon>
+        飞书登录
+      </el-button>
+      <p class="login-tip">飞书登录需企业已在飞书后台完成应用授权配置；未配置时可继续使用账号密码进入。</p>
+
       <div class="login-security"><span class="status-dot"></span>企业账号安全认证 · 操作全程留痕</div>
     </section>
   </main>
@@ -51,8 +66,10 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import { Promotion } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { defaultWorkspacePath, hasPermission } from '@/navigation/workspaces'
+import { startFeishuLogin } from '@/api/feishuLogin'
 import { useAuthStore } from '@/stores/auth'
 const REMEMBER_USERNAME_KEY = 'planning_login_username_memory'
 /**
@@ -78,6 +95,7 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const loading = ref(false)
+const feishuLoading = ref(false)
 const error = ref('')
 const formRef = ref<FormInstance>()
 const form = reactive({ username: '', password: '' })
@@ -123,6 +141,33 @@ async function submit() {
   }
   catch (err) { error.value = err instanceof Error ? err.message : '登录失败，请检查账号或密码' }
   finally { loading.value = false }
+}
+
+/**
+ * 发起飞书免登（FS-2）。
+ *
+ * ⚠️ **密码登录必须保留**（Runbook §3.2 约束 1）：
+ *   飞书故障时全员无法登录是灾难。所以飞书按钮只是**并列的另一个入口**，
+ *   放在密码表单**下面**（不是替代），且密码表单完全不受影响。
+ *
+ * ⚠️ 这里的错误**就地展示**（不用 ElMessage）—— 免登失败原因对用户很重要
+ *   （如「该飞书账号未绑定员工身份，请联系管理员」），一闪而过的 toast 看不清。
+ */
+async function feishuLogin() {
+  if (feishuLoading.value || loading.value) return
+  feishuLoading.value = true
+  error.value = ''
+  try {
+    // 带上「登录后想回的站内路径」—— 由 `route.query.redirect` 决定。
+    // ⚠️ 校验交给回调页的 `authorizedRedirect`（它会核对权限），
+    //   这里只负责把意图带过去。
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : undefined
+    await startFeishuLogin(redirect)
+  }
+  catch (err) {
+    feishuLoading.value = false
+    error.value = err instanceof Error ? err.message : '飞书登录发起失败，请稍后重试或改用账号密码登录'
+  }
 }
 
 /**

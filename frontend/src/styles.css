@@ -254,6 +254,15 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgb(216 137 53 / 38%)
 .login-security { display: flex; align-items: center; gap: 8px; margin-top: 22px; color: var(--muted); font-size: 11px; }
 .login-tip { margin: 26px 0 0; color: #9aabb6; font-size: 11px; }
 
+/* ── 飞书免登入口（FS-2）──────────────────────────────────────────────
+   密码登录是**主入口**，飞书登录是**并列的备用/便捷入口** ——
+   两者都在页面上，谁都不替代谁（Runbook §3.2 约束 1：飞书故障时
+   全员无法登录是灾难，所以密码登录必须始终可用）。 */
+.login-divider { display: flex; align-items: center; gap: 12px; margin: 20px 0 14px; color: #9aabb6; font-size: 12px; }
+.login-divider::before, .login-divider::after { flex: 1; height: 1px; background: var(--line); content: ""; }
+.login-feishu-button { width: 100%; }
+.login-feishu-button__icon { margin-right: 6px; }
+
 .el-button { border-radius: 8px; font-weight: 650; }
 .el-button--primary { --el-button-bg-color: var(--blue); --el-button-border-color: var(--blue); --el-button-hover-bg-color: var(--navy-800); --el-button-hover-border-color: var(--navy-800); }
 .el-input__wrapper, .el-select__wrapper, .el-textarea__inner { border-radius: 8px; box-shadow: 0 0 0 1px var(--line) inset; }

@@ -5,8 +5,22 @@ export const AI_OPERATION_TIMEOUT_MS = 330_000
 const SESSION_REPLACED_CODE = 40101
 let showingSessionReplacedNotice = false
 
-function isLoginRequest(url?: string) {
-  return url === '/auth/login'
+/**
+ * ⚠️ FS-2：飞书免登的 code 换取接口**也是登录入口**。
+ *
+ * 为什么必须单独排除：
+ * 通用规则是「非登录请求收到 401 → 清凭证 + 跳 `/login`」。
+ * 但 `/feishu/auth/exchange` 失败时（code 过期 / state 重放 / 账号未绑定）
+ * 用户正**站在回调页**上。此时若被全局拦截器跳走，用户会看到：
+ *   1. 回调页上「授权失败」的提示**根本没机会展示**（整页被替换）；
+ *   2. 被丢到一个**不带任何错误信息**的 `/login` —— 用户不知道发生了什么，
+ *      只会以为「点了飞书登录就闪回登录页」，一脸茫然。
+ *
+ * 所以：登录类接口的失败**一律原样抛给调用方**（`Login.vue` / `FeishuCallback.vue`）
+ * 由页面自己展示可操作的提示（如「该飞书账号未绑定，请用密码登录」）。
+ */
+function isLoginLikeRequest(url?: string) {
+  return url === '/auth/login' || url === '/feishu/auth/exchange'
 }
 
 function isLogoutRequest(url?: string) {
@@ -64,7 +78,7 @@ export const http = axios.create({
 
 http.interceptors.request.use((config) => {
   const token = localStorage.getItem('planning_access_token')
-  if (token && !isLoginRequest(config.url)) {
+  if (token && !isLoginLikeRequest(config.url)) {
     config.headers.Authorization = `Bearer ${token}`
   }
   return config
@@ -83,7 +97,7 @@ http.interceptors.response.use((response) => {
   if (axios.isCancel(error) || error?.code === 'ERR_CANCELED') {
     return Promise.reject(error)
   }
-  if (error?.response?.status === 401 && !isLoginRequest(error?.config?.url)) {
+  if (error?.response?.status === 401 && !isLoginLikeRequest(error?.config?.url)) {
     if (isLogoutRequest(error?.config?.url)) {
       // 退出接口返回 401：凭证已失效，直接清理本地状态，不做整页跳转
       // 由调用方（authStore.logout / App.logout）负责后续路由跳转

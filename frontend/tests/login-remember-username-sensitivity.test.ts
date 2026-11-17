@@ -14,6 +14,8 @@ const loginView = readFileSync(
 )
 
 function findStorageWrites(source: string): string[] {
+  // ⚠️ `\n\s*\}` 里的 `\s` 本身已能吃掉 `\r`，所以这里无需额外处理行尾；
+  //    但为稳妥起见仍写成行尾无关的形式。
   return source.match(/localStorage\.setItem\([\s\S]*?\n\s*\}\)\)/g) || []
 }
 
@@ -33,8 +35,15 @@ test('当前 Login.vue 通过所有安全断言', () => {
 
 test('断言对「回退到旧写法」确实会失败（测试敏感度自检）', () => {
   // 构造一份「假设有人又把密码存回去」的源码片段（只在内存里）。
+  //
+  // ⚠️ 正则必须**行尾无关**（`\r?\n` 而不是 `\n`）：
+  //    Windows 上 checkout 出来的是 CRLF，Linux/macOS 是 LF。
+  //    写死 `\n` 会导致在 Windows 上**匹配不到** → 构造出的样本
+  //    与原文相同 → `assert.notEqual` 先炸，
+  //    于是这个「敏感度自检」在 Windows 上永远失败（而在 CI 的
+  //    Linux 上通过）—— 典型的「本地红 / CI 绿」。
   const regressed = loginView.replace(
-    /username: form\.username,\n(\s*)expiresAt/,
+    /username: form\.username,\r?\n(\s*)expiresAt/,
     'username: form.username,\n$1password: form.password,\n$1expiresAt',
   )
   assert.notEqual(regressed, loginView, '构造的回归样本应与当前源码不同')

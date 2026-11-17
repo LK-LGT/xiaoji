@@ -30,6 +30,7 @@ declare module 'vue-router' {
 
 import Login from '@/views/Login.vue'
 import ChangePassword from '@/views/ChangePassword.vue'
+import FeishuCallback from '@/views/FeishuCallback.vue'
 import NoAccess from '@/views/NoAccess.vue'
 import MessageCenter from '@/views/MessageCenter.vue'
 import UserProfile from '@/views/profile/UserProfile.vue'
@@ -99,6 +100,11 @@ const router = createRouter({
     // --- 独立页面（不套后台框架） ---
     { path: '/login', component: Login, meta: { public: true } },
     { path: '/change-password', component: ChangePassword, meta: { passwordChange: true } },
+    // ⚠️ FS-2：飞书免登 OAuth 回调页。
+    //    必须 `public: true` —— 用户此刻**还没有本系统 token**
+    //    （token 是回调页里用 code 换出来的），走全局守卫会被拦回 /login，
+    //    形成「回调 → 被踢去登录 → 回调永不发生」的死循环。
+    { path: '/feishu/callback', component: FeishuCallback, meta: { public: true } },
 
     // --- 后台框架页面 ---
     withAppShell('/', NoAccess),
