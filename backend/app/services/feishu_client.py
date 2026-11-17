@@ -209,7 +209,21 @@ class FeishuClient:
         except httpx.TimeoutException as exc:
             raise FeishuError("飞书 Token 请求超时", retryable=True) from exc
         except httpx.HTTPError as exc:
-            raise FeishuTokenError("飞书 Token 请求失败") from exc
+            # ⚠️⚠️ **网络错误必须标 retryable=True**（2026-11-17 修）
+            #
+            #   实测踩到：一次 DNS 抖动（``getaddrinfo failed``）就让
+            #   整条链路 500 —— 而同样的网络错误在 ``_request_with_token``
+            #   里是**会重试**的（retryable=True + 退避）。
+            #
+            #   ⚠️ 这里原本抛的是 ``FeishuTokenError`` —— 它的默认
+            #      ``retryable=False`` ⇒ **重试逻辑整个被跳过**。
+            #
+            #   ⇒ DNS 抖动 / 连接被重置 / 临时断网 —— 这些都是**瞬时**故障，
+            #      重试一下就好了，不该直接失败。
+            #
+            #   ⇒ 区分：``code != 0``（业务失败，如 app_secret 错）→ 不可重试；
+            #      **HTTP 层面的错误**（网络/超时）→ 可重试。
+            raise FeishuError("飞书 Token 请求失败", retryable=True) from exc
 
         if data.get("code") != 0 or not data.get("tenant_access_token"):
             raise FeishuTokenError("飞书 Token 获取失败")
@@ -280,7 +294,9 @@ class FeishuClient:
         except httpx.TimeoutException as exc:
             raise FeishuError("飞书应用 Token 请求超时", retryable=True) from exc
         except httpx.HTTPError as exc:
-            raise FeishuTokenError("飞书应用 Token 请求失败") from exc
+            # ⚠️ 网络错误**可重试** —— 与 `_get_access_token` 同理（2026-11-17 修）。
+            #   DNS 抖动 / 临时断网不该直接失败。
+            raise FeishuError("飞书应用 Token 请求失败", retryable=True) from exc
 
         if resp.status_code == 429:
             raise FeishuRateLimitError("飞书应用 Token 接口触发限流", self._retry_after(resp))
@@ -366,7 +382,9 @@ class FeishuClient:
         except httpx.TimeoutException as exc:
             raise FeishuError("飞书用户 Token 换取超时", retryable=True) from exc
         except httpx.HTTPError as exc:
-            raise FeishuTokenError("飞书用户 Token 换取失败") from exc
+            # ⚠️ 网络错误**可重试** —— 与 `_get_access_token` 同理（2026-11-17 修）。
+            #   DNS 抖动 / 临时断网不该直接失败。
+            raise FeishuError("飞书用户 Token 换取失败", retryable=True) from exc
 
         if resp.status_code == 429:
             raise FeishuRateLimitError("飞书用户 Token 接口触发限流", self._retry_after(resp))
