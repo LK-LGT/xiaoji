@@ -192,6 +192,70 @@ PROBES: list[dict[str, Any]] = [
             "page_size": "1",
         },
     },
+    # ─────────────────────────────────────────────────────────────
+    # FS-1 / FS-3 新增探测（2026-11-17）
+    #
+    # 这四项对应「免登 / 机器人会话填表」两条新链路所需的能力。
+    # 加它们的理由同 A8：**不实测就没有事实**——
+    # 文档里写「权限没开通」曾被实测证伪过一次。
+    # ─────────────────────────────────────────────────────────────
+    {
+        "label": "免登基础 · 当前用户信息 contact:user.base:readonly",
+        "method": "GET",
+        # ⚠️ 这里用**真实的飞书 user_id**（不是本系统 employee.id）。
+        #    实测发现：组织架构同步时 `Employee.id = item["user_id"]`，
+        #    两者取值相同 —— 但这是同步逻辑的巧合，不是契约。
+        #
+        # ⚠️⚠️ **必须带 user_id_type=user_id**：
+        #    缺这个参数时飞书按 **open_id** 解析，传 user_id 会返回
+        #    99992351「not a valid {open_id} or not exists」。
+        #    这是 FS-1 免登实现的关键参数，漏了会直接查不到人。
+        "path": "/contact/v3/users/17cd8645",
+        "params": {"user_id_type": "user_id"},
+        "note": "免登流程会用同一路径换取 open_id（须带 user_id_type）",
+    },
+    {
+        "label": "OAuth 网页授权 authen:authen",
+        "method": "GET",
+        # ⚠️ OAuth 授权页是**浏览器跳转**的端点：
+        #    它**不返回 JSON**，成功时是 302 跳转到飞书登录页。
+        #    因此这里用「状态码是 3xx/200 且不是 99991668/99991672」
+        #    来判定 —— 403 才可能是权限问题。
+        "path": "/authen/v1/index",
+        "params": {
+            "app_id": "<APP_ID>",
+            "redirect_uri": "https://example.invalid/callback",
+            "state": "probe",
+        },
+        "redirect_probe": True,
+        "note": "授权页为 302 跳转；能拿到跳转而非 403 即说明未拦权限",
+    },
+    {
+        "label": "机器人卡片发送 im:message:send_as_bot",
+        "method": "POST",
+        # ⚠️ 与上面的「IM 消息读」是**不同权限维度**：
+        #    读列表能过不代表能以机器人身份发消息（含卡片）。
+        #    这里用无效 chat_id 探测 —— 能进到参数校验层即权限已开通。
+        "path": "/im/v1/messages",
+        "params": {"receive_id_type": "chat_id"},
+        "body": {
+            "receive_id": "oc_probe_invalid",
+            "msg_type": "text",
+            "content": "{\"text\":\"probe\"}",
+        },
+        "note": "卡片(interactive)与文本同属该权限，无需单独探测",
+    },
+    {
+        "label": "应用信息读 application:application:readonly",
+        "method": "GET",
+        # ⚠️ app_ticket 的 POST 路径 /application/v6/applications/{id}/app_ticket
+        #    实测 **404**（该路径不存在，404 与权限无关）。
+        #    真实可用的是应用信息读接口 —— 它能验证「应用维度凭证」这一
+        #    权限维度是否开通（机器人能力依赖这一维度）。
+        "path": "/application/v6/applications",
+        "params": {"app_id": "<APP_ID>"},
+        "note": "app_ticket 的 POST 路径实测 404；FS-7 做长连接前需再确认路径",
+    },
 ]
 
 MARK = {
@@ -226,14 +290,33 @@ def main() -> int:
 
     for probe in PROBES:
         label = probe["label"]
+        # ⚠️ 路径与参数里可能含 <APP_ID> 占位符 —— 探测脚本**不能**把
+        #    占位符原样打给飞书（否则只会得到一个误导性的 404/400）。
+        #    这里用真实 app_id 替换；替换不了就跳过该探测项。
+        path = probe["path"].replace("<APP_ID>", settings.feishu_app_id or "")
+        params = {
+            k: (
+                str(v).replace("<APP_ID>", settings.feishu_app_id or "")
+                if isinstance(v, str)
+                else v
+            )
+            for k, v in (probe.get("params") or {}).items()
+        }
+        if "<APP_ID>" in path and not settings.feishu_app_id:
+            print(f"  ⏭️ {label}")
+            print("       未配置 FEISHU_APP_ID，跳过该探测")
+            continue
         try:
             resp = httpx.request(
                 probe["method"],
-                BASE_URL + probe["path"],
+                BASE_URL + path,
                 headers={"Authorization": f"Bearer {token}"},
-                params=probe.get("params"),
+                params=params,
                 json=probe.get("body"),
                 timeout=25,
+                # ⚠️ OAuth 授权页 / app_ticket 是**跳转或非 JSON** 端点，
+                #    不能让 httpx 自动跟随跳转（会打到飞书登录页 HTML）。
+                follow_redirects=False,
             )
             status = resp.status_code
             try:
@@ -246,6 +329,15 @@ def main() -> int:
             status, code, msg = 0, None, str(exc)[:120]
 
         verdict, detail = classify(status, code, msg)
+
+        # ⚠️ OAuth 授权页是**浏览器跳转**端点：正常响应是 302 跳到飞书登录页，
+        #    body 是 HTML 而非 JSON → 上面的 classify 会因为 code=None 判成 UNKNOWN。
+        #    这里特判：能拿到 3xx/200 跳转 = **没有被权限拦住**（鉴权通过）。
+        if probe.get("redirect_probe") and verdict in ("UNKNOWN", "NOT_FOUND"):
+            if 200 <= status < 400:
+                verdict = "GRANTED"
+                detail = f"授权页可达（HTTP {status} 跳转），未被权限拦截"
+
         tally[verdict] = tally.get(verdict, 0) + 1
         if verdict == "DENIED":
             denied_permissions.append(label)

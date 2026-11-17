@@ -76,7 +76,7 @@ def check_driver() -> None:
         check("psycopg 可导入", True, f"版本 {version}")
     except Exception as exc:
         check("psycopg 可导入", False, str(exc)[:150])
-        print(f"      → 修复：pip install \"psycopg[binary]\"")
+        print("      → 修复：pip install \"psycopg[binary]\"")
 
     # SQLAlchemy 必须认识 postgresql+psycopg 这个方言
     try:
