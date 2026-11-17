@@ -24,6 +24,10 @@ dist/
 *.log
 .tmp_*
 *.tmp
+# ⚠️ dev server / 探针脚本的 stderr 输出 —— 运行时产物，不该进版本库。
+#    （这些文件会被进程持续写入，导致 git rebase/checkout 反复失败：
+#      "local changes would be overwritten by checkout"）
+*.err
 
 # 本地密钥与配置（绝不入库）
 .env
