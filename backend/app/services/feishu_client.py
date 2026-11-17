@@ -309,11 +309,17 @@ class FeishuClient:
         logger.info("飞书应用 Access Token 已刷新，有效期秒数=%s", expires_in)
         return self._app_token
 
-    def exchange_user_token(self, code: str, *, grant_type: str = "authorization_code") -> dict[str, Any]:
+    def exchange_user_token(
+        self,
+        code: str,
+        *,
+        grant_type: str = "authorization_code",
+        redirect_uri: str | None = None,
+    ) -> dict[str, Any]:
         """用 OAuth 授权码换 ``user_access_token``。
 
         流程（FS-1）：
-            app_access_token（应用身份）
+            client_id + client_secret（应用身份）
               + code（用户授权回调带回）
               → user_access_token（用户身份）
 
@@ -322,19 +328,41 @@ class FeishuClient:
 
         ⚠️ 返回的 token 由调用方负责处置 —— **绝不能下发到前端**。
         本系统只用它换取用户身份信息，随后立即丢弃。
+
+        ⚠️⚠️ **端点与参数名必须按官方文档**（`获取 user_access_token`）：
+
+            POST https://open.feishu.cn/open-apis/authen/v2/oauth/token
+            {
+              "grant_type": "authorization_code",
+              "client_id":     <App ID>,
+              "client_secret": <App Secret>,
+              "code":          <授权码>,
+              "redirect_uri":  <发起授权时用的同一个回调地址>   ← 可选但强烈建议
+            }
+
+        ⚠️ **曾经用错成** ``POST /authen/v1/oidc/access_token`` + ``app_access_token``。
+
+        那个端点是「OIDC 用户信息」风格，**不是** OAuth 授权码流程的令牌端点：
+        它不接受 ``client_id``/``client_secret``，也没有 OAuth 规定的
+        ``error`` / ``error_description`` 字段 —— 用它换 token 不可靠。
+
+        ⚠️ ``redirect_uri`` 必须与**发起授权时用的完全一致**（飞书会校验，
+        不一致报 20071）。省略虽可能也能过，但显式传参能让问题早暴露。
         """
         if not code:
             raise FeishuTokenError("OAuth 授权码为空")
 
+        payload: dict[str, Any] = {
+            "grant_type": grant_type,
+            "client_id": self.app_id,
+            "client_secret": self.app_secret,
+            "code": code,
+        }
+        if redirect_uri:
+            payload["redirect_uri"] = redirect_uri
+
         try:
-            resp = self._http_client.post(
-                "/authen/v1/oidc/access_token",
-                json={
-                    "grant_type": grant_type,
-                    "code": code,
-                    "app_access_token": self.get_app_access_token(),
-                },
-            )
+            resp = self._http_client.post("/authen/v2/oauth/token", json=payload)
         except httpx.TimeoutException as exc:
             raise FeishuError("飞书用户 Token 换取超时", retryable=True) from exc
         except httpx.HTTPError as exc:
@@ -350,15 +378,50 @@ class FeishuClient:
             )
         try:
             resp.raise_for_status()
+        except httpx.HTTPError:
+            # ⚠️ **OAuth 错误是用 400 + JSON body 表达的** ——
+            #    `error` / `error_description` 里才是真正的失败原因。
+            #    直接 raise_for_status 会把这段有用信息丢掉，
+            #    用户只能看到一句「飞书用户 Token 换取失败」。
+            detail = self._extract_oauth_error(resp)
+            raise FeishuTokenError(detail) from None
+
+        try:
             data = resp.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except ValueError as exc:
             raise FeishuTokenError("飞书用户 Token 换取失败") from exc
 
         if data.get("code") != 0 or not data.get("access_token"):
-            raise FeishuTokenError(
-                describe_feishu_error(data.get("code"), "飞书用户 Token 换取失败")
+            # ⚠️ OAuth 端点用 `error` / `error_description` 表达失败原因，
+            #    不是 `msg`。两个都读，兼容不同版本的飞书响应。
+            detail = (
+                data.get("error_description")
+                or data.get("msg")
+                or describe_feishu_error(data.get("code"), "飞书用户 Token 换取失败")
             )
+            raise FeishuTokenError(detail)
         return data
+
+    @staticmethod
+    def _extract_oauth_error(resp: httpx.Response) -> str:
+        """从 OAuth 错误响应里取出可读的原因。
+
+        ⚠️ 飞书 OAuth 端点有两种错误形态：
+        1. ``{"code": 20003, "error": "invalid_grant", "error_description": "..."}``
+        2. ``{"code": 20003, "msg": "..."}``
+        """
+        try:
+            data = resp.json()
+        except ValueError:
+            return f"飞书用户 Token 换取失败（HTTP {resp.status_code}）"
+        if not isinstance(data, dict):
+            return f"飞书用户 Token 换取失败（HTTP {resp.status_code}）"
+        detail = (
+            data.get("error_description")
+            or data.get("msg")
+            or describe_feishu_error(data.get("code"), "")
+        )
+        return detail or f"飞书用户 Token 换取失败（HTTP {resp.status_code}）"
 
     def get_user_info(self, user_access_token: str, user_id: str) -> dict[str, Any]:
         """用 ``user_access_token`` 查询指定用户信息。
@@ -768,6 +831,41 @@ class FeishuClient:
         需要的权限：`im:message:send_as_bot`。
         """
         content = json.dumps({"text": text}, ensure_ascii=False)
+        data = self._request(
+            "POST",
+            "/im/v1/messages",
+            params={"receive_id_type": receive_id_type},
+            json={
+                "receive_id": receive_id,
+                "msg_type": msg_type,
+                "content": content,
+            },
+        )
+        return data
+
+    def send_card_message(
+        self,
+        receive_id: str,
+        card: dict[str, Any],
+        *,
+        receive_id_type: str = "open_id",
+        msg_type: str = "interactive",
+    ) -> dict[str, Any]:
+        """发飞书卡片消息（`POST /im/v1/messages`）。
+
+        卡片消息的 ``content`` 是**卡片 JSON 的字符串形式** ——
+        不是嵌套对象。飞书文档里写的是 ``"content": "{\\"schema\\":\\"2.0\\",...}"``，
+        这里用 ``json.dumps`` 序列化。
+
+        Args:
+            receive_id: 接收者 ID（取决于 ``receive_id_type``）。
+            card: 卡片结构（建议用 ``services.feishu_card`` 的构造器产出）。
+            receive_id_type: ``open_id`` / ``user_id`` / ``chat_id``。
+            msg_type: 卡片消息固定为 ``interactive``。
+
+        需要的权限：`im:message:send_as_bot` + 机器人能力开启。
+        """
+        content = json.dumps(card, ensure_ascii=False)
         data = self._request(
             "POST",
             "/im/v1/messages",

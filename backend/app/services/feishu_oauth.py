@@ -247,11 +247,35 @@ class FeishuOAuthService:
     # ─────────────────────────────────────────────────────────────
 
     def build_authorize_url(self, redirect_uri: str, state: str) -> str:
-        """拼装飞书授权页 URL。"""
+        """拼装飞书授权页 URL。
+
+        ⚠️ **参数名必须严格按官方文档**（`获取授权码` 接口）：
+
+            https://accounts.feishu.cn/open-apis/authen/v1/authorize
+                ?client_id=<App ID>
+                &response_type=code
+                &redirect_uri=<URL 编码后的回调地址>
+                &scope=<空格分隔>
+                &state=<防 CSRF>
+
+        ⚠️⚠️ **曾经写成 `app_id=` —— 这是 bug**（2026-11-17 实测发现）。
+
+        官方参数名是 **`client_id`**，不是 `app_id`；且 **`response_type=code` 是必填**。
+        写错时飞书**不会**报「缺少参数」，而是渲染一个**错误页**：
+            重定向 URL 有误，请联系应用管理员……错误码：20029
+
+        ⇒ 症状极具误导性：明明后台配了 redirect_uri，却报「重定向 URL 有误」，
+          让人反复去核对后台白名单（而后台是对的）。
+
+        ⚠️ 另外 `redirect_uri` 必须经过 **URL 编码**（`urlencode` 已处理）。
+        """
         from urllib.parse import urlencode
 
         params: dict[str, str] = {
-            "app_id": settings.feishu_app_id,
+            # ⚠️ 是 client_id，不是 app_id —— 见上方说明
+            "client_id": settings.feishu_app_id,
+            # ⚠️ 必填，授权码流程固定为 code
+            "response_type": "code",
             "redirect_uri": redirect_uri,
             "state": state,
         }
@@ -274,10 +298,17 @@ class FeishuOAuthService:
               → resolve_employee(open_id=...) 解析员工
               → 返回员工身份（**不含任何飞书 token**）
         """
-        self.consume_state(state)
+        # ⚠️ `consume_state` 返回的 stored 里有 redirect_uri ——
+        #    必须原样传给 token 端点，飞书会校验它与发起授权时是否一致
+        #    （不一致报 20071）。省掉它虽然有时也能过，但会让这类问题
+        #    推迟到更难排查的时候才暴露。
+        stored_state = self.consume_state(state)
 
         try:
-            token_data = self.client.exchange_user_token(code)
+            token_data = self.client.exchange_user_token(
+                code,
+                redirect_uri=stored_state.redirect_uri,
+            )
         except FeishuTokenError as exc:
             raise FeishuOAuthError(
                 f"飞书授权码换取失败：{exc.message}", code="code_exchange_failed"

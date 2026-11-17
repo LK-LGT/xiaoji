@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 import httpx
@@ -236,7 +237,7 @@ def test_exchange_code_success(db_session, identity):
     """正常流程：code → user_access_token → 用户信息 → 员工。"""
     recordings = {
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
-        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
         f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
     }
     client = make_client(recordings)
@@ -258,7 +259,7 @@ def test_exchange_sends_user_id_type_param(db_session, identity):
     """
     recordings = {
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
-        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
         f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
     }
     client = make_client(recordings)
@@ -280,7 +281,7 @@ def test_exchange_uses_user_token_not_tenant_token(db_session, identity):
     """⚠️ RK3 回归：查询用户信息必须用**用户态** token，不是租户态。"""
     recordings = {
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
-        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
         f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
         "POST /auth/v3/tenant_access_token/internal": [
             {"status_code": 200, "json": {"code": 0, "tenant_access_token": "tenant-yyy", "expire": 7200}}
@@ -331,7 +332,7 @@ def test_inactive_employee_cannot_login(
 
     recordings = {
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
-        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
         f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
     }
     client = make_client(recordings)
@@ -356,7 +357,7 @@ def test_unbound_open_id_rejected(db_session):
 
     recordings = {
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
-        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
         f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
     }
     client = make_client(recordings)
@@ -453,7 +454,7 @@ def test_tenant_token_not_overwritten_by_user_flow(db_session, identity):
     recordings = {
         "POST /auth/v3/tenant_access_token/internal": [tenant_resp] * 5,
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP] * 5,
-        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP] * 5,
+        "POST /authen/v2/oauth/token": [USER_TOKEN_RESP] * 5,
         f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP] * 5,
     }
     client = make_client(recordings)
@@ -482,7 +483,7 @@ def test_feishu_token_never_leaks_to_response(db_session, identity, monkeypatch)
 
     recordings = {
         "POST /auth/v3/app_access_token/internal": [APP_TOKEN_RESP],
-        "POST /authen/v1/oidc/access_token": [USER_TOKEN_RESP],
+        "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
         f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
     }
 
@@ -566,7 +567,7 @@ def test_exchange_user_token_failure_raises(db_session):
         "POST /auth/v3/app_access_token/internal": [
             {"status_code": 200, "json": {"code": 0, "app_access_token": "app-x", "expire": 7200}}
         ],
-        "POST /authen/v1/oidc/access_token": [
+        "POST /authen/v2/oauth/token": [
             {"status_code": 200, "json": {"code": 20021, "msg": "code invalid"}}
         ],
     }
@@ -591,6 +592,145 @@ def test_http_client_uses_base_url():
     assert FeishuClient.BASE_URL == "https://open.feishu.cn/open-apis"
     assert FeishuClient.TOKEN_ENDPOINT == "/auth/v3/tenant_access_token/internal"
     assert issubclass(httpx.HTTPError, Exception)
+
+
+# ===========================================================================
+# ⚠️⚠️ 2026-11-17 真机 20029 回归（两个官方契约参数名）
+# ===========================================================================
+
+
+def test_authorize_url_uses_official_client_id_and_response_type(db_session):
+    """⚠️⚠️ **20029 回归**：授权 URL 必须用官方参数名。
+
+    官方「获取授权码」接口明确写的是：
+
+        https://accounts.feishu.cn/open-apis/authen/v1/authorize
+            ?client_id=<App ID>
+            &response_type=code
+            &redirect_uri=...
+
+    之前实现写成了 ``app_id=`` 且**漏了** ``response_type``。
+
+    ⚠️ **症状极具误导性**：飞书不报「缺少参数」，而是渲染错误页
+    「重定向 URL 有误，请联系应用管理员……错误码：20029」
+    —— 于是所有人都会去反复核对后台 redirect_uri 白名单（而后台是对的）。
+
+    实测（2026-11-17）：``app_id`` 与 ``client_id`` 两种写法**都**报 20029，
+    所以真正触发 20029 的是后台白名单为空。但参数名本身仍然必须改对 ——
+    官方文档是唯一权威，写错就是错。
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    service = FeishuOAuthService(make_client({}), db_session)
+    url = service.build_authorize_url(TEST_REDIRECT, "state-abc")
+    params = parse_qs(urlparse(url).query)
+
+    assert "client_id" in params, "必须用 client_id（官方参数名），不能用 app_id"
+    assert "app_id" not in params, "app_id 不是本接口的参数名 —— 会导致授权页报错"
+    assert params["client_id"] == [TEST_APP_ID]
+    assert params["response_type"] == ["code"], "response_type=code 是必填"
+    assert params["redirect_uri"] == [TEST_REDIRECT]
+    assert params["state"] == ["state-abc"]
+
+
+def test_authorize_url_redirect_uri_is_url_encoded(db_session):
+    """⚠️ redirect_uri 必须经过 URL 编码（官方文档明确要求）。
+
+    不编码时 ``://`` 和 ``/`` 会破坏 query 的解析 ——
+    飞书拿到的 redirect_uri 被截断 → 白名单匹配失败 → 20029。
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    service = FeishuOAuthService(make_client({}), db_session)
+    url = service.build_authorize_url("http://localhost:5180/feishu/callback", "s1")
+    raw_query = urlparse(url).query
+    params = parse_qs(raw_query)
+
+    assert params["redirect_uri"] == ["http://localhost:5180/feishu/callback"]
+    assert "://" not in raw_query.split("redirect_uri=")[1].split("&")[0], (
+        "redirect_uri 必须编码后再拼进 query"
+    )
+
+
+def test_exchange_user_token_uses_official_oauth_endpoint_and_credentials(db_session):
+    """⚠️⚠️ **OAuth 令牌端点回归**。
+
+    官方「获取 user_access_token」是：
+
+        POST /authen/v2/oauth/token
+        { grant_type, client_id, client_secret, code, redirect_uri }
+
+    之前用的是 ``POST /authen/v1/oidc/access_token`` + ``app_access_token``
+    —— 那是 OIDC 用户信息风格端点，不是 OAuth 授权码流程的令牌端点。
+    """
+    recordings = {
+        "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
+    }
+    client = make_client(recordings)
+    transport = client._http_client._transport  # type: ignore[union-attr]
+
+    client.exchange_user_token("valid-code", redirect_uri=TEST_REDIRECT)
+
+    token_call = next(
+        req for req in transport.calls if "oauth/token" in req.url.path  # type: ignore[union-attr]
+    )
+    body = json.loads(token_call.content)
+
+    assert body["grant_type"] == "authorization_code"
+    assert body["client_id"] == TEST_APP_ID, "必须用 client_id + client_secret 认证"
+    assert body["client_secret"] == TEST_APP_SECRET
+    assert body["code"] == "valid-code"
+    assert body["redirect_uri"] == TEST_REDIRECT, "redirect_uri 必须与发起授权时一致"
+    assert "app_access_token" not in body, "OAuth 端点不接受 app_access_token"
+
+
+def test_exchange_user_token_error_uses_oauth_error_fields(db_session):
+    """⚠️ OAuth 端点用 ``error`` / ``error_description`` 表达失败，不是 ``msg``。
+
+    只读 ``msg`` 会让错误信息变成一句无用的兜底文案 —— 用户看到
+    「飞书用户 Token 换取失败」而不知道真实原因。
+    """
+    from backend.app.services.feishu_client import FeishuTokenError
+
+    recordings = {
+        "POST /authen/v2/oauth/token": [
+            {
+                "status_code": 400,
+                "json": {
+                    "code": 20003,
+                    "error": "invalid_grant",
+                    "error_description": "authorization code not found",
+                },
+            }
+        ],
+    }
+    client = make_client(recordings)
+    with pytest.raises(FeishuTokenError) as exc:
+        client.exchange_user_token("bad-code")
+    assert "authorization code not found" in str(exc.value)
+
+
+def test_oauth_service_passes_redirect_uri_to_token_exchange(db_session, identity):
+    """⚠️ 服务层必须把 state 里的 redirect_uri 传给 token 端点。
+
+    飞书会校验它与发起授权时是否一致，不一致报 20071。
+    """
+    recordings = {
+        "POST /authen/v2/oauth/token": [USER_TOKEN_RESP],
+        f"GET /contact/v3/users/{TEST_USER_ID}": [USER_INFO_RESP],
+    }
+    client = make_client(recordings)
+    transport = client._http_client._transport  # type: ignore[union-attr]
+    service = FeishuOAuthService(client, db_session)
+
+    state = service.issue_state(TEST_REDIRECT)
+    service.exchange_code_for_employee("valid-code", state)
+
+    token_call = next(
+        req for req in transport.calls if "oauth/token" in req.url.path  # type: ignore[union-attr]
+    )
+    body = json.loads(token_call.content)
+    assert body.get("redirect_uri") == TEST_REDIRECT
 
 
 # ===========================================================================
