@@ -39,7 +39,7 @@
             @keyup.enter="submit"
           />
         </el-form-item>
-        <el-checkbox v-model="rememberPassword" class="login-remember">记住密码</el-checkbox>
+        <el-checkbox v-model="rememberUsername" class="login-remember">记住账号</el-checkbox>
         <el-alert v-if="error" :title="error" type="error" :closable="false" />
         <el-button class="login-button" type="primary" size="large" :loading="loading" :disabled="loading" @click="submit">进入工作空间</el-button>
       </el-form>
@@ -54,8 +54,26 @@ import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { defaultWorkspacePath, hasPermission } from '@/navigation/workspaces'
 import { useAuthStore } from '@/stores/auth'
-const REMEMBER_PASSWORD_KEY = 'planning_login_password_memory'
-const REMEMBER_PASSWORD_TTL = 7 * 24 * 60 * 60 * 1000
+const REMEMBER_USERNAME_KEY = 'planning_login_username_memory'
+/**
+ * ⚠️ BUG-R6-32（安全）：旧实现往 localStorage 写的是
+ *     ``{ username, password, expiresAt }`` —— **明文密码存 7 天**。
+ *
+ * 危害：
+ * - localStorage 对同源 JS **完全可读** → 任何 XSS / 第三方脚本 / 浏览器插件
+ *   都能直接拿到用户密码（不是哈希，是可直接登录的明文）；
+ * - 密码还会出现在浏览器磁盘快照、devtools、以及用户主动「导出站点数据」里；
+ * - 用户在公用电脑上退出登录后，密码**仍然留在磁盘上**。
+ *
+ * 现在：**只记用户名**，密码永远不落盘。
+ * （密码由后端 PBKDF2 哈希存储，前端不做任何持久化。）
+ *
+ * ⚠️ 迁移：老版本已经在用户浏览器里写过明文密码，
+ * 必须在升级后**主动清掉**，否则风险窗口一直开着。
+ */
+const REMEMBER_USERNAME_TTL = 30 * 24 * 60 * 60 * 1000
+/** 旧版存明文密码的 key —— 读取后立即删除，绝不再沿用。 */
+const LEGACY_PASSWORD_MEMORY_KEY = 'planning_login_password_memory'
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
@@ -63,7 +81,7 @@ const loading = ref(false)
 const error = ref('')
 const formRef = ref<FormInstance>()
 const form = reactive({ username: '', password: '' })
-const rememberPassword = ref(false)
+const rememberUsername = ref(false)
 const rules: FormRules<typeof form> = {
   username: [
     { required: true, message: '请输入账号或手机号', trigger: 'blur' },
@@ -85,7 +103,7 @@ const rules: FormRules<typeof form> = {
   ],
 }
 
-onMounted(loadRememberedPassword)
+onMounted(loadRememberedUsername)
 
 async function submit() {
   if (loading.value) return
@@ -95,7 +113,7 @@ async function submit() {
   loading.value = true
   try {
     await authStore.login(form.username, form.password)
-    persistRememberedPassword()
+    persistRememberedUsername()
     ElMessage.closeAll()
     ElMessage.success('登录成功')
     const permissions = authStore.user?.permissions || []
@@ -107,39 +125,62 @@ async function submit() {
   finally { loading.value = false }
 }
 
-function loadRememberedPassword() {
+/**
+ * 清除旧版遗留的**明文密码**记录（BUG-R6-32 迁移）。
+ *
+ * ⚠️ 必须无条件执行 —— 只要发现老 key，就说明这台机器的浏览器里
+ * 还躺着用户的明文密码，不清掉等于风险一直在。
+ */
+function purgeLegacyPasswordMemory() {
   try {
-    const saved = JSON.parse(localStorage.getItem(REMEMBER_PASSWORD_KEY) || 'null')
-    if (!saved || typeof saved !== 'object' || typeof saved.expiresAt !== 'number' || saved.expiresAt <= Date.now()) {
-      clearRememberedPassword()
-      return
-    }
-    if (typeof saved.username !== 'string' || typeof saved.password !== 'string') {
-      clearRememberedPassword()
-      return
-    }
-    form.username = saved.username
-    form.password = saved.password
-    rememberPassword.value = true
+    localStorage.removeItem(LEGACY_PASSWORD_MEMORY_KEY)
   } catch {
-    clearRememberedPassword()
+    // localStorage 不可用（隐私模式 / 禁用）时忽略 —— 不影响登录。
   }
 }
 
-function persistRememberedPassword() {
-  if (!rememberPassword.value) {
-    clearRememberedPassword()
+function loadRememberedUsername() {
+  purgeLegacyPasswordMemory()
+  try {
+    const saved = JSON.parse(localStorage.getItem(REMEMBER_USERNAME_KEY) || 'null')
+    if (!saved || typeof saved !== 'object' || typeof saved.expiresAt !== 'number' || saved.expiresAt <= Date.now()) {
+      clearRememberedUsername()
+      return
+    }
+    if (typeof saved.username !== 'string' || !saved.username) {
+      clearRememberedUsername()
+      return
+    }
+    // ⚠️ 只回填用户名 —— 密码框保持为空，用户必须自己输入。
+    form.username = saved.username
+    form.password = ''
+    rememberUsername.value = true
+  } catch {
+    clearRememberedUsername()
+  }
+}
+
+function persistRememberedUsername() {
+  if (!rememberUsername.value) {
+    clearRememberedUsername()
     return
   }
-  localStorage.setItem(REMEMBER_PASSWORD_KEY, JSON.stringify({
-    username: form.username,
-    password: form.password,
-    expiresAt: Date.now() + REMEMBER_PASSWORD_TTL,
-  }))
+  try {
+    localStorage.setItem(REMEMBER_USERNAME_KEY, JSON.stringify({
+      username: form.username,
+      expiresAt: Date.now() + REMEMBER_USERNAME_TTL,
+    }))
+  } catch {
+    // 存储不可用时静默失败 —— 记住用户名是锦上添花，不该拦住登录。
+  }
 }
 
-function clearRememberedPassword() {
-  localStorage.removeItem(REMEMBER_PASSWORD_KEY)
+function clearRememberedUsername() {
+  try {
+    localStorage.removeItem(REMEMBER_USERNAME_KEY)
+  } catch {
+    // 同上 —— 清不掉的极端情况不影响主流程。
+  }
 }
 
 function authorizedRedirect(value: unknown, permissions: readonly string[]) {
