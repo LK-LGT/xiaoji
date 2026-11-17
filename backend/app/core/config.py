@@ -87,6 +87,23 @@ class Settings(BaseSettings):
     feishu_event_consume_enabled: bool = True
 
     # ─────────────────────────────────────────────────────────────
+    # 飞书机器人（FS-3 工作台会话填表）
+    #
+    # ⚠️ 机器人事件用**独立**的 Verification Token（C2 约束）。
+    #   理由：审批、通讯录、机器人是**三条独立的事件源**，
+    #   共用一个 Token 的话，排障时根本分不清是哪条链路被调。
+    #   混用的代价 —— 一次泄露就全线失守，一次误配就三处同时报错。
+    # ─────────────────────────────────────────────────────────────
+    # 机器人事件的 Verification Token。
+    # 未配置时 `/v1/feishu/bot/events` 返回 503（不放行）——
+    # 否则任何人都能伪造卡片回调写入草稿。
+    feishu_bot_event_token: str = ""
+    # 机器人会话有效期（分钟）。超过则视为过期，员工重新发起即可。
+    feishu_bot_session_ttl_minutes: int = 120
+    # 机器人是否启用。关闭时 bot/events 只做握手，不处理业务事件。
+    feishu_bot_enabled: bool = True
+
+    # ─────────────────────────────────────────────────────────────
     # 飞书 OAuth（网页免登，FS-1 / FS-2）
     #
     # ⚠️ 留空时 `/v1/feishu/auth/url` 返回 503（不放行）——

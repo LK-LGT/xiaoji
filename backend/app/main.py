@@ -192,6 +192,16 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    # FS-3：飞书机器人会话填表路由
+    from .routes import feishu_bot as feishu_bot_routes
+    app.include_router(feishu_bot_routes.router)
+    print("[APP] Feishu bot router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register feishu bot router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     from .routes import messages as messages_routes
     app.include_router(messages_routes.router)
     print("[APP] Messages router registered successfully")
