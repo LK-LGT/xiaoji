@@ -47,6 +47,7 @@ class SubmitSource(StrEnum):
 
     FEISHU_APPROVAL = "feishu_approval"
     H5 = "h5"
+    FEISHU_BOT = "feishu_bot"
 
 
 class RatingPolicy(StrEnum):

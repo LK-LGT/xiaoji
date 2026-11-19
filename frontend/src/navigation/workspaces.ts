@@ -25,6 +25,7 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     matches: ['/system', '/dashboard'],
     items: [
       { label: '管理工作台', path: '/system/dashboard', icon: '▦', permission: 'system:dashboard:view' },
+      { label: '考核方案管理', path: '/system/performance-schemes', icon: '', permission: 'performance:schemes:manage' },
       { label: '员工注册', path: '/system/employee-register', icon: '+', permission: 'system:employee:register' },
       { label: '员工管理', path: '/system/employees', icon: '♙', permission: 'system:employee:view' },
       { label: '部门/项目组', path: '/system/orgs', icon: '⌘', permission: 'system:org:view' },
@@ -45,6 +46,7 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     permission: 'department:dashboard:view',
     matches: ['/department'],
     items: [
+      { label: '本部门考核方案', path: '/department/performance-schemes', icon: '', permission: 'performance:schemes:view' },
       { label: '部门工作台', path: '/department/dashboard', icon: '▦', permission: 'department:dashboard:view' },
       { label: '月计划审批', path: '/department/plan-approval', icon: '□', permission: 'department:month-approval:view' },
       { label: '周计划审批', path: '/department/week-plan-approval', icon: '▤', permission: 'department:month-approval:view' },
@@ -91,6 +93,7 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
       { label: '成果管理', path: '/employee/results', icon: '◇', permission: 'planning:result:view' },
       { label: '绩效依据', path: '/employee/performance-evidence', icon: '◇', permission: 'dashboard:view' },
       { label: '申诉记录', path: '/employee/appeals', icon: '!', permission: 'dashboard:view' },
+      { label: '复核与校准中心', path: '/employee/review-center', icon: '', permission: 'dashboard:view' },
     ],
   },
   {
@@ -102,6 +105,7 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     items: [
       { label: '工作台', path: '/dispute/dashboard', icon: '▣', permission: 'dispute:dashboard:view' },
       { label: '争议案件', path: '/dispute/cases', icon: '!', permission: 'dispute:case:view' },
+      { label: '复核与校准中心', path: '/dispute/review-center', icon: '', permission: 'dispute:case:view' },
     ],
   },
   {
@@ -112,6 +116,7 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     matches: ['/performance'],
     items: [
       { label: '管理工作台', path: '/performance/dashboard', icon: '★', permission: 'performance:dashboard:view' },
+      { label: '按方案填报与评价', path: '/performance/scheme-filling', icon: '', permission: 'performance:dashboard:view' },
       { label: '员工自评', path: '/performance/self-reviews', icon: '✎', permission: 'performance:self-review:view' },
       { label: '主管评分', path: '/performance/manager-reviews', icon: '✓', permission: 'performance:manager-review:view' },
     ],

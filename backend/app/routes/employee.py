@@ -205,54 +205,56 @@ async def export_employee_performance_evidence(
 
 
 @router.get("/appeals")
-async def list_employee_appeals(db: Session = Depends(get_db)) -> dict:
+async def list_employee_appeals(current_user: Employee = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     """获取员工申诉列表。
 
     响应结构：EmployeeAppealListResp = { items }
     """
-    return _ok({"items": []})
+    from ..domain.plan_models import DisputeCase
+    from ..services.review_center import employee_item
+    rows = db.scalars(select(DisputeCase).where(DisputeCase.owner_id == current_user.id).order_by(DisputeCase.created_at.desc())).all()
+    return _ok({"items": [employee_item(c) for c in rows]})
 
 
 @router.get("/appeals/options")
-async def list_employee_appeal_options(db: Session = Depends(get_db)) -> dict:
+async def list_employee_appeal_options(current_user: Employee = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     """获取可申诉的成果选项。
 
     响应结构：EmployeeAppealOption[]（裸数组）
     """
-    return _ok([])
+    from ..services.review_center import appeal_options
+    return _ok(appeal_options(db, current_user))
 
 
 @router.post("/appeals")
-async def create_employee_appeal(data: dict, db: Session = Depends(get_db)) -> dict:
+async def create_employee_appeal(data: JsonBody, current_user: Employee = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     """发起申诉。
 
     请求体：CreateEmployeeAppealReq = { relatedResultId?, title, reason }
     响应结构：EmployeeAppealItem
     """
-    return _ok(
-        {
-            "id": 0,
-            "appealNo": "",
-            "title": data.get("title", ""),
-            "reason": data.get("reason", ""),
-            "status": "PENDING",
-            "handleComment": "",
-            "createdAt": "",
-        }
-    )
+    from ..services.review_center import create_case, employee_item
+    case = create_case(db, current_user, target=str(data.get("relatedResultId") or ""), title=str(data.get("title") or ""), reason=str(data.get("reason") or ""))
+    return _ok(employee_item(case))
 
 
 @router.get("/appeals/{appeal_id}/package")
 async def download_employee_appeal_package(
-    appeal_id: int,
+    appeal_id: str,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Any:
     """下载员工申诉证据包。
 
     响应结构：二进制文件流
     """
-    # 尚无真实证据包时返回 404，避免前端拿到损坏文件。
-    raise HTTPException(status_code=404, detail="申诉证据包不存在或已过期")
+    from fastapi.responses import Response
+
+    from ..services.review_center import get_case, package
+    case = get_case(db, appeal_id)
+    if case.owner_id != current_user.id:
+        raise HTTPException(403, "仅能下载本人案件证据包")
+    return Response(package(db, current_user, case), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="review-{case.id}.zip"', "Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------------------

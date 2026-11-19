@@ -86,6 +86,7 @@ def backend_checks() -> list[Check]:
     ci_db = f"sqlite:///{db_path.as_posix()}"
     env = {
         "DATABASE_URL": ci_db,
+        "ALEMBIC_EXPECT_TARGET": f"sqlite:{db_path.as_posix()}",
         "AUTO_CREATE_TABLES": "false",
         "MODEL_MODE": "echo",
         "FEISHU_SYNC_ENABLED": "false",

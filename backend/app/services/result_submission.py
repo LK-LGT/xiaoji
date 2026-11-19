@@ -453,6 +453,12 @@ def _submit(
         result.evidence_status = "UPLOADED" if stored else "NONE"
 
     db.flush()
+    from .notification_service import enqueue_safe
+
+    owner = db.get(Employee, owner_id)
+    if owner and owner.manager_id:
+        enqueue_safe(db, employee_id=owner.manager_id, scene="N6", period=str(result_date),
+                     object_id=result.id, object_type="result", label=owner.name)
     return result
 
 

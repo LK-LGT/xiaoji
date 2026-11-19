@@ -475,6 +475,11 @@ def reject_month_plan(
         dedup_key=dedup_key,
     )
     db.flush()
+    from .notification_service import enqueue_safe
+
+    enqueue_safe(db, employee_id=plan.owner_id, scene="N5", period=str(plan.plan_month),
+                 object_id=plan.id, object_type="month_plan", label=plan.title,
+                 event_key=str(plan.version_no))
     return plan
 
 
@@ -543,6 +548,11 @@ def reject_week_plan(
         dedup_key=dedup_key,
     )
     db.flush()
+    from .notification_service import enqueue_safe
+
+    enqueue_safe(db, employee_id=plan.owner_id, scene="N5", period=str(plan.week_start),
+                 object_id=plan.id, object_type="week_plan", label=plan.title,
+                 event_key=str(plan.version_no))
     return plan
 
 

@@ -155,6 +155,7 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "performance:manager-review:view",
     ],
     "department_leader": [
+        "performance:schemes:view",
         "department:dashboard:view",
         "department:month-approval:view",
         "department:result-confirm:view",
@@ -174,6 +175,8 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "performance:manager-review:view",
     ],
     "hr": [
+        "performance:schemes:manage",
+        "performance:schemes:view",
         "system:dashboard:view",
         "system:employee:register",
         "system:employee:view",

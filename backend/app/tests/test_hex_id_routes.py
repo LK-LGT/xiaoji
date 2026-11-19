@@ -81,6 +81,7 @@ def isolated_db(tmp_path_factory):
     repo_root = Path(__file__).resolve().parents[3]
     env = {**os.environ}
     env["DATABASE_URL"] = url
+    env["ALEMBIC_EXPECT_TARGET"] = f"sqlite:{Path(url.removeprefix('sqlite:///')).resolve().as_posix()}"
     env.setdefault("AUTO_CREATE_TABLES", "false")
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
@@ -170,6 +171,7 @@ def _upgrade_schema_to_head(url: str) -> None:
     env = {**os.environ}
     # ⚠️ 覆盖而非 setdefault —— 继承来的值可能指向真实库。
     env["DATABASE_URL"] = url
+    env["ALEMBIC_EXPECT_TARGET"] = f"sqlite:{Path(url.removeprefix('sqlite:///')).resolve().as_posix()}"
     env["AUTO_CREATE_TABLES"] = "false"
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],

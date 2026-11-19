@@ -664,7 +664,7 @@ def bind_and_notify_plan_submitted_safe(
     plan_title: str,
     submitter_note: str = "",
 ) -> bool:
-    """计划提交后：**建立绑定** + 发带关联码的通知。
+    """计划提交后建立绑定并写带关联码的发件箱，投递由后台任务执行。
 
     这是「飞书侧发起审批」这条通道的关键 ——
     绑定行上的 ``correlation_key`` 会随通知发给员工，
@@ -674,68 +674,37 @@ def bind_and_notify_plan_submitted_safe(
     不该让员工看到「提交失败」）。
 
     Returns:
-        True 表示通知已发出。
+        True 表示至少一条通知已入队，不代表飞书已收到。
     """
-    from ..core.config import settings
-
-    if not settings.feishu_app_id or not settings.feishu_app_secret:
-        logger.debug("飞书未配置，跳过绑定与通知：plan=%s", plan_id)
-        return False
-
     from . import feishu_binding
-    from .feishu_client import FeishuClient
+    from .notification_service import enqueue_safe
 
-    # ── 1. 建立绑定（拿到关联码）──────────────────────────────
     correlation_key = ""
     try:
-        binding = feishu_binding.bind_plan_to_instance(
-            db,
-            plan_type=plan_type,
-            plan_id=plan_id,
-            bind_source=feishu_binding.BIND_SOURCE_LOCAL_SUBMIT,
-            created_by=owner_id,
-        )
-        correlation_key = binding.correlation_key or ""
-    except Exception as exc:
-        logger.warning("计划提交绑定失败（不影响提交）：%s", exc)
-        db.rollback()
+        with db.begin_nested():
+            binding = feishu_binding.bind_plan_to_instance(
+                db, plan_type=plan_type, plan_id=plan_id,
+                bind_source=feishu_binding.BIND_SOURCE_LOCAL_SUBMIT, created_by=owner_id,
+            )
+            correlation_key = binding.correlation_key or ""
+    except Exception:
+        logger.warning("计划绑定失败（不影响提交）", exc_info=True)
 
-    client: FeishuClient | None = None
-    try:
-        client = FeishuClient(
-            app_id=settings.feishu_app_id,
-            app_secret=settings.feishu_app_secret,
-            tenant_id=settings.feishu_tenant_id,
+    owner = db.get(Employee, owner_id)
+    plan = plan_approval.fetch_plan(db, plan_type.lower(), plan_id)
+    queued = False
+    for approver in find_plan_approvers(db, owner_id):
+        row = enqueue_safe(
+            db, employee_id=approver.id, scene="N1" if plan_type == "month" else "N2",
+            period=plan_id, object_id=plan_id, object_type=f"{plan_type}_plan",
+            label=f"{owner.name if owner else ''} {plan_title}",
+            event_key=str(getattr(plan, "version_no", 1)),
         )
-        owner = db.get(Employee, owner_id)
-        approvers = find_plan_approvers(db, owner_id)
-        if owner is None or not approvers:
-            logger.info("计划 %s 无审批人，跳过通知", plan_id)
-            return False
-
-        message = feishu_binding.build_correlation_message(
-            owner_name=owner.name,
-            plan_type=plan_type,
-            plan_title=plan_title,
-            correlation_key=correlation_key,
-            approver_name=approvers[0].name,
-        )
-        if submitter_note:
-            message = f"{message}\n备注：{submitter_note}"
-
-        sent = False
-        for approver in approvers:
-            if notify_approver_by_im(
-                db, approver_id=approver.id, message=message, client=client
-            ):
-                sent = True
-        return sent
-    except Exception as exc:
-        logger.warning("计划提交通知失败（不影响提交）：%s", exc)
-        return False
-    finally:
-        if client is not None:
-            client.close()
+        if row is not None:
+            if correlation_key and correlation_key not in row.content:
+                row.content += f"\n飞书审批关联码：{correlation_key}"
+            queued = True
+    return queued
 
 
 # ===========================================================================

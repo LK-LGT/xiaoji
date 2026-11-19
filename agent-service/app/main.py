@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from .agents import build_agents
 from .base import AgentResult, EchoModelClient, ModelClient, NullModelClient
+from .qa import QARequest, QAResponse, answer_question
 
 
 def _load_dotenv() -> None:
@@ -564,6 +565,11 @@ def evidence_check(
         follow_up_question=data.get("follow_up_question"),
         degraded=result.degraded,
     )
+
+
+@app.post("/v1/agent/qa", response_model=QAResponse)
+def qa(req: QARequest, _auth: None = Depends(require_service_token)) -> QAResponse:
+    return answer_question(req, _client)
 
 
 @app.post("/v1/agent/reload")

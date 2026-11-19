@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # 智能体服务
     agent_service_url: str = "http://127.0.0.1:8800"
     agent_shared_secret: str = ""
+    # 留空时工具网关返回 503；不影响既有业务启动。
+    agent_tool_secret: str = ""
+    agent_tool_token_ttl_seconds: int = 300
 
     # 模型
     model_name: str = "echo-deterministic"
@@ -63,6 +66,10 @@ class Settings(BaseSettings):
     feishu_app_id: str = ""
     feishu_app_secret: str = ""
     feishu_tenant_id: str = ""
+    notification_enabled: bool = False
+    notification_canary_employee_id: str = ""
+    notification_canary_scene: str = ""
+    notification_canary_outbox_id: str = ""
     # 定时组织架构同步
     feishu_sync_enabled: bool = False
     feishu_sync_interval_seconds: int = 3600
@@ -202,6 +209,20 @@ class Settings(BaseSettings):
                 "AUTH_TOKEN_SECRET 配置不安全：必须为至少 32 位随机字符串，"
                 "且不得使用默认值。生产环境请通过环境变量或 Secret 管理系统注入。"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_agent_tool_secret(self):
+        secret = self.agent_tool_secret
+        if secret and (
+            secret != secret.strip()
+            or secret.lower() in _WEAK_AUTH_SECRETS
+            or len(secret) < 32
+            or secret in (self.auth_token_secret, self.auth_token_secret_prev, self.agent_shared_secret)
+        ):
+            raise ValueError("AGENT_TOOL_SECRET 必须为至少 32 位独立随机字符串")
+        if not 30 <= self.agent_tool_token_ttl_seconds <= 300:
+            raise ValueError("AGENT_TOOL_TOKEN_TTL_SECONDS 必须在 30 到 300 秒之间")
         return self
 
     @model_validator(mode="after")

@@ -191,7 +191,10 @@
     <el-dialog
       v-model="showSelfReviewDialog"
       title="员工自评"
-      width="760px"
+      class="manager-review-dialog"
+      width="min(760px, calc(100vw - 32px))"
+      append-to-body
+      align-center
     >
       <div v-if="selectedRecord" class="review-preview">
         <div class="review-section">
@@ -261,7 +264,10 @@
     <el-dialog
       v-model="showReviewFormDialog"
       title="进行评分"
-      width="760px"
+      class="manager-review-dialog"
+      width="min(760px, calc(100vw - 32px))"
+      append-to-body
+      align-center
       @close="handleFormDialogClose"
     >
       <div v-if="selectedRecord" class="review-form">
@@ -822,5 +828,51 @@ onMounted(loadRecords)
 
 .mt20 {
   margin-top: 20px;
+}
+</style>
+
+<style>
+/* 主管评分弹窗：挂到 body 后需自行保证层级、居中与可滚动。 */
+.manager-review-dialog.el-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 48px);
+  margin: 0;
+  overflow: hidden;
+}
+.manager-review-dialog .el-dialog__header,
+.manager-review-dialog .el-dialog__footer {
+  flex-shrink: 0;
+}
+.manager-review-dialog .el-dialog__body {
+  min-height: 0;
+  overflow: auto;
+}
+.manager-review-dialog .el-dialog__header {
+  margin-right: 0;
+}
+.manager-review-dialog .el-overlay-dialog {
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+@media (max-width: 600px) {
+  .manager-review-dialog.el-dialog {
+    width: calc(100vw - 24px) !important;
+    max-height: calc(100dvh - 24px);
+  }
+  .manager-review-dialog .el-overlay-dialog {
+    padding: 12px;
+  }
+  .manager-review-dialog .el-form-item {
+    display: block;
+  }
+  .manager-review-dialog .el-form-item__label {
+    width: auto !important;
+    padding-bottom: 4px;
+    text-align: left;
+  }
+  .manager-review-dialog .el-form-item__content {
+    margin-left: 0 !important;
+  }
 }
 </style>

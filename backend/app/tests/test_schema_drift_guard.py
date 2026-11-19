@@ -52,6 +52,7 @@ def migrated_db(tmp_path_factory) -> Path:
     env = {
         **__import__("os").environ,
         "DATABASE_URL": f"sqlite:///{db_path.as_posix()}",
+        "ALEMBIC_EXPECT_TARGET": f"sqlite:{db_path.resolve().as_posix()}",
     }
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],

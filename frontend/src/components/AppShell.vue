@@ -265,6 +265,12 @@ watch(() => authStore.token, async (token) => {
   messageStore.startPolling()
 }, { immediate: true })
 
+// 窄屏下侧边栏是抽屉式覆盖层，路由切换后必须自动收起，
+// 否则新页面内容会被侧边栏挡住。
+watch(() => route.value.fullPath, () => {
+  sidebarOpen.value = false
+})
+
 onMounted(() => {
   document.addEventListener('click', closeNotificationOnOutsideClick)
   void refreshHealth()

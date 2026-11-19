@@ -40,6 +40,111 @@ from backend.app.main import app
 from backend.app.routes import feishu_bot as feishu_bot_routes
 from backend.app.services import feishu_bot
 
+
+def test_qa_message_routes_without_changing_active_form(db, org, monkeypatch):
+    from copy import deepcopy
+
+    from backend.app.services import feishu_qa
+
+    session = feishu_bot.get_or_create_session(db, open_id="ou_emp_a", app_id=settings.feishu_app_id)
+    session.state = feishu_bot.STATE_COLLECTING
+    session.intent = feishu_bot.INTENT_MONTH_PLAN
+    session.collected = {"task_name": "保留草稿"}
+    calls = []
+    monkeypatch.setattr(feishu_qa, "answer", lambda db, employee, question, period: calls.append(
+        (employee.id, period)
+    ) or "系统计算依据")
+    class Client:
+        def send_card_message(self, receive_id, card, **kwargs):
+            calls.append((receive_id, card))
+    body = deepcopy(OFFICIAL_MESSAGE_EVENT)
+    body["event"]["sender"]["sender_id"] = {"open_id": "ou_emp_a", "user_id": "u_emp_a"}
+    body["event"]["message"]["content"] = json.dumps({"text": "我2026-11的指标怎么算"})
+    result = feishu_bot_routes._handle_message_event(db, Client(), body)
+    assert result["message"] == "已发送绩效查询结果"
+    assert calls[0] == (org["a"].id, "2026-11")
+    assert calls[1][0] == "ou_emp_a"  # 即使从群聊发问，也只私发本人。
+    assert session.state == feishu_bot.STATE_COLLECTING
+    assert session.collected == {"task_name": "保留草稿"}
+
+
+def test_qa_isolated_task_and_disabled_account(db, org, monkeypatch):
+    from fastapi import HTTPException
+
+    from backend.app.domain.models import AssessmentRecord, AssessmentTask
+    from backend.app.services import feishu_qa
+
+    other = AssessmentTask(id="other-task", name="其他人的任务", period="202611")
+    own = AssessmentTask(id="own-task", name="本人任务", period="202611")
+    db.add_all([other, own])
+    db.flush()
+    db.add_all([
+        AssessmentRecord(task_id=other.id, employee_id=org["b"].id),
+        AssessmentRecord(task_id=own.id, employee_id=org["a"].id),
+    ])
+    db.flush()
+    monkeypatch.setattr(feishu_qa.agent_tool_service, "load_metric_values",
+                        lambda db, **kw: {"task": kw["task"].id, "ratio": 1.2})
+    monkeypatch.setattr(feishu_qa.agent_tool_service, "load_evidence", lambda db, **kw: {"evidence": []})
+    result = feishu_qa.answer(db, org["a"], "我的指标怎么算", "2026-11")
+    assert "本人任务" in result and "other-task" not in result and "1.2" in result
+    assert "数据来源" in result and "规则快照" in result
+    with pytest.raises(HTTPException) as exc:
+        feishu_qa.answer(db, org["a"], "部门统计", "202611")
+    assert exc.value.status_code == 403
+    org["a"].account_status = "disabled"
+    with pytest.raises(HTTPException) as exc:
+        feishu_qa.answer(db, org["a"], "我的绩效", "202611")
+    assert exc.value.status_code == 403
+
+
+def test_qa_missing_or_ambiguous_tasks_do_not_guess(db, org):
+    from backend.app.domain.models import AssessmentRecord, AssessmentTask
+    from backend.app.services import feishu_qa
+
+    assert "未找到" in feishu_qa.answer(db, org["a"], "我的绩效", "202611")
+    for key in ("qa1", "qa2"):
+        db.add(AssessmentTask(id=key, name=key, period="202611"))
+        db.flush()
+        db.add(AssessmentRecord(task_id=key, employee_id=org["a"].id))
+    db.flush()
+    assert "多个考核任务" in feishu_qa.answer(db, org["a"], "我的绩效", "202611")
+
+
+def test_card_append_preserves_existing_and_repeat_is_single_use(db, org):
+    from backend.app.services.planning import upsert_month_plan_draft
+
+    plan = upsert_month_plan_draft(db, org["a"].id, None, {
+        "planMonth": "202611", "title": "Original",
+        "items": [{"taskName": "Keep me", "estimatedStartDate": "2026-11-02"}],
+    })
+    db.flush()
+    original = db.scalar(select(MonthPlanItem).where(MonthPlanItem.plan_id == plan.id))
+    original_id = original.id
+    session = feishu_bot.get_or_create_session(db, open_id="ou_emp_a", app_id="test")
+    session.employee_id = org["a"].id
+    session.plan_month = "202611"
+    session.state = feishu_bot.STATE_COLLECTING
+    feishu_bot.apply_card_form_to_draft(db, session, {"task_name": "Append me"})
+    feishu_bot.apply_card_form_to_draft(db, session, {"task_name": "Duplicate"})
+    items = list(db.scalars(select(MonthPlanItem).where(MonthPlanItem.plan_id == plan.id)))
+    assert {item.task_name for item in items} == {"Keep me", "Append me"}
+    assert db.get(MonthPlanItem, original_id).estimated_start_date.isoformat() == "2026-11-02"
+    assert plan.title == "Original"
+
+
+def test_expired_card_does_not_write(db, org):
+    from datetime import timedelta
+
+    session = feishu_bot.get_or_create_session(db, open_id="ou_emp_a", app_id="test")
+    session.employee_id = org["a"].id
+    session.plan_month = "202611"
+    session.expires_at = feishu_bot._now() - timedelta(seconds=1)
+    with pytest.raises(feishu_bot.FeishuBotError, match="过期"):
+        feishu_bot.apply_card_form_to_draft(db, session, {"task_name": "Expired"})
+    assert db.scalar(select(MonthPlan)) is None
+
+
 EVENTS_URL = "/v1/feishu/bot/events"
 CARD_ACTIONS_URL = "/v1/feishu/bot/card/actions"
 

@@ -41,6 +41,17 @@ Citation = str
 # ---------------------------------------------------------------------------
 
 
+class ToolCall(BaseModel):
+    id: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=64)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class Completion(BaseModel):
+    content: dict[str, Any] | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+
+
 class ModelClient(Protocol):
     """OpenAI 兼容接口的最小协议。
 
@@ -53,6 +64,12 @@ class ModelClient(Protocol):
         self, system: str, user: str, *, schema: dict[str, Any] | None = None
     ) -> tuple[dict[str, Any] | None, str | None]:
         """返回 (解析后的 JSON, 错误信息)。任一失败返回 (None, error)。"""
+        ...
+
+
+    def complete_with_tools(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+    ) -> tuple[Completion | None, str | None]:
         ...
 
 
@@ -87,6 +104,35 @@ class EchoModelClient:
         if agent == "qa":
             return self._qa(payload), None
         return None, f"未知智能体 {agent}"
+
+    def complete_with_tools(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+    ) -> tuple[Completion | None, str | None]:
+        observations = [m for m in messages if m.get("role") == "tool"]
+        if observations:
+            return Completion(content={
+                "answer": "（离线演示）工具调用已结束，请查看结构化数据；此回答不代表模型分析。",
+                "citations": [],
+            }), None
+        if not tools:
+            return Completion(content={"answer": "（离线演示）无可用工具。", "citations": []}), None
+        args: dict[str, Any] = {}
+        for message in messages:
+            if message.get("role") == "user":
+                try:
+                    payload = json.loads(message.get("content") or "{}")
+                    context = payload.get("context", {})
+                    args = context.get("echo_tool_args", {})
+                    if not args and context.get("period"):
+                        args = {"period": context["period"]}
+                    if not isinstance(args, dict):
+                        return None, "离线工具参数无效"
+                except (ValueError, TypeError, AttributeError):
+                    return None, "离线输入无效"
+                break
+        return Completion(tool_calls=[ToolCall(
+            id="call_echo_1", name=tools[0]["function"]["name"], arguments=args,
+        )]), None
 
     def _rating(self, p: dict[str, Any]) -> dict[str, Any]:
         ratings = []
@@ -150,6 +196,11 @@ class NullModelClient:
     def complete(
         self, system: str, user: str, *, schema: dict[str, Any] | None = None
     ) -> tuple[dict[str, Any] | None, str | None]:
+        return None, "模型服务不可用"
+
+    def complete_with_tools(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+    ) -> tuple[Completion | None, str | None]:
         return None, "模型服务不可用"
 
 
@@ -258,6 +309,8 @@ class AgentResult:
     latency_ms: int | None = None
     removed_categories: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
 
 
 class BaseAgent(ABC):

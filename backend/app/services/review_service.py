@@ -38,22 +38,19 @@ from ..domain.models import (
     ConfigSnapshot,
     Employee,
     Evidence,
-    MetricValue,
     RatingDraft,
     Score,
     SelfReview,
 )
 from . import config_service, evidence_service, scoring
-from .period import period_match_keys
+from .metric_context import InvalidState
+from .metric_context import build_metric_context as _build_metric_context
+from .metric_context import load_snapshot as _load_snapshot
 
 logger = logging.getLogger(__name__)
 
 
 class NotFound(Exception):
-    pass
-
-
-class InvalidState(Exception):
     pass
 
 
@@ -121,6 +118,20 @@ class AgentClient:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.secret}",
         }
+
+    async def qa(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """异步等待 L3，留出事件循环处理 L3→L2 工具回调。"""
+        import asyncio
+
+        async with asyncio.timeout(35):
+            async with httpx.AsyncClient(timeout=35.0, follow_redirects=False, trust_env=False) as client:
+                response = await client.post(
+                    f"{self.base_url.rstrip('/')}/v1/agent/qa", json=payload, headers=self._headers(),
+                )
+                response.raise_for_status()
+                if len(response.content) > 262144:
+                    raise ValueError("智能体响应过大")
+                return response.json()
 
     def draft(self, payload: dict[str, Any]) -> dict[str, Any]:
         """调 POST /v1/agent/draft。失败抛异常，由调用方降级。"""
@@ -200,6 +211,9 @@ def open_records(db: Session, task_id: str) -> list[AssessmentRecord]:
             )
             db.add(rec)
             db.flush()
+        from .notification_service import record_event
+
+        record_event(db, rec, "N9")
         out.append(rec)
     return out
 
@@ -258,6 +272,9 @@ def submit_self_review(
     _create_evidence_from_self_review(db, record_id=record_id, answers=answers)
 
     _audit(db, action="self_review.submit", resource_type="assessment_record", resource_id=record_id)
+    from .notification_service import record_event
+
+    record_event(db, rec, "N4")
     return sr
 
 
@@ -304,61 +321,6 @@ def _create_evidence_from_self_review(
 # ---------------------------------------------------------------------------
 
 
-def _load_snapshot(db: Session, task: AssessmentTask) -> ConfigSnapshot:
-    if not task.snapshot_id:
-        raise InvalidState(f"任务 {task.id} 没有配置快照，无法计算")
-    snap = db.get(ConfigSnapshot, task.snapshot_id)
-    if snap is None:
-        raise InvalidState(f"任务 {task.id} 的配置快照缺失")
-    return snap
-
-
-def _build_metric_context(
-    db: Session,
-    snapshot: ConfigSnapshot,
-    employee_id: str,
-    period: str,
-) -> tuple[list[scoring.MetricSpec], list[scoring.MetricInput]]:
-    """从冻结快照 + MetricValue 算分集组装规格与实测值。
-
-    **只取 MetricValue 表里的数据** —— 考勤（reference_only）根本不在其中，
-    所以考勤永远无法影响分数（决策②的物理保证）。
-
-    ⚠️ BUG-R6-26 修复：**周期格式不一致**导致指标"查无此项"。
-    ``AssessmentTask.period`` 与 ``MetricValue.period`` 都是权威的紧凑 ``YYYYMM``，
-    但**历史脏数据**里可能仍有 ``YYYY-MM`` 的行（迁移 ``0022`` 已清理，
-    这里保留双格式查询作为兜底）。
-
-    以前这段是**手写字符串拼接**推两种写法 —— 口径容易漂移。
-    现在统一走 ``services.period.period_match_keys``。
-    """
-    specs = scoring.build_specs(
-        snapshot.metrics_json, snapshot.weights_json, snapshot.rubric_json
-    )
-
-    # 周期两种写法都查（YYYYMM / YYYY-MM）—— 见上方说明。
-    period_keys = period_match_keys(period) or (str(period),)
-
-    rows = db.execute(
-        select(MetricValue).where(
-            MetricValue.employee_id == employee_id,
-            MetricValue.period.in_(period_keys),
-        )
-    ).scalars().all()
-    inputs = [
-        scoring.MetricInput(
-            code=mv.metric_code,
-            value=mv.value,
-            target=mv.target,
-            unit=mv.unit,
-            source=mv.source,
-            as_of=mv.as_of.isoformat() if mv.as_of else None,
-        )
-        for mv in rows
-    ]
-    return specs, inputs
-
-
 def compute_score(db: Session, *, record_id: str) -> scoring.ScoreResult:
     """算分 —— 唯一真值。**可复算**：关掉 AI 重跑，结果完全一致。"""
     rec = db.get(AssessmentRecord, record_id)
@@ -369,6 +331,13 @@ def compute_score(db: Session, *, record_id: str) -> scoring.ScoreResult:
         raise NotFound(f"考核任务 {rec.task_id} 不存在")
 
     snapshot = _load_snapshot(db, task)
+    payload = (snapshot.form_template_json or {}).get("scheme_payload", {})
+    if payload.get("scoring_mode") == "direct_points":
+        from ..domain.scheme_models import SchemeResponse
+        from .scheme_points import score_points
+
+        response = db.get(SchemeResponse, record_id)
+        return score_points(payload, response.reviews if response else {})
     specs, inputs = _build_metric_context(db, snapshot, rec.employee_id, task.period)
     return scoring.score_record(specs, inputs)
 
@@ -378,11 +347,22 @@ def persist_score(db: Session, *, record_id: str, result: scoring.ScoreResult) -
     existing = db.execute(
         select(Score).where(Score.record_id == record_id)
     ).scalar_one_or_none()
+    from ..domain.review_models import ScoreHead
+    from .review_center import capture_score, score_content
+
+    rec = db.get(AssessmentRecord, record_id)
+    head = db.get(ScoreHead, record_id)
+    if existing and head and head.protected:
+        previous = score_content(existing, rec)
+        if previous["total"] != result.total or previous["per_metric"] != result.per_metric:
+            raise InvalidState("评分已进入复核保护，请通过分数调整单审批修改")
+        return existing
     if existing:
         existing.total = result.total
         existing.per_metric_json = result.per_metric
-        existing.trace_json = result.trace
+        existing.trace_json = {**result.trace, **{k: v for k, v in (existing.trace_json or {}).items() if k in ("scheme_rating", "grade_basis")}}
         db.flush()
+        capture_score(db, rec, existing)
         return existing
 
     s = Score(
@@ -393,6 +373,7 @@ def persist_score(db: Session, *, record_id: str, result: scoring.ScoreResult) -
     )
     db.add(s)
     db.flush()
+    capture_score(db, rec, s)
     return s
 
 
@@ -753,6 +734,10 @@ def confirm_draft(
         d.confirmed_by = confirmed_by
         d.confirmed_at = datetime.now(UTC).replace(tzinfo=None)
 
+    from ..domain.review_models import ScoreHead
+    head = db.get(ScoreHead, record_id)
+    if head and head.protected:
+        raise InvalidState("该结果已进入复核保护，请通过分数调整单确认变更")
     if confirmed_rating:
         rec.confirmed_rating = confirmed_rating
 

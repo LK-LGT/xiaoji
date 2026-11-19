@@ -27,14 +27,49 @@ from backend.app.services import feishu_card
 
 
 def test_card_has_json2_skeleton():
-    """卡片必须是 JSON 2.0 的四段式结构。"""
+    """卡片必须是 JSON 2.0 的三段式结构。
+
+    ⚠️⚠️ **没有 ``config``**（2026-11-17 真机实测修正）
+
+    飞书官方文档（卡片 JSON 2.0 结构 → ``config``）：
+
+        ``update_multi`` | 否 | Boolean | true | 是否为共享卡片。
+        **JSON 2.0 目前只支持设置为 true**。
+
+    ⇒ 写 ``update_multi=False`` 会被飞书**直接拒绝**，实测报错：
+
+        Failed to create card content, ext=ErrCode: 300302;
+        ErrMsg: update_multi is false; （错误码 230099）
+
+    ⇒ ``config`` 整体不写（它是可选字段，默认值由飞书兜）。
+    """
     card = feishu_card.build_card(title="测试", elements=[])
 
     assert card["schema"] == "2.0"
-    assert "config" in card
     assert "header" in card
     assert "body" in card
     assert "elements" in card["body"]
+    # ⚠️ 不写 config —— 见 docstring
+    assert "config" not in card
+
+
+def test_card_never_sets_update_multi_false():
+    """⚠️ **护栏**：任何卡片都**不能**带 ``config.update_multi=false``。
+
+    这不是「风格问题」—— 飞书会**拒收整张卡片**（230099）。
+    """
+    for card in (
+        feishu_card.build_card(title="t", elements=[]),
+        feishu_card.build_month_plan_form_card(plan_month="2026-11", session_id="S_1"),
+        feishu_card.build_draft_saved_card(plan_month="2026-11", plan_id="P_1", item_count=1),
+        feishu_card.build_prompt_card(session_id="S_1", plan_month="2026-11"),
+        feishu_card.build_error_card("出错了"),
+    ):
+        config = card.get("config")
+        assert config is None, f"卡片不该有 config：{config}"
+        # ⚠️ 显式反证：即使有人加了 config，也不能是 update_multi=False
+        if isinstance(config, dict):
+            assert config.get("update_multi") is not False, "update_multi=False 会被飞书拒收"
 
 
 def test_schema_is_string_not_number():
@@ -96,8 +131,17 @@ def test_month_plan_form_card_contains_form_with_inputs():
     forms = [e for e in card["body"]["elements"] if e.get("tag") == "form"]
     assert len(forms) == 1, "必须有且只有一个 form 元素"
 
-    tags = {e.get("tag") for e in forms[0]["elements"]}
-    assert tags == {"input"}, "form 内只允许表单控件"
+    form = forms[0]
+    assert form.get("name")
+    names = [e["name"] for e in form["elements"]]
+    assert len(names) == len(set(names))
+    inputs = [e for e in form["elements"] if e.get("tag") == "input"]
+    assert len(inputs) == 6
+    assert all(e["input_type"] in {"text", "multiline_text", "password"} for e in inputs)
+    submits = [e for e in form["elements"] if e.get("tag") == "button"]
+    assert len(submits) == 1
+    assert submits[0]["form_action_type"] == "submit"
+    assert submits[0]["value"]["action"] == feishu_card.ACTION_SUBMIT_DRAFT
 
 
 def test_month_plan_form_card_has_required_task_name():
@@ -108,7 +152,7 @@ def test_month_plan_form_card_has_required_task_name():
     )
 
     form = next(e for e in card["body"]["elements"] if e.get("tag") == "form")
-    by_id = {e["element_id"]: e for e in form["elements"]}
+    by_id = {e["element_id"]: e for e in form["elements"] if e.get("tag") == "input"}
 
     assert "task_name" in by_id
     assert by_id["task_name"]["required"] is True
@@ -124,7 +168,7 @@ def test_month_plan_form_card_prefills_existing_values():
     )
 
     form = next(e for e in card["body"]["elements"] if e.get("tag") == "form")
-    by_id = {e["element_id"]: e for e in form["elements"]}
+    by_id = {e["element_id"]: e for e in form["elements"] if e.get("tag") == "input"}
 
     assert by_id["task_name"]["default_value"] == "写周报"
     assert by_id["performance_weight"]["default_value"] == "30"
@@ -137,8 +181,15 @@ def test_month_plan_form_card_buttons_carry_session_id():
         session_id="S_123",
     )
 
-    buttons = [e for e in card["body"]["elements"] if e.get("tag") == "button"]
-    assert buttons, "必须有按钮"
+    form = next(e for e in card["body"]["elements"] if e.get("tag") == "form")
+    buttons = [
+        e for e in card["body"]["elements"] + form["elements"]
+        if e.get("tag") == "button"
+    ]
+    assert len(buttons) == 2
+    cancel = next(b for b in buttons if b["value"]["action"] == feishu_card.ACTION_CANCEL)
+    assert cancel in card["body"]["elements"]
+    assert "form_action_type" not in cancel
 
     for button in buttons:
         assert button["value"]["session_id"] == "S_123"
@@ -156,10 +207,16 @@ def test_button_text_is_plain_text_object():
         session_id="S_1",
     )
 
-    button = next(e for e in card["body"]["elements"] if e.get("tag") == "button")
-    assert isinstance(button["text"], dict)
-    assert button["text"]["tag"] == "plain_text"
-    assert button["text"]["content"]
+    form = next(e for e in card["body"]["elements"] if e.get("tag") == "form")
+    buttons = [
+        e for e in card["body"]["elements"] + form["elements"]
+        if e.get("tag") == "button"
+    ]
+    assert len(buttons) == 2
+    for button in buttons:
+        assert isinstance(button["text"], dict)
+        assert button["text"]["tag"] == "plain_text"
+        assert button["text"]["content"]
 
 
 # ---------------------------------------------------------------------------

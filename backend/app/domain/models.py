@@ -784,6 +784,8 @@ class AssessmentTask(Base):
     owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    self_review_deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    manager_review_deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class AssessmentRecord(Base):
@@ -1136,6 +1138,26 @@ class AiTrace(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
 
+class AiToolCall(Base):
+    """工具调用审计，仅记录参数哈希与键名，不存凭据或业务正文。"""
+
+    __tablename__ = "ai_tool_call"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    agent: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    tool: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    step: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    employee_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    args_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    args_keys: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
 class AuditLog(Base):
     """关键操作留痕（含越权拒绝）。"""
 
@@ -1164,8 +1186,11 @@ class AuditLog(Base):
 # ---------------------------------------------------------------------------
 
 from . import bot_models as _bot_models  # noqa: E402,F401
+from . import notification_models as _notification_models  # noqa: E402,F401
 from . import plan_models as _plan_models  # noqa: E402,F401
 from . import result_models as _result_models  # noqa: E402,F401
+from . import review_models as _review_models  # noqa: E402,F401
+from . import scheme_models as _scheme_models  # noqa: E402,F401
 from . import workday_models as _workday_models  # noqa: E402,F401
 
 __all__ = [name for name in dir() if not name.startswith("_")]

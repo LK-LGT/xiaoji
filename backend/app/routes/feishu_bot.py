@@ -438,14 +438,16 @@ def _handle_message_event(
         )
         return {"code": 0, "message": "已取消"}
 
-    if intent != feishu_bot.INTENT_MONTH_PLAN:
+    from ..services import feishu_scheme
+
+    if intent not in (feishu_bot.INTENT_MONTH_PLAN, feishu_scheme.INTENT, "performance_qa"):
         feishu_bot.send_card(
             client,
             receive_id=open_id,
             card=feishu_card.build_prompt_card(
                 session_id=session.id,
                 plan_month=feishu_bot._current_month(),
-                hint="我没听懂你的意思。\n\n试试发「填月计划」来开始填表。",
+                hint="发送「考核填报」填写部门考核方案；发送「填月计划」填写月计划；发送「我的绩效指标怎么算」查询计算依据，可附上月份（如 2026-11）。",
             ),
         )
         return {"code": 0, "message": "未知意图，已给出提示"}
@@ -466,10 +468,34 @@ def _handle_message_event(
         )
         return {"code": 0, "message": "未绑定员工"}
 
+    if intent == "performance_qa":
+        from ..services import feishu_qa
+
+        try:
+            period = feishu_bot.extract_plan_month(text) or feishu_bot._current_month()
+            content = feishu_qa.answer(db, employee, text, period)
+            card = feishu_card.build_qa_card(content)
+        except HTTPException as exc:
+            card = feishu_card.build_error_card(str(exc.detail))
+        feishu_bot.send_card(client, receive_id=open_id, card=card)
+        return {"code": 0, "message": "已发送绩效查询结果"}
+
     feishu_bot.bind_employee(db, session, employee)
+
+    if intent == feishu_scheme.INTENT:
+        session.expires_at = feishu_bot._now() + feishu_bot._session_ttl()
+        try:
+            card = feishu_scheme.start(db, session, employee, text)
+        except HTTPException as exc:
+            db.rollback()
+            card = feishu_card.build_error_card(str(exc.detail))
+        feishu_bot.send_card(client, receive_id=open_id, card=card)
+        return {"code": 0, "message": "已发送考核填报卡片"}
 
     plan_month = feishu_bot.extract_plan_month(text) or feishu_bot._current_month()
     session.intent = feishu_bot.INTENT_MONTH_PLAN
+    session.plan_id = None
+    session.collected = {}
     session.state = feishu_bot.STATE_COLLECTING
     session.plan_month = plan_month
     session.last_message_id = message["message_id"] or None
@@ -500,10 +526,23 @@ def _handle_card_action(
     action_name = action["action"]
 
     if not open_id or not session_id:
-        logger.warning("飞书机器人卡片回调缺少 open_id 或 session_id，跳过")
+        event = body.get("event") or {}
+        raw_action = event.get("action") or {}
+        logger.warning(
+            "飞书机器人卡片回调参数缺失：has_open_id=%s has_session_id=%s "
+            "event_keys=%s action_keys=%s value_keys=%s form_keys=%s",
+            bool(open_id), bool(session_id), sorted(event), sorted(raw_action),
+            sorted(action["value"]), sorted(action["form_value"]),
+        )
         return {"code": 0, "message": "回调参数不完整，已忽略"}
 
+    # Serialize callbacks so two clicks cannot advance the same card twice.
+    from sqlalchemy import update
+    db.execute(update(BotSession).where(BotSession.id == session_id)
+               .values(updated_at=BotSession.updated_at))
     session = db.get(BotSession, session_id)
+    if session is not None:
+        db.refresh(session)
     if session is None:
         logger.warning("飞书机器人卡片回调的会话不存在：%s", session_id)
         return {"code": 0, "message": "会话不存在，已忽略"}
@@ -517,6 +556,10 @@ def _handle_card_action(
         )
         return {"code": 0, "message": "会话归属不匹配，已忽略"}
 
+    generation = action["value"].get("generation")
+    if session.last_message_id and generation != session.last_message_id:
+        return {"code": 0, "message": "卡片已失效，请使用最新卡片"}
+
     if action_name == feishu_card.ACTION_CANCEL:
         session.state = feishu_bot.STATE_IDLE
         session.intent = feishu_bot.INTENT_NONE
@@ -528,6 +571,19 @@ def _handle_card_action(
             card=feishu_card.build_error_card("已取消本次填表。"),
         )
         return {"code": 0, "message": "已取消"}
+
+    from ..services import feishu_scheme
+
+    if action_name == feishu_scheme.ACTION:
+        try:
+            card = feishu_scheme.handle(db, session, action["value"], action["form_value"])
+        except HTTPException as exc:
+            db.rollback()
+            card = feishu_card.build_error_card(str(exc.detail))
+            feishu_bot.send_card(client, receive_id=open_id, card=card)
+            return {"code": 0, "message": str(exc.detail)}
+        feishu_bot.send_card(client, receive_id=open_id, card=card)
+        return {"code": 0, "message": "考核填报已处理"}
 
     if action_name != feishu_card.ACTION_SUBMIT_DRAFT:
         # ⚠️ 未知动作**忽略而不报错** —— 否则飞书会反复重推。

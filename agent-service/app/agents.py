@@ -24,6 +24,7 @@ from .base import (
     QAOutput,
     RatingOutput,
 )
+from .tool_agent import ToolUsingAgent
 
 # ---------------------------------------------------------------------------
 # 交互层
@@ -246,14 +247,15 @@ class CalibrationAgent(BaseAgent):
 # ---------------------------------------------------------------------------
 
 
-class QAAgent(BaseAgent):
+class QAAgent(ToolUsingAgent):
     """问答 —— HR 用自然语言查数。
 
     模型不做什么：不写数据库、不改状态。
     """
 
     name = "qa"
-    prompt_version = "v1"
+    allowed_tools = {"get_metric_values", "get_evidence", "get_department_stats"}
+    prompt_version = "v2-tools"
     output_model = QAOutput
 
     def build_payload(self, *, question: str, context: dict[str, Any]) -> dict[str, Any]:

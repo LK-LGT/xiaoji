@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 
 from ..core.config import settings
 from ..domain.bot_models import BotMessage, BotSession
-from ..domain.models import Employee
+from ..domain.models import Employee, MonthPlan, MonthPlanItem
 from ..services import feishu_card
 from ..services.feishu_client import FeishuClient
 from ..services.planning import PlanStateError, normalize_month, upsert_month_plan_draft
@@ -105,8 +105,13 @@ def detect_intent(text: str) -> str:
     normalized = text.strip().lower()
     if any(keyword in normalized for keyword in CANCEL_KEYWORDS):
         return "cancel"
+    from .feishu_scheme import INTENT, KEYWORDS
+    if any(keyword in normalized for keyword in KEYWORDS):
+        return INTENT
     if any(keyword in normalized for keyword in MONTH_PLAN_KEYWORDS):
         return INTENT_MONTH_PLAN
+    if any(keyword in normalized for keyword in ("绩效", "指标", "扣分", "得分", "评分", "部门统计", "团队统计")):
+        return "performance_qa"
     return INTENT_NONE
 
 
@@ -291,6 +296,13 @@ def apply_card_form_to_draft(
         raise FeishuBotError("会话未绑定员工，无法写入草稿", code="NO_EMPLOYEE")
 
     plan_month = normalize_month(session.plan_month or _current_month())
+    # A completed card is single-use even if Feishu assigns a new event ID.
+    if session.state == STATE_COMPLETED and session.plan_id:
+        return {"plan_id": session.plan_id, "plan_month": plan_month, "item_count": 1}
+    if session.expires_at:
+        expires = session.expires_at.replace(tzinfo=UTC) if session.expires_at.tzinfo is None else session.expires_at
+        if expires <= datetime.now(UTC):
+            raise FeishuBotError("卡片已过期，请重新发送填月计划", code="SESSION_EXPIRED")
     values = _normalize_form_values(form_values)
 
     task_name = values.get("task_name", "")
@@ -313,8 +325,32 @@ def apply_card_form_to_draft(
         ],
     }
 
+    existing_plan = db.scalar(select(MonthPlan).where(
+        MonthPlan.owner_id == session.employee_id,
+        MonthPlan.plan_month == plan_month,
+    ))
+    if existing_plan is not None:
+        # The planning API replaces the complete item list. Preserve all fields
+        # and IDs when appending the one task supplied by this card.
+        field_map = {
+            "taskType": "task_type", "taskName": "task_name",
+            "taskContent": "task_content", "deliverable": "deliverable",
+            "quality": "quality", "performanceWeight": "performance_weight",
+            "estimatedValue": "estimated_value", "sortNo": "sort_no",
+        }
+        old_items = []
+        for item in db.scalars(select(MonthPlanItem).where(MonthPlanItem.plan_id == existing_plan.id)):
+            raw = {key: getattr(item, attr) for key, attr in field_map.items()}
+            raw["id"] = item.id
+            for key, attr in (("estimatedStartDate", "estimated_start_date"), ("estimatedEndDate", "estimated_end_date")):
+                value = getattr(item, attr)
+                raw[key] = value.isoformat() if value else None
+            old_items.append(raw)
+        payload["items"] = old_items + payload["items"]
+        payload["title"] = existing_plan.title
+
     try:
-        plan = upsert_month_plan_draft(db, session.employee_id, session.plan_id, payload)
+        plan = upsert_month_plan_draft(db, session.employee_id, existing_plan.id if existing_plan else None, payload)
     except PlanStateError as exc:
         raise FeishuBotError(
             f"当前月计划状态（{exc.current}）不允许编辑，请先在系统里处理",
@@ -400,11 +436,23 @@ def build_month_plan_card_for_session(
     plan_month: str,
 ) -> dict[str, Any]:
     """给会话构造「填月计划」表单卡片。"""
-    return feishu_card.build_month_plan_form_card(
+    card = feishu_card.build_month_plan_form_card(
         plan_month=plan_month,
         session_id=session.id,
         fields=session.collected or {},
     )
+    def bind_generation(node):
+        if isinstance(node, dict):
+            value = node.get("value")
+            if isinstance(value, dict) and value.get("session_id") == session.id:
+                value["generation"] = session.last_message_id or ""
+            for child in node.values():
+                bind_generation(child)
+        elif isinstance(node, list):
+            for child in node:
+                bind_generation(child)
+    bind_generation(card)
+    return card
 
 
 __all__ = [

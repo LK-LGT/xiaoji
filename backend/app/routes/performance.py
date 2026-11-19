@@ -268,6 +268,8 @@ def create_performance_task(
             id=task_id,
             name=request.title,
             period=request.period,
+            self_review_deadline=sr_deadline_dt,
+            manager_review_deadline=mgr_deadline_dt,
             status="created",
             owner_id=current_user.id,
             created_at=dt.now(),
@@ -293,11 +295,19 @@ def create_performance_task(
         # 与 ``main.py`` / ``assessment_config.py`` 两条路径**共用同一套逻辑**，
         # 顺带获得「配置读不到 → 沿用上次快照」的兜底。
         try:
-            snapshot = config_service.freeze_snapshot(
-                db,
-                task,
-                config_service.LocalProvider(db),
-            )
+            from ..domain.scheme_models import PerformanceScheme
+            from ..services import scheme_service
+            if db.query(PerformanceScheme.id).first() is not None:
+                matched = [scheme_service.resolve(db, e, request.period) for e in employees]
+                if len({v.id for v in matched}) != 1:
+                    raise HTTPException(status_code=422, detail="被评员工适用不同方案，请从考核方案管理按版本分组发起")
+                snapshot = scheme_service.freeze_version(db, task, matched[0], employees)
+            else:
+                snapshot = config_service.freeze_snapshot(
+                    db,
+                    task,
+                    config_service.LocalProvider(db),
+                )
         except config_service.ConfigValidationError as exc:
             # 配置有问题时**明确失败**，不要建出一个永远算不出分的任务。
             db.rollback()
@@ -325,6 +335,11 @@ def create_performance_task(
             records.append(record)
 
         db.add_all(records)
+        db.flush()
+        from ..services.notification_service import record_event
+
+        for record in records:
+            record_event(db, record, "N9")
         db.commit()
 
         logger.info(f"考核任务创建成功: {task_id}, 包含 {len(records)} 人")
@@ -494,6 +509,9 @@ def submit_self_review(
         db.add(record)
         db.commit()
 
+        from ..services.notification_service import record_event
+
+        record_event(db, record, "N4")
         logger.info(f"自评提交成功: {request.record_id}")
 
         return {
@@ -599,6 +617,12 @@ def submit_manager_review(
         if not record:
             raise HTTPException(status_code=404, detail="考核记录不存在")
 
+        from ..domain.models import ConfigSnapshot
+        scheme_task = db.get(AssessmentTask, record.task_id)
+        scheme_snapshot = db.get(ConfigSnapshot, scheme_task.snapshot_id) if scheme_task and scheme_task.snapshot_id else None
+        if scheme_snapshot and (scheme_snapshot.form_template_json or {}).get('scheme_version_id'):
+            raise HTTPException(status_code=409, detail='方案考核请使用按方案填报与评价，不能通过旧评分入口覆盖')
+
         if record.status not in ("not_started", "self_review_submitted"):
             raise HTTPException(
                 status_code=409,
@@ -609,6 +633,10 @@ def submit_manager_review(
         if request.rating not in ("A", "B", "C", "D"):
             raise HTTPException(status_code=400, detail="等级必须是 A/B/C/D")
 
+        from ..domain.review_models import ScoreHead
+        head = db.get(ScoreHead, record.id)
+        if head and head.protected:
+            raise HTTPException(409, "该结果已进入复核保护，请通过复核中心调整")
         # 4. 保存评分
         record.status = "manager_review_submitted"
         record.confirmed_rating = request.rating
@@ -724,6 +752,11 @@ def confirm_performance_task(
         if not task:
             raise HTTPException(status_code=404, detail="考核任务不存在")
 
+        from ..domain.models import ConfigSnapshot
+        snapshot = db.get(ConfigSnapshot, task.snapshot_id) if task.snapshot_id else None
+        if snapshot and (snapshot.form_template_json or {}).get('scheme_version_id'):
+            raise HTTPException(status_code=409, detail='方案考核请在按方案填报与评价页面逐项完成面谈、员工确认及HR定稿')
+
         # 3. 检查所有记录是否已评分
         records = db.query(AssessmentRecord).filter(
             AssessmentRecord.task_id == task_id
@@ -746,6 +779,11 @@ def confirm_performance_task(
 
         db.add_all(records)
         db.add(task)
+        db.flush()
+        from ..services.notification_service import record_event
+
+        for record in records:
+            record_event(db, record, "N8")
         db.commit()
 
         logger.info(f"考核任务确认完成: {task_id}, {len(records)} 条记录")

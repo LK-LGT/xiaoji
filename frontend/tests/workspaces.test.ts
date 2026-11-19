@@ -51,6 +51,7 @@ test('filters granular menu entries without hiding workspace-level compatibility
       '/employee/week-plans',
       '/employee/performance-evidence',
       '/employee/appeals',
+      '/employee/review-center',
     ],
   )
 

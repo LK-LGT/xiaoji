@@ -1,0 +1,45 @@
+<template>
+<section class="page-panel" v-loading="busy"><h1>按方案填报与评价</h1><el-alert v-if="error" :title="error" type="error" />
+<el-table :data="records"><el-table-column prop="name" label="考核任务" /><el-table-column prop="period" label="周期" /><el-table-column prop="employee_name" label="员工" /><el-table-column prop="status" label="状态" /><el-table-column label="操作"><template #default="{row}"><el-button link type="primary" @click="run(() => open(row.id))">{{ row.is_own ? '填报 / 查看' : '评价 / 查看' }}</el-button></template></el-table-column></el-table>
+<el-drawer v-model="visible" title="冻结方案填报" size="75%"><template v-if="form"><h2>{{ form.payload.name }}</h2><el-alert title="此表使用任务启动时冻结的方案，后续组织和方案调整不会修改本次依据。" type="info" :closable="false" />
+<el-alert v-if="form.result" :title="`考核总分：${form.result.total}；等级：${form.result.rating || '待确认'}`" type="success" :closable="false" />
+<div v-for="m in form.payload.metrics" :key="m.code" class="metric"><h3>{{ m.name }} · {{ form.payload.scoring_mode === 'direct_points' ? `${m.max_score}分` : `${m.weight}%` }}</h3><p>{{ m.scoring_description }}</p>
+<div v-if="m.scoring_method === 'ratio'" class="numbers"><label>目标值（{{ m.unit }}）<el-input-number v-model="form.metric_values[m.code].target" :disabled="!canFill" /></label><label>实际值（{{ m.unit }}）<el-input-number v-model="form.metric_values[m.code].actual" :disabled="!canFill" /></label></div>
+<el-form label-position="top"><el-form-item v-for="f in form.payload.fields.filter(f => f.metric_code === m.code && f.stage !== 'manager_review')" :key="f.key" :label="f.label" :required="f.required"><el-input v-model="form.values[f.key]" :type="f.type === 'textarea' ? 'textarea' : 'text'" :disabled="!canFill" :placeholder="f.type === 'attachment' ? '填写已上传成果的链接或文件编号' : ''" /></el-form-item><el-form-item v-if="m.evidence_required" label="成果证据链接 / 文件编号" required><el-input v-model="form.values[`evidence_${m.code}`]" :disabled="!canFill" /></el-form-item></el-form>
+<label>员工自评分（0–{{ form.payload.scoring_mode === 'direct_points' ? m.max_score : 100 }}）<el-input-number v-model="form.self_scores[m.code]" :min="0" :max="form.payload.scoring_mode === 'direct_points' ? m.max_score : 100" :disabled="!canFill" /></label>
+<div v-if="(form.can_review || form.result) && m.scoring_method === 'manager_review'"><label>主管评分（0–{{ form.payload.scoring_mode === 'direct_points' ? m.max_score : 100 }}）<el-input-number v-model="form.reviews[m.code].score" :min="0" :max="form.payload.scoring_mode === 'direct_points' ? m.max_score : 100" :disabled="!canReview" /></label><el-input v-model="form.reviews[m.code].comment" type="textarea" placeholder="依据正式评分说明填写评价理由" :disabled="!canReview" /></div></div>
+<div v-if="form.payload.document && form.can_review" class="metric"><h3>加减分与原文等级确认</h3><p v-for="(rule, i) in form.payload.document.adjustment_rules" :key="i">{{ rule.cells.join(' · ') }}</p><el-input-number v-model="form.reviews._adjustment.score" :min="form.payload.document.adjustment_min" :max="form.payload.document.adjustment_max" :disabled="!canReview" /><el-input v-model="form.reviews._adjustment.comment" placeholder="加减分依据，无加减分也请说明" :disabled="!canReview" /><p v-for="g in form.payload.document.grade_rules" :key="g.level">{{ g.level }}：{{ g.condition }} · {{ g.description }}</p><el-select v-model="form.reviews._grade.level" placeholder="依据原文确认等级" :disabled="!canReview"><el-option v-for="g in form.payload.document.grade_rules" :key="g.level" :label="g.level" :value="g.level" /></el-select><el-input v-model="form.reviews._grade.comment" placeholder="等级判定理由（含边界情况的依据）" :disabled="!canReview" /></div>
+<div v-if="form.result || form.workflow.history?.length" class="metric"><h3>面谈、确认与归档</h3><p>当前阶段：{{ phaseLabel }}</p><p v-if="form.workflow.interview">面谈结论：{{ form.workflow.interview }}</p><el-input v-model="workflowNote" type="textarea" placeholder="填写面谈结论与改进项、确认意见、异议理由或HR处理依据" :rows="3" /><div class="numbers"><el-button v-for="action in workflowActions" :key="action.key" @click="run(() => advance(action.key))">{{ action.label }}</el-button></div><p v-for="(entry, i) in form.workflow.history || []" :key="i">{{ entry.at }} · {{ entry.action }} · {{ entry.note }}</p></div>
+</template><template #footer><el-button @click="visible=false">关闭</el-button><el-button v-if="canFill || canReview" type="primary" @click="run(submit)">{{ canFill ? '提交填报' : '提交评价并计算' }}</el-button></template></el-drawer></section>
+</template>
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { http } from '@/api/http'
+import type { SchemePayload } from '@/api/schemes'
+interface RecordRow { id:string; name:string; period:string; employee_name:string; is_own:boolean; status:string }
+interface FormData { self_scores:Record<string,number | undefined>; can_finalize:boolean; workflow:{phase?:string;interview?:string;history?:{action:string;note:string;at:string}[]}; result?:{total:number;rating?:string} | null; payload:SchemePayload; is_own:boolean; can_review:boolean; status:string; revision:number; values:Record<string,string>; metric_values:Record<string,{target:number | undefined; actual:number | undefined}>; reviews:Record<string,{score:number | undefined;comment:string;level?:string}> }
+const records=ref<RecordRow[]>([]), form=ref<FormData | null>(null), currentId=ref(''), busy=ref(false), error=ref(''), visible=ref(false)
+const workflowNote=ref('')
+const phase=computed(() => form.value?.workflow.phase || (form.value?.status === 'manager_review_submitted' ? 'awaiting_interview' : 'filling'))
+const phaseLabel=computed(() => ({filling:'员工填报中',reviewing:'退回主管重新评分',awaiting_interview:'待主管面谈',awaiting_employee:'待员工确认或提出异议',disputed:'异议待复核',awaiting_hr:'待HR定稿',finalized:'已定稿',archived:'已归档'}[phase.value] || phase.value))
+const workflowActions=computed(() => {
+  const f=form.value;if(!f)return []
+  const actions:{key:string;label:string}[]=[]
+  if(f.can_review && !f.is_own && ['awaiting_interview','disputed'].includes(phase.value))actions.push({key:'interview',label:phase.value === 'disputed' ? '记录复核面谈并请员工重新确认' : '记录面谈并请员工确认'})
+  if(f.is_own && phase.value==='awaiting_employee')actions.push({key:'acknowledge',label:'确认已知悉结果'},{key:'dispute',label:'提出异议'})
+  if(f.can_finalize && ['disputed','awaiting_hr'].includes(phase.value))actions.push({key:'reopen',label:'退回主管重新评分'})
+  if(f.can_finalize && phase.value==='awaiting_hr')actions.push({key:'finalize',label:'HR最终定稿'})
+  if(f.can_finalize && phase.value==='finalized')actions.push({key:'archive',label:'归档'})
+  return actions
+})
+async function advance(action:string){if(!form.value)return;if(!workflowNote.value.trim())throw new Error('请填写操作说明');await ElMessageBox.confirm('确认执行此流程操作？内容将记录在考核历史中。','确认操作');await http.post(`/performance/scheme-records/${currentId.value}/workflow`,{action,note:workflowNote.value,revision:form.value.revision});workflowNote.value='';await open(currentId.value);await load();ElMessage.success('流程已更新')}
+const canFill=computed(() => form.value?.is_own && ['not_started','self_review_open'].includes(form.value.status))
+const canReview=computed(() => form.value?.can_review && form.value.status === 'self_review_submitted')
+async function run(fn:()=>Promise<unknown>) {busy.value=true;error.value='';try{await fn()}catch(e){if(e !== 'cancel' && e !== 'close'){error.value=e instanceof Error ? e.message : String(e);ElMessage.error(error.value)}}finally{busy.value=false}}
+async function load(){records.value=await http.get<unknown,RecordRow[]>('/performance/scheme-records')}
+async function open(id:string){currentId.value=id;form.value=await http.get<unknown,FormData>(`/performance/scheme-records/${id}`);for(const m of form.value.payload.metrics){form.value.metric_values[m.code] ??= {target:m.target ?? undefined,actual:undefined};form.value.reviews[m.code] ??= {score:undefined,comment:''}}form.value.reviews._adjustment ??= {score:0,comment:''};form.value.reviews._grade ??= {score:undefined,comment:'',level:''};visible.value=true}
+async function submit(){if(!form.value)return;if(canFill.value && form.value.payload.metrics.some(m=>form.value!.self_scores[m.code] == null))throw new Error('请完成全部指标自评分');await ElMessageBox.confirm('提交后本阶段内容将锁定，请确认填写完整。','确认提交');const reviews=Object.fromEntries(form.value.payload.metrics.filter(m=>m.scoring_method==='manager_review').map(m=>[m.code,form.value!.reviews[m.code]]));if(form.value.payload.document && !form.value.is_own){reviews._adjustment=form.value.reviews._adjustment;reviews._grade=form.value.reviews._grade}await http.put(`/performance/scheme-records/${currentId.value}`,{values:form.value.values,self_scores:form.value.self_scores,metric_values:form.value.metric_values,reviews,revision:form.value.revision});ElMessage.success('提交成功');visible.value=false;await load()}
+onMounted(()=>run(load))
+</script>
+<style scoped>.metric{padding:20px;margin:16px 0;border:1px solid #dce4df;border-radius:10px}.numbers{display:flex;gap:24px;margin:18px 0;flex-wrap:wrap}p{color:#61736b;white-space:pre-wrap}.el-textarea{margin-top:12px}</style>

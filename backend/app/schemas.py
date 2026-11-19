@@ -6,8 +6,26 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class MetricValuesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    period: str = Field(min_length=6, max_length=10)
+
+
+class EvidenceQueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    period: str | None = Field(default=None, min_length=6, max_length=10)
+    usage: Literal["scoring", "reference_only"] | None = None
+
+
+class DepartmentStatsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    period: str | None = Field(default=None, min_length=6, max_length=10)
+
 
 # ┌─────────────────────────────────────────────────────┐
 # │ 指标相关                                            │
@@ -333,7 +351,7 @@ class ResultResponse(BaseModel):
     """
 
     status: str = Field(..., description="confirmed / pending")
-    confirmed_rating: str = Field(..., description="等级 A/B/C/D")
+    confirmed_rating: str | None = Field(None, description="已确认等级；未确认时为空")
     confirmed_by: str | None = Field(None, description="确认人 ID")
     confirmed_at: str | None = Field(None, description="确认时间")
     score: dict = Field(..., description="ScoreResponse（见上面定义）")

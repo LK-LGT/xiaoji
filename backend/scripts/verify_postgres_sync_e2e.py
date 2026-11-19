@@ -25,6 +25,7 @@
 环境变量指定连接串（**不要**用生产库）::
 
     export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/perf_verify"
+    export ALEMBIC_EXPECT_TARGET="postgresql:localhost:5432/perf_verify"
     python backend/scripts/verify_postgres_sync_e2e.py
 
 加 ``--dry-run`` 只做连接与 schema 检查，不改动数据。
@@ -127,19 +128,16 @@ def main() -> int:
     alembic_cfg = Config(str(ROOT / "backend" / "alembic.ini"))
     alembic_cfg.set_main_option("script_location", str(ROOT / "backend" / "migrations"))
 
-    try:
-        command.upgrade(alembic_cfg, "head")
-        check("升级到 head", True)
-    except Exception as exc:
-        check("升级到 head", False, str(exc)[:300])
-        return 1
-
-    try:
-        command.downgrade(alembic_cfg, "-1")
-        command.upgrade(alembic_cfg, "head")
-        check("降级再升级（往返无损）", True)
-    except Exception as exc:
-        check("降级再升级（往返无损）", False, str(exc)[:300])
+    if not args.dry_run:
+        try:
+            command.upgrade(alembic_cfg, "head")
+            check("升级到 head", True)
+            command.downgrade(alembic_cfg, "-1")
+            command.upgrade(alembic_cfg, "head")
+            check("隔离库降级再升级", True)
+        except (Exception, SystemExit) as exc:
+            check("迁移往返", False, str(exc)[:300])
+            return 1
 
     # ═══════════════════════════════════════════════════════════════════════
     section("2. Schema 校验")

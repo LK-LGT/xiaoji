@@ -96,18 +96,8 @@ def _assert_can_view(user: Employee, db: Session, case: Any) -> None:
 
     可查看：案件本人、被指派评审人、HR、部门负责人。
     """
-    context = build_access_context_for_user(user, db)
-    if case.owner_id == user.id:
-        return
-    if "hr" in context.roles or "department_leader" in context.roles:
-        return
-    if user.id in context.direct_report_ids:
-        return
-    # 被指派为评审人（含已回避的，也可查看历史）
-    reviewers = dispute_service.list_reviewers(db, case.id)
-    if any(row.user_id == user.id for row in reviewers):
-        return
-    raise HTTPException(status_code=403, detail="无权查看该争议案件")
+    from ..services.review_center import require_view
+    require_view(db, user, case)
 
 
 def _assert_can_manage(user: Employee, db: Session) -> None:
@@ -157,6 +147,8 @@ async def get_dispute_dashboard(
         else current_user.id
     )
     cases = dispute_service.list_cases(db, owner_id=owner_filter, limit=200)
+    from ..services.review_center import can_view
+    cases = [case for case in cases if can_view(db, current_user, case)]
 
     total = len(cases)
     submitted = sum(1 for c in cases if c.status == "SUBMITTED")
@@ -216,6 +208,8 @@ async def list_dispute_cases(
     cases = dispute_service.list_cases(
         db, owner_id=owner_filter, status=status, keyword=keyword, limit=200
     )
+    from ..services.review_center import can_view
+    cases = [case for case in cases if can_view(db, current_user, case)]
     return _ok(
         [
             dispute_service.serialize_case_summary(
@@ -323,6 +317,12 @@ async def list_dispute_reviewer_candidates(
     """
     case = dispute_service.get_case(db, case_id)
     _assert_can_manage(current_user, db)
+    from ..services.review_center import require_independent, require_manager
+    require_manager(db, current_user, case.department_id)
+    require_independent(db, current_user, case)
+    from ..domain.review_models import ReviewCase
+    if db.get(ReviewCase, case.id):
+        raise HTTPException(409, "该案件已接入复核中心，请使用带版本校验的复核中心操作")
 
     candidates = dispute_service.list_reviewer_candidates(
         db, case_id=case.id, keyword=keyword
@@ -343,10 +343,10 @@ async def download_dispute_package(
     case = dispute_service.get_case(db, case_id)
     _assert_can_view(current_user, db, case)
 
-    # 尚无真实证据包时返回 404，避免前端拿到损坏文件。
-    if not case.package_items:
-        raise HTTPException(status_code=404, detail="证据包不存在或已过期")
-    raise HTTPException(status_code=404, detail="证据包生成功能尚未上线")
+    from fastapi.responses import Response
+
+    from ..services.review_center import package
+    return Response(package(db, current_user, case), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="review-{case.id}.zip"', "Cache-Control": "no-store"})
 
 
 @router.post("/cases/{case_id}/reviewers")
@@ -362,6 +362,12 @@ async def add_dispute_reviewer(
     """
     case = dispute_service.get_case(db, case_id)
     _assert_can_manage(current_user, db)
+    from ..services.review_center import require_independent, require_manager
+    require_manager(db, current_user, case.department_id)
+    require_independent(db, current_user, case)
+    from ..domain.review_models import ReviewCase
+    if db.get(ReviewCase, case.id):
+        raise HTTPException(409, "该案件已接入复核中心，请使用带版本校验的复核中心操作")
 
     reviewer = db.get(Employee, str(payload.userId))
     if reviewer is None:
@@ -392,6 +398,12 @@ async def remove_dispute_reviewer(
     """
     case = dispute_service.get_case(db, case_id)
     _assert_can_manage(current_user, db)
+    from ..services.review_center import require_independent, require_manager
+    require_manager(db, current_user, case.department_id)
+    require_independent(db, current_user, case)
+    from ..domain.review_models import ReviewCase
+    if db.get(ReviewCase, case.id):
+        raise HTTPException(409, "该案件已接入复核中心，请使用带版本校验的复核中心操作")
 
     dispute_service.remove_reviewer(db, case, reviewer_id)
     return _ok(None)
@@ -435,6 +447,9 @@ async def save_dispute_opinion(
     case = dispute_service.get_case(db, case_id)
     _assert_can_view(current_user, db, case)
 
+    from ..domain.review_models import ReviewCase
+    if db.get(ReviewCase, case.id):
+        raise HTTPException(409, "请通过复核中心提交带版本号的意见")
     record = dispute_service.submit_opinion(
         db, case, current_user, payload.opinion, payload.comment
     )
@@ -460,6 +475,12 @@ async def submit_dispute_decision(
     """
     case = dispute_service.get_case(db, case_id)
     _assert_can_manage(current_user, db)
+    from ..services.review_center import require_independent, require_manager
+    require_manager(db, current_user, case.department_id)
+    require_independent(db, current_user, case)
+    from ..domain.review_models import ReviewCase
+    if db.get(ReviewCase, case.id):
+        raise HTTPException(409, "该案件已接入复核中心，请使用带版本校验的复核中心操作")
 
     dispute_service.decide_case(db, case, current_user, payload.decision, payload.comment)
     return _ok(None)

@@ -84,10 +84,13 @@ import AiManagement from '@/views/system/AiManagement.vue'
 import EnterpriseKnowledge from '@/views/system/EnterpriseKnowledge.vue'
 import FeishuSyncManagement from '@/views/system/FeishuSyncManagement.vue'
 
+import SchemeFilling from '@/views/performance/SchemeFilling.vue'
+import SchemeManagement from '@/views/performance/SchemeManagement.vue'
 import PerformanceDashboard from '@/views/performance/PerformanceDashboard.vue'
 import EmployeeSelfReview from '@/views/performance/EmployeeSelfReview.vue'
 import ManagerReview from '@/views/performance/ManagerReview.vue'
 
+import ReviewCenter from '@/views/dispute/ReviewCenter.vue'
 import DisputeDashboard from '@/views/dispute/DisputeDashboard.vue'
 import DisputeCases from '@/views/dispute/DisputeCases.vue'
 import DisputeCaseDetail from '@/views/dispute/DisputeCaseDetail.vue'
@@ -109,6 +112,8 @@ const router = createRouter({
     withAppShell('/', NoAccess),
     withAppShell('/no-access', NoAccess),
     withAppShell('/messages', MessageCenter),
+    withAppShell('/employee/review-center', ReviewCenter),
+    withAppShell('/dispute/review-center', ReviewCenter),
     withAppShell('/profile', UserProfile),
 
     // --- 领导工作台 ---
@@ -205,6 +210,10 @@ const router = createRouter({
     withAppShell('/employee/results/archive/:type/:resultId', EmployeeResultArchiveDetail, { permission: 'planning:result:view' }),
     withAppShell('/employee/results', EmployeeResultCenter, { permission: 'planning:result:view' }, '/planning/result'),
 
+    withAppShell('/system/performance-schemes', SchemeManagement, { permission: 'performance:schemes:manage' }),
+    withAppShell('/department/performance-schemes', SchemeManagement, { permission: 'performance:schemes:view' }),
+
+    withAppShell('/performance/scheme-filling', SchemeFilling, { permission: 'performance:dashboard:view' }),
     // --- 绩效 ---
     withAppShell('/performance', PerformanceDashboard, { permission: 'performance:dashboard:view' }, '/performance/dashboard'),
     withAppShell('/performance/self-reviews', EmployeeSelfReview, { permission: 'performance:self-review:view' }),

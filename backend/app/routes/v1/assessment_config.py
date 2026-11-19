@@ -390,6 +390,10 @@ def create_assessment_task(
     """
     _require_config_admin(db, current_user)
 
+    from ...domain.scheme_models import PerformanceScheme
+    if db.query(PerformanceScheme.id).first() is not None:
+        raise HTTPException(status_code=409, detail="已启用HR方案版本，请从考核方案管理按员工匹配方案发起考核")
+
     period = _normalize_period(payload.period)
     target_ids = [str(e) for e in payload.target_employee_ids if e]
     if not target_ids:

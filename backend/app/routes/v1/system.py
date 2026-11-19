@@ -4,17 +4,27 @@
 （见 `services.system_views`），不再返回样例数据。
 """
 
-from datetime import datetime, timedelta
+import csv
+import io
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
 from ...dependencies import get_current_user
 from ...services import system_views, workday_rule
+from ...services.access_control import PermissionAction, build_access_context
 from ..shared import JsonBody
 
 router = APIRouter(prefix="/v1/system", tags=["system"], dependencies=[Depends(get_current_user)])
+
+
+def _require_audit_viewer(user, db: Session) -> None:
+    if not build_access_context(db, user).has_permission(PermissionAction.VIEW_AUDIT_LOG):
+        raise HTTPException(status_code=403, detail="无权查看审计日志")
 
 
 # ─────────────────────────────────────────────────────
@@ -32,7 +42,7 @@ async def get_system_dashboard(db: Session = Depends(get_db)) -> dict:
 
     权限要求: 任何登录用户（暂时开放，后期限制为 system:dashboard:view）
     """
-    from ...domain.models import Department, Employee, SystemAdmin
+    from ...domain.models import AuditLog, Department, Employee, SystemAdmin
     from ...services.system_views import _data_quality_snapshot
 
     try:
@@ -46,7 +56,7 @@ async def get_system_dashboard(db: Session = Depends(get_db)) -> dict:
             .count()
         )
         role_count = db.query(SystemAdmin).filter(SystemAdmin.active.is_(True)).count()
-        audit_count = 0  # 审计表尚未统一到本模块，保持为真实计数而非写死值。
+        audit_count = db.query(AuditLog).count()
 
         quality = _data_quality_snapshot(db)
 
@@ -676,90 +686,92 @@ async def list_audits(
     result: str | None = Query(None),
     start: str | None = Query(None),
     end: str | None = Query(None),
+    current_user = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取审计日志列表。"""
+    _require_audit_viewer(current_user, db)
     page = max(1, page_no)
     limit = min(page_size, 100)
     offset = (page - 1) * limit
 
-    # 示例数据
-    sample_records = [
-        {
-            "id": "audit_001",
-            "createdAt": (datetime.utcnow() - timedelta(hours=2)).isoformat(),
-            "username": "admin",
-            "operatorName": "管理员",
-            "action": "CREATE",
-            "actionLabel": "创建员工",
-            "targetType": "employee",
-            "targetTypeLabel": "员工",
-            "targetSummary": "张三",
-            "result": "SUCCESS",
-            "details": {"name": "张三", "email": "zhangsan@example.com"},
-        },
-        {
-            "id": "audit_002",
-            "createdAt": (datetime.utcnow() - timedelta(hours=1)).isoformat(),
-            "username": "admin",
-            "operatorName": "管理员",
-            "action": "UPDATE",
-            "actionLabel": "修改员工信息",
-            "targetType": "employee",
-            "targetTypeLabel": "员工",
-            "targetSummary": "李四",
-            "result": "SUCCESS",
-            "details": {"position": "高级工程师"},
-        },
-        {
-            "id": "audit_003",
-            "createdAt": (datetime.utcnow() - timedelta(minutes=30)).isoformat(),
-            "username": "admin",
-            "operatorName": "管理员",
-            "action": "LOGIN",
-            "actionLabel": "用户登录",
-            "targetType": "user",
-            "targetTypeLabel": "用户",
-            "targetSummary": "admin",
-            "result": "SUCCESS",
-            "details": {"ip": "192.168.1.100", "browser": "Chrome"},
-        },
-    ]
+    from ...domain.models import AuditLog, Employee
 
-    # 应用筛选（简化版）
-    records = sample_records
+    query = db.query(AuditLog)
     if result:
-        records = [r for r in records if r["result"] == result]
+        query = query.filter(AuditLog.result == result.lower())
     if target_type:
-        records = [r for r in records if r["targetType"] == target_type]
+        query = query.filter(AuditLog.resource_type == target_type)
     if action:
-        records = [r for r in records if r["action"] == action]
+        query = query.filter(AuditLog.action == action)
+    if start:
+        query = query.filter(AuditLog.created_at >= start)
+    if end:
+        query = query.filter(AuditLog.created_at <= end)
     if username:
-        records = [r for r in records if username.lower() in r["username"].lower() or username.lower() in r["operatorName"].lower()]
+        query = query.outerjoin(Employee, Employee.id == AuditLog.actor_id).filter(
+            or_(AuditLog.actor_id.ilike(f"%{username}%"), Employee.name.ilike(f"%{username}%"), Employee.login_account.ilike(f"%{username}%"))
+        )
 
-    total = len(records)
-    paginated = records[offset : offset + limit]
-
-    return {
-        "code": 0,
-        "data": {
-            "records": paginated,
-            "total": total,
-            "pageNo": page,
-            "pageSize": limit,
-        },
-    }
+    total = query.count()
+    rows = query.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit).all()
+    action_labels = {"CREATE": "创建", "UPDATE": "修改", "DELETE": "删除", "SUBMIT": "提交", "APPROVE": "批准", "REJECT": "驳回", "LOGIN": "登录", "EXPORT": "导出"}
+    type_labels = {"employee": "员工", "user": "用户", "scheme": "绩效方案", "review": "绩效复核"}
+    records = []
+    for row in rows:
+        metadata = row.metadata_json or {}
+        actor = db.get(Employee, row.actor_id) if row.actor_id else None
+        records.append({
+            "id": row.id,
+            "createdAt": row.created_at.isoformat() if row.created_at else "",
+            "username": (actor.login_account or actor.id) if actor else (row.actor_id or "system"),
+            "operatorName": actor.name if actor else (row.actor_id or "系统"),
+            "action": row.action.rsplit(".", 1)[-1].upper(),
+            "actionLabel": action_labels.get(row.action.rsplit(".", 1)[-1].upper(), row.action),
+            "targetType": row.resource_type or "unknown",
+            "targetTypeLabel": type_labels.get(row.resource_type, row.resource_type or "未知"),
+            "targetSummary": row.resource_id or "",
+            "result": str(row.result).upper(),
+            "details": metadata,
+        })
+    return {"code": 0, "data": {"records": records, "total": total, "pageNo": page, "pageSize": limit}}
 
 
 @router.get("/audits/export")
 async def export_audits(
-    page_no: int = Query(1, ge=1, alias="pageNo"),
-    page_size: int = Query(20, ge=1, le=100, alias="pageSize"),
     username: str | None = Query(None),
+    target_type: str | None = Query(None, alias="targetType"),
+    action: str | None = Query(None),
+    result: str | None = Query(None),
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+    current_user = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> dict:
-    """导出审计日志。"""
-    return {"code": 0, "data": {"message": "正在导出..."}}
+):
+    """导出真实审计记录为 UTF-8 BOM CSV。"""
+    _require_audit_viewer(current_user, db)
+    from ...domain.models import AuditLog, Employee
+    query = db.query(AuditLog)
+    if target_type:
+        query = query.filter(AuditLog.resource_type == target_type)
+    if action:
+        query = query.filter(AuditLog.action == action)
+    if result:
+        query = query.filter(AuditLog.result == result.lower())
+    if start:
+        query = query.filter(AuditLog.created_at >= start)
+    if end:
+        query = query.filter(AuditLog.created_at <= end)
+    if username:
+        query = query.outerjoin(Employee, Employee.id == AuditLog.actor_id).filter(
+            or_(AuditLog.actor_id.ilike(f"%{username}%"), Employee.name.ilike(f"%{username}%"), Employee.login_account.ilike(f"%{username}%"))
+        )
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["ID", "时间", "操作人", "动作", "资源类型", "资源ID", "结果", "详情"])
+    for row in query.order_by(AuditLog.created_at.desc()).all():
+        writer.writerow([row.id, row.created_at.isoformat() if row.created_at else "", row.actor_id or "system", row.action, row.resource_type or "", row.resource_id or "", row.result, row.metadata_json or {}])
+    return StreamingResponse(iter(["\ufeff" + output.getvalue()]), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=audit-logs.csv", "Cache-Control": "no-store"})
 
 
 # ─────────────────────────────────────────────────────

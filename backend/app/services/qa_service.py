@@ -11,7 +11,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -141,6 +143,13 @@ def query_self_progress(
 # └─────────────────────────────────────────────────────┘
 
 
+def _json_value(value, default):
+    """ORM JSON 通常已解码；兼容早期二次编码的历史值。"""
+    if isinstance(value, str):
+        return json.loads(value)
+    return value if value is not None else default
+
+
 def query_self_result(
     employee_id: str,
     task_id: str,
@@ -188,46 +197,72 @@ def query_self_result(
             per_metric=[]
         )
 
-    # 2. 转换 Score 为 ScoreResponse
-    import json
-    score_response = schemas.ScoreResponse(
-        total=score.total,
-        per_metric_json=json.loads(score.per_metric_json),
-        data_quality=schemas.DataQualityInfo(
-            completeness=0.95,  # TODO: 从 trace 计算
-            as_of=score.confirmed_at.isoformat() if score.confirmed_at else datetime.now().isoformat(),
-            degraded=False,
-            citations=["Score.total", "MetricValue.*"]
-        ),
-        trace=json.loads(score.trace)
-    )
-
-    # 3. 构建 per_metric 列表
+    task = db.get(models.AssessmentTask, task_id)
+    snapshot = db.get(models.ConfigSnapshot, task.snapshot_id) if task and task.snapshot_id else None
+    metric_defs = _json_value(snapshot.metrics_json, []) if snapshot else []
+    weight_defs = _json_value(snapshot.weights_json, []) if snapshot else []
+    names = {m["code"]: m.get("name", m["code"]) for m in metric_defs}
+    weights = {w["metric_code"]: float(w["weight"]) for w in weight_defs}
+    trace = _json_value(score.trace_json, {})
+    stored = _json_value(score.per_metric_json, [])
+    # 兼容历史 JSON 字符串及 code -> score 映射，不修改存储内容。
+    items = ([{"metric_code": code, "level_score": value} for code, value in stored.items()]
+             if isinstance(stored, dict) else stored)
+    direct = trace.get("rule") == "scheme_direct_points_v1"
+    known_weights = {code: weight for code, weight in weights.items() if weight > 0}
+    participating = sum(known_weights.get(item["metric_code"], 0) for item in items)
     per_metric_list = []
-    for metric_code, metric_score in json.loads(score.per_metric_json).items():
-        per_metric_list.append(
-            schemas.ResultMetricInfo(
-                metric_code=metric_code,
-                display_name=metric_code,  # TODO: 从 TaskSnapshot 查
-                score=metric_score,
-                weight=0.2,  # TODO: 从 weight_set_json 查
-                contribution=metric_score * 0.2
-            )
-        )
-
-    # 4. 构建响应
+    incomplete_details = snapshot is None
+    for item in items:
+        code = item["metric_code"]
+        value = item.get("level_score", item.get("score", item.get("contribution", 0)))
+        if direct:
+            # 直接计分不再乘百分比；加减分也原样展示。
+            weight = 1.0
+        else:
+            weight = item.get("normalized_weight")
+            if weight is None:
+                weight = weights.get(code, 0) / participating if participating else 0
+            incomplete_details |= code not in weights
+        incomplete_details |= code not in names and code != "_adjustment"
+        per_metric_list.append(schemas.ResultMetricInfo(
+            metric_code=code,
+            display_name=names.get(code, item.get("metric_name") or ("加减分" if code == "_adjustment" else code)),
+            score=value,
+            weight=weight,
+            contribution=item.get("contribution", value * weight),
+        ))
+    if direct:
+        expected = {m["code"] for m in metric_defs}
+        available = {item["metric_code"] for item in items}
+        completeness = len(expected & available) / len(expected) if expected else 0
+    else:
+        # 已落库的算分追踪优先，避免用查询时的当前指标数据重算历史完整度。
+        total_weight = trace.get("total_weight", sum(known_weights.values()))
+        completed_weight = trace.get("participating_weight", participating)
+        completeness = completed_weight / total_weight if total_weight > 0 else 0
+    completeness = min(1.0, max(0.0, completeness)) if math.isfinite(completeness) else 0.0
+    quality = schemas.DataQualityInfo(
+        completeness=completeness,
+        as_of=score.computed_at.isoformat(),
+        degraded=incomplete_details or completeness < 1,
+        degrade_reason="缺少冻结配置或评分明细不完整" if incomplete_details or completeness < 1 else None,
+        citations=["Score.total", "Score.per_metric_json", "Score.trace_json"]
+                  + (["ConfigSnapshot"] if snapshot else []),
+    )
+    # 确认信息只能来自真实确认记录，不把算分时间当作确认时间。
+    confirmation = db.query(models.RatingDraft).filter_by(
+        record_id=record.id, status="confirmed",
+    ).first() if record.confirmed_rating else None
     return schemas.ResultResponse(
         status=record.status,
         confirmed_rating=record.confirmed_rating,
-        confirmed_by=score.confirmed_by,
-        confirmed_at=score.confirmed_at.isoformat() if score.confirmed_at else None,
-        score=score_response.model_dump(),
+        confirmed_by=confirmation.confirmed_by if confirmation else None,
+        confirmed_at=confirmation.confirmed_at.isoformat() if confirmation and confirmation.confirmed_at else None,
+        score={"total": score.total, "per_metric_json": {m.metric_code: m.score for m in per_metric_list},
+               "data_quality": quality.model_dump(), "trace": trace},
         per_metric=per_metric_list,
-        appeal_deadline=(
-            (score.confirmed_at.date()).isoformat()
-            if score.confirmed_at
-            else None
-        )
+        appeal_deadline=None,
     )
 
 

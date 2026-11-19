@@ -381,6 +381,10 @@ def decide_case(
     case.decided_at = datetime.utcnow()
     case.decided_by = decider.id
     case.appeal_status = "resolved"
+    from .notification_service import enqueue_safe
+
+    enqueue_safe(db, employee_id=case.owner_id, scene="N7", period=case.id,
+                 object_id=case.id, object_type="dispute", label=case.result_title)
     db.commit()
     db.refresh(case)
     return case

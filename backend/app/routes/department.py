@@ -15,11 +15,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ..core.db import get_db
 from ..dependencies import build_access_context_for_user, get_current_user
-from ..domain.models import Department, Employee
+from ..domain.models import DayPlan, Department, Employee, MonthPlan, MonthPlanItem, WeekPlan
+from ..domain.plan_models import PlanApproval
+from ..domain.result_models import Result
 from ..services import plan_approval
 from .shared import JsonBody
 
@@ -389,12 +391,17 @@ class ProjectResultPackageDetail(BaseModel):
 @router.get("/employees", response_model=list[DepartmentEmployeeSummary])
 async def list_department_employees(
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
     org_id: str | None = Query(None),
 ):
     """获取部门员工及其工作统计"""
     try:
-        # 查询所有员工
-        employees: list[Employee] = db.query(Employee).all()
+        employees_query = db.query(Employee)
+        if org_id:
+            employees_query = employees_query.filter(Employee.department_id == str(org_id))
+        employees: list[Employee] = employees_query.order_by(Employee.name).all()
+        scope = _approval_scope(current_user, db)
+        employees = [emp for emp in employees if plan_approval._owner_in_scope(db, emp.id, scope, emp)]
 
         result = []
         for emp in employees:
@@ -414,19 +421,23 @@ async def list_department_employees(
                 if dept:
                     org_name = dept.name
 
-            # 统计数据（暂时使用模拟值）
+            month_plans = db.query(MonthPlan).filter(MonthPlan.owner_id == emp.id).all()
+            week_plans = db.query(WeekPlan).filter(WeekPlan.owner_id == emp.id).all()
+            day_plans = db.query(DayPlan).filter(DayPlan.owner_id == emp.id).all()
+            results = db.query(Result).filter(Result.owner_id == emp.id).all()
+            timestamps = [item.updated_at for item in (*month_plans, *week_plans, *day_plans, *results) if getattr(item, "updated_at", None)]
             result.append(DepartmentEmployeeSummary(
                 ownerId=str(emp.id),
                 employeeName=emp.name,
-                employeeNo=getattr(emp, 'employee_no', None),
+                employeeNo=emp.login_account,
                 orgId=org_id_value,
                 orgName=org_name,
-                monthPlanCount=3,
-                weekPlanCount=2,
-                dayPlanCount=8,
-                resultCount=2,
-                totalWorkCount=15,
-                latestActivityAt="2026-11-13T14:30:00",
+                monthPlanCount=len(month_plans),
+                weekPlanCount=len(week_plans),
+                dayPlanCount=len(day_plans),
+                resultCount=len(results),
+                totalWorkCount=sum(len(p.items) for p in month_plans) + sum(len(p.items) for p in week_plans) + sum(len(p.items) for p in day_plans),
+                latestActivityAt=max(timestamps).isoformat() if timestamps else None,
             ))
 
         return result
@@ -441,175 +452,109 @@ async def list_department_employees(
 @router.get("/project-month-plan-packages", response_model=list[ProjectMonthPlanPackage])
 async def list_project_month_plan_packages(
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
     plan_month: str | None = Query(None, alias="planMonth"),
     org_id: str | None = Query(None),
 ):
-    """获取项目组月计划包
-
-    按项目组、月份统计计划审批情况
-    """
+    """按真实月计划和审批记录统计当前用户可见的部门计划包。"""
     plan_month = _normalize_plan_month(plan_month)
-    try:
-        # 简化实现：返回模拟数据
-        packages = [
-            ProjectMonthPlanPackage(
-                groupId="1",
-                groupName="产品研发组",
-                departmentName="技术部",
-                planMonth=plan_month,
-                totalMemberCount=5,
-                approvedCount=3,
-                contentAvailable=False,
-                status="PENDING",
-                pendingMembers=[
-                    PendingMember(employeeName="张三", employeeNo="E001", statusLabel="待审批"),
-                    PendingMember(employeeName="李四", employeeNo="E002", statusLabel="草稿"),
-                ]
-            ),
-            ProjectMonthPlanPackage(
-                groupId="2",
-                groupName="市场推广组",
-                departmentName="市场部",
-                planMonth=plan_month,
-                totalMemberCount=3,
-                approvedCount=3,
-                contentAvailable=True,
-                status="OPEN",
-                pendingMembers=[]
-            ),
-            ProjectMonthPlanPackage(
-                groupId="3",
-                groupName="数据分析组",
-                departmentName="技术部",
-                planMonth=plan_month,
-                totalMemberCount=2,
-                approvedCount=0,
-                contentAvailable=False,
-                status="EMPTY",
-                pendingMembers=[]
-            ),
-        ]
+    scope = _approval_scope(current_user, db)
+    query = db.query(MonthPlan).options(joinedload(MonthPlan.items)).filter(MonthPlan.plan_month == plan_month)
+    if org_id:
+        query = query.join(Employee, Employee.id == MonthPlan.owner_id).filter(Employee.department_id == str(org_id))
+    plans = query.order_by(MonthPlan.updated_at.desc()).all()
+    visible = [p for p in plans if plan_approval._owner_in_scope(db, p.owner_id, scope, p.owner)]
+    grouped: dict[str, list[MonthPlan]] = {}
+    for plan in visible:
+        owner = plan.owner or db.get(Employee, plan.owner_id)
+        if owner:
+            grouped.setdefault(str(owner.department_id or "0"), []).append(plan)
 
-        return packages
-    except Exception as e:
-        logger.error(f"获取项目组月计划包失败: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"获取项目组月计划包失败: {str(e)}"
-        )
+    packages = []
+    for department_id, department_plans in grouped.items():
+        department = db.get(Department, department_id) if department_id != "0" else None
+        approved = [p for p in department_plans if p.status == "approved"]
+        pending = [p for p in department_plans if p.status != "approved"]
+        status = "EMPTY" if not department_plans else ("OPEN" if not pending else "PENDING")
+        packages.append(ProjectMonthPlanPackage(
+            groupId=department_id,
+            groupName=department.name if department else "未归属部门",
+            departmentName=department.name if department else None,
+            planMonth=plan_month,
+            totalMemberCount=len(department_plans),
+            approvedCount=len(approved),
+            contentAvailable=bool(department_plans) and not pending,
+            status=status,
+            pendingMembers=[PendingMember(employeeName=p.owner.name if p.owner else "未知员工", employeeNo=p.owner.login_account if p.owner else None, statusLabel=p.status) for p in pending],
+        ))
+    return packages
 
 
 @router.get("/project-month-plan-packages/{group_id}", response_model=ProjectMonthPlanPackageDetail)
 async def get_project_month_plan_package(
     group_id: str,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
     plan_month: str | None = Query(None, alias="planMonth"),
 ):
-    """获取项目组完整月计划详情"""
+    """获取可见部门的真实月计划详情。"""
     plan_month = _normalize_plan_month(plan_month)
-    try:
-        # 简化实现：返回模拟详情数据
-        package_info = ProjectMonthPlanPackage(
-            groupId=group_id,
-            groupName="产品研发组",
-            departmentName="技术部",
-            planMonth=plan_month,
-            totalMemberCount=3,
-            approvedCount=3,
-            contentAvailable=True,
-            status="OPEN",
-        )
+    department = db.get(Department, group_id)
+    if department is None:
+        raise HTTPException(status_code=404, detail="部门不存在")
+    scope = _approval_scope(current_user, db)
+    query = db.query(MonthPlan).options(joinedload(MonthPlan.items)).join(
+        Employee, Employee.id == MonthPlan.owner_id
+    ).filter(MonthPlan.plan_month == plan_month, Employee.department_id == group_id)
+    rows = query.order_by(MonthPlan.updated_at.desc()).all()
+    plans = [p for p in rows if plan_approval._owner_in_scope(db, p.owner_id, scope, p.owner)]
+    if not plans:
+        raise HTTPException(status_code=403, detail="无权查看该部门的月计划")
 
-        plans = [
-            ProjectMonthPlan(
-                id="plan_001",
-                employeeName="张三",
-                employeeNo="E001",
-                version=1,
-                approvedAt="2026-11-10T14:30:00",
-                approverName="王主管",
-                leaderComment="同意",
-                items=[
-                    ProjectMonthPlanItem(
-                        id="item_001",
-                        taskName="功能开发",
-                        taskContent="实现用户认证模块",
-                        deliverable="认证系统代码",
-                        quality="覆盖率 >80%",
-                        performanceWeight=30,
-                        estimatedValue=5000.0,
-                        estimatedStartDate="2026-11-01",
-                        estimatedEndDate="2026-11-15",
-                    ),
-                    ProjectMonthPlanItem(
-                        id="item_002",
-                        taskName="代码审查",
-                        taskContent="审查团队代码质量",
-                        deliverable="审查报告",
-                        quality="无严重问题",
-                        performanceWeight=20,
-                        estimatedValue=3000.0,
-                        estimatedStartDate="2026-11-16",
-                        estimatedEndDate="2026-11-30",
-                    ),
-                ]
-            ),
-            ProjectMonthPlan(
-                id="plan_002",
-                employeeName="李四",
-                employeeNo="E002",
-                version=1,
-                approvedAt="2026-11-09T09:15:00",
-                approverName="王主管",
-                leaderComment="同意",
-                items=[
-                    ProjectMonthPlanItem(
-                        id="item_003",
-                        taskName="API 开发",
-                        taskContent="实现 RESTful API 接口",
-                        deliverable="API 文档及实现",
-                        quality="符合公司规范",
-                        performanceWeight=40,
-                        estimatedValue=6000.0,
-                        estimatedStartDate="2026-11-01",
-                        estimatedEndDate="2026-11-30",
-                    ),
-                ]
-            ),
-            ProjectMonthPlan(
-                id="plan_003",
-                employeeName="王五",
-                employeeNo="E003",
-                version=1,
-                approvedAt="2026-11-11T16:45:00",
-                approverName="王主管",
-                leaderComment="同意",
-                items=[
-                    ProjectMonthPlanItem(
-                        id="item_004",
-                        taskName="测试计划",
-                        taskContent="编写测试用例及执行",
-                        deliverable="测试报告",
-                        quality="覆盖率 >90%",
-                        performanceWeight=50,
-                        estimatedValue=4000.0,
-                        estimatedStartDate="2026-11-15",
-                        estimatedEndDate="2026-11-30",
-                    ),
-                ]
-            ),
-        ]
-
-        return ProjectMonthPlanPackageDetail(
-            packageInfo=package_info,
-            plans=plans
-        )
-    except Exception as e:
-        logger.error(f"获取项目组月计划包详情失败: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"获取项目组月计划包详情失败: {str(e)}"
-        )
+    approvals = db.query(PlanApproval).filter(
+        PlanApproval.plan_type == plan_approval.PLAN_TYPE_MONTH,
+        PlanApproval.plan_id.in_([p.id for p in plans]),
+    ).order_by(PlanApproval.created_at.desc()).all()
+    latest_approval = {}
+    for approval in approvals:
+        latest_approval.setdefault(approval.plan_id, approval)
+    approved = [p for p in plans if p.status == "approved"]
+    pending = [p for p in plans if p.status != "approved"]
+    package = ProjectMonthPlanPackage(
+        groupId=group_id,
+        groupName=department.name,
+        departmentName=department.name,
+        planMonth=plan_month,
+        totalMemberCount=len(plans),
+        approvedCount=len(approved),
+        contentAvailable=bool(plans) and not pending,
+        status="OPEN" if plans and not pending else ("PENDING" if plans else "EMPTY"),
+        pendingMembers=[PendingMember(employeeName=p.owner.name if p.owner else "未知员工", employeeNo=p.owner.login_account if p.owner else None, statusLabel=p.status) for p in pending],
+    )
+    details = []
+    for plan in plans:
+        approval = latest_approval.get(plan.id)
+        details.append(ProjectMonthPlan(
+            id=plan.id,
+            employeeName=plan.owner.name if plan.owner else "未知员工",
+            employeeNo=plan.owner.login_account if plan.owner else None,
+            version=plan.version_no,
+            approvedAt=plan.approved_at.isoformat() if plan.approved_at else None,
+            approverName=(db.get(Employee, approval.actor_id).name if approval and db.get(Employee, approval.actor_id) else None),
+            leaderComment=approval.comment if approval else plan.approval_comment,
+            items=[ProjectMonthPlanItem(
+                id=item.id,
+                taskName=item.task_name,
+                taskContent=item.task_content,
+                deliverable=item.deliverable,
+                quality=item.quality,
+                performanceWeight=round(item.performance_weight),
+                estimatedValue=item.estimated_value,
+                estimatedStartDate=item.estimated_start_date.isoformat() if item.estimated_start_date else None,
+                estimatedEndDate=item.estimated_end_date.isoformat() if item.estimated_end_date else None,
+            ) for item in plan.items],
+        ))
+    return ProjectMonthPlanPackageDetail(packageInfo=package, plans=details)
 
 
 # ── 项目组成果包（真实数据实现）───────────────────────────────────────────

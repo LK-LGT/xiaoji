@@ -63,6 +63,7 @@ jobs:
           #    而 Alembic（backend/ 目录运行）会解析到 <root>/backend/data/。
           #    两者指向不同文件会让 schema 校验查空库。
           echo "DATABASE_URL=sqlite:///${{ github.workspace }}/data/_ci_backend.db" >> "$GITHUB_ENV"
+          echo "ALEMBIC_EXPECT_TARGET=sqlite:${{ github.workspace }}/data/_ci_backend.db" >> "$GITHUB_ENV"
           # 关闭自动建表 —— schema 交给 Alembic 管理
           echo "AUTO_CREATE_TABLES=false" >> "$GITHUB_ENV"
           # CI 无需真实模型与飞书凭据

@@ -1083,9 +1083,17 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgb(216 137 53 / 38%)
   transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease, transform .18s ease;
 }
 
+/* ⚠️ 这里**刻意不用** `isolation: isolate`。
+   它会创建一个新的层叠上下文，把 `el-dialog` / `el-drawer` 的
+   遮罩与浮层关进页面容器里 —— 侧边栏（z-index: 20）
+   于是盖在弹窗之上，弹窗左半边被导航挡住。
+
+   改为：装饰层用 `z-index: -1` + 容器 `z-index: 0` 保持原有效果，
+   但**不**隔离层叠上下文，浮层仍能挂到 body 上正常显示。
+   （浮层若未 `append-to-body`，需自行在页面内保证 z-index 高于侧边栏。）
 .page-panel {
   position: relative;
-  isolation: isolate;
+  z-index: 0;
 }
 
 .page-panel::after {
@@ -1566,5 +1574,209 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgb(216 137 53 / 38%)
 
   .el-dialog {
     width: calc(100% - 24px) !important;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   全局响应式适配
+   ─────────────────────────────────────────────────────────────
+   解决的问题：
+   1. 浏览器缩窄后，侧边栏仍固定占 268px，工作区被挤到视口外；
+   2. 页面/表格/弹窗/抽屉采用固定宽度，窄屏时内容溢出并被裁切；
+   3. 浮层宽度基于整个视口，无法与右侧工作区对齐。
+
+   策略：
+   - 1180px 起，侧边栏改为可收起抽屉，主内容独占视口；
+   - 所有浮层使用视口安全宽度，最大高度不超过视口；
+   - 表格容器允许横向滚动，不再把整个页面撑宽；
+   - 顶部操作区、表单栅格、通知面板在窄屏下自动换行。
+   ───────────────────────────────────────────────────────────── */
+@media (max-width: 1180px) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 2100;
+    width: min(275px, 86vw);
+    transform: translateX(-100%);
+    transition: transform .22s ease;
+  }
+  .sidebar.sidebar--open {
+    transform: translateX(0);
+  }
+
+  .sidebar-close,
+  .mobile-menu {
+    display: block;
+  }
+
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2050;
+    background: rgb(12 28 43 / 42%);
+  }
+
+  .main {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: clip;
+  }
+
+  .topbar-actions {
+    flex-shrink: 0;
+  }
+
+  .breadcrumbs {
+    overflow: hidden;
+  }
+
+  /* 未 append-to-body 的弹窗/抽屉仍留在页面容器里，
+     需保证层级高于侧边栏，否则会被导航遮住。 */
+  .el-overlay {
+    z-index: 2050;
+  }
+
+  .el-drawer {
+    z-index: 2051;
+  }
+
+  .el-dialog {
+    width: min(720px, calc(100vw - 32px)) !important;
+    max-width: calc(100vw - 32px) !important;
+    max-height: calc(100dvh - 32px);
+    margin: 0 auto;
+  }
+
+  .el-drawer {
+    width: min(720px, 100vw) !important;
+    max-width: 100vw;
+  }
+
+  .el-drawer__body {
+    min-height: 0;
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 900px) {
+  .main {
+    padding: 0 16px 20px;
+  }
+
+  .topbar {
+    margin: 0 -16px 16px;
+    padding: 0 16px;
+  }
+
+  .page-panel {
+    padding: 20px;
+  }
+
+  .page-header,
+  .workbench-header,
+  .section-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .page-header .actions,
+  .page-header .toolbar,
+  .workbench-header .actions,
+  .workbench-header .toolbar {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 600px) {
+  html,
+  body,
+  #app {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .main {
+    padding: 0 12px 16px;
+  }
+
+  .topbar {
+    min-height: 60px;
+    margin: 0 -12px 12px;
+    padding: 0 12px;
+  }
+
+  .topbar-left {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .topbar-user,
+  .topbar-divider {
+    display: none;
+  }
+
+  .notification-panel {
+    position: fixed;
+    top: 66px;
+    right: 12px;
+    width: min(390px, calc(100vw - 24px));
+  }
+
+  .page-panel {
+    padding: 16px;
+  }
+
+  /* 表格在自身容器内横向滚动，不撑破页面 */
+  .table-card,
+  .dashboard-section:has(.el-table),
+  .section-card:has(.el-table),
+  .el-table {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .table-card,
+  .dashboard-section:has(.el-table),
+  .section-card:has(.el-table) {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  /* Element Plus 浮层：统一限制在视口安全区域内 */
+  .el-overlay-dialog {
+    padding: 12px;
+    box-sizing: border-box;
+  }
+
+  .el-dialog {
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px) !important;
+    max-height: calc(100dvh - 24px);
+    margin: 0 !important;
+  }
+
+  .el-drawer {
+    width: 100vw !important;
+    max-width: 100vw;
+  }
+
+  .el-drawer__body {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .el-dialog__body {
+    max-height: calc(100dvh - 170px);
+    overflow-y: auto;
+  }
+
+  .el-dialog__footer {
+    padding-bottom: 16px;
   }
 }

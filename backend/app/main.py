@@ -61,11 +61,19 @@ logging.basicConfig(
 #: 由 ruff 的 F821（undefined name）查出。
 logger = logging.getLogger(__name__)
 
+from .routes.schemes import router as schemes_router  # noqa: E402
+
 app = FastAPI(
     title="员工绩效管理 - 业务后端",
     version="0.1.0",
     description="唯一事实源。数字只在这里产生；AI 只做判断与写作。",
 )
+
+
+app.include_router(schemes_router)
+from .routes.review_center import router as review_center_router  # noqa: E402
+
+app.include_router(review_center_router)
 
 
 @app.middleware("http")
@@ -433,6 +441,9 @@ except Exception as e:
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    from .services.notification_scheduler import start as start_notifications
+
+    start_notifications()
     try:
         from .services.feishu_scheduler import start_scheduler
         start_scheduler()
@@ -458,6 +469,9 @@ def _shutdown() -> None:
     因为当前这一轮同步可能正在执行（可能要几十秒），
     强杀会打断批次落库。daemon 线程在进程退出时会被自动回收。
     """
+    from .services.notification_scheduler import stop as stop_notifications
+
+    stop_notifications()
     try:
         from .services.feishu_scheduler import stop_scheduler
         stop_scheduler()
@@ -724,6 +738,10 @@ def create_assessment_task(
                 field="target_employee_ids"
             )
 
+        from .domain.scheme_models import PerformanceScheme
+        if db.query(PerformanceScheme.id).first() is not None:
+            raise HTTPException(status_code=409, detail="已启用HR方案版本，请从考核方案管理发起考核，以冻结员工适用方案")
+
         # 验证被评员工都存在
         employees = db.query(Employee).filter(
             Employee.id.in_(request.target_employee_ids)
@@ -863,6 +881,8 @@ def create_assessment_task(
             department_id=None,  # 跨部门考核时为 None
             position=None,
             status="created",  # 初始状态
+            self_review_deadline=self_review_dt,
+            manager_review_deadline=manager_review_dt,
             rating_policy="reference_only",  # Mock 政策：参考类证据仅参考不计分
             snapshot_id=config_snapshot.id,
             owner_id=current_user.id,  # 由当前 HR 用户创建
@@ -891,6 +911,10 @@ def create_assessment_task(
 
         db.add_all(records)
         db.flush()
+        from .services.notification_service import record_event
+
+        for record in records:
+            record_event(db, record, "N9")
 
         # ─────────────────────────────────────────────────────────────
         # 6. 提交事务
@@ -1204,6 +1228,14 @@ def validate_citations(
 # └─────────────────────────────────────────────────────┘
 
 
+from .routes.agent_tools import router as agent_tools_router  # noqa: E402
+
+app.include_router(agent_tools_router)
+from .routes.qa import router as qa_router  # noqa: E402
+
+app.include_router(qa_router)
+
+
 @app.post("/v1/api/qa/query", tags=["QA"])
 def query_assessment_data(
     request: schemas.QAQueryRequest,
@@ -1259,7 +1291,7 @@ def query_assessment_data(
         elif request.query_type == "colleague_result":
             # 主管查下级，或 HR 查任何人
             dependencies.check_can_view_score(
-                current_user,
+                current_user.id,
                 request.target_employee_id,
                 db
             )
@@ -1271,10 +1303,22 @@ def query_assessment_data(
             data = result_data.model_dump()
 
         elif request.query_type == "peer_performance_distribution":
-            # 部门汇总（权限检查：只能查自己部门）
+            # 查看某位下属不等于有权查看该下属整个部门的聚合数据。
             target_emp = db.get(Employee, request.target_employee_id)
             if not target_emp:
                 raise exceptions.RecordNotFound("Employee", request.target_employee_id)
+
+            context = build_access_context(db, current_user)
+            if not (
+                context.has_permission(PermissionAction.VIEW_ALL_SCORES)
+                or target_emp.department_id in context.employee_department_ids
+                or target_emp.department_id in context.managed_department_ids
+            ):
+                raise exceptions.PermissionDenied(
+                    current_user.id,
+                    "query peer_performance_distribution",
+                    f"department:{target_emp.department_id}",
+                )
 
             summary_data = qa_service.query_department_summary(
                 target_emp.department_id,
@@ -1297,6 +1341,15 @@ def query_assessment_data(
             citations=["AssessmentRecord", "Score", "MetricValue"]
         )
 
+        if request.query_type in {"self_result", "colleague_result"}:
+            result_quality = data.get("score", {}).get("data_quality")
+            data_quality = schemas.DataQualityInfo.model_validate(result_quality) if result_quality else schemas.DataQualityInfo(
+                completeness=0,
+                as_of=datetime.now().isoformat(),
+                degraded=True,
+                degrade_reason="暂无评分结果",
+                citations=["AssessmentRecord"],
+            )
         return {
             "query_type": request.query_type,
             "data": data,
