@@ -33,10 +33,12 @@ from sqlalchemy.orm import Session
 
 from ..domain.feishu_scheme_models import FeishuSchemeSource
 from ..domain.models import Department, _now
+from .feishu_client import FeishuError
 from .feishu_docs import (
     DocsContentUnavailable,
     DocsPermissionError,
     FeishuDocsClient,
+    is_scope_denied,
 )
 
 logger = logging.getLogger(__name__)
@@ -372,16 +374,39 @@ class SchemeSourceService:
         }
 
     def _list_space_nodes(self, space_id: str) -> list[dict[str, Any]]:
-        """列出空间下的节点（分页）。"""
+        """列出空间下的节点（分页）。
+
+        ⚠️ **两种「没权限」要分开说**
+        - ``99991672`` → 应用**没申请** ``wiki:wiki:readonly`` scope
+        - ``131006``   → scope 有，但**应用没被加入这个知识空间**
+          （需要在知识库设置里把应用加为成员）
+
+        后者更常见 —— scope 批了不等于能读任意空间。
+        """
         nodes: list[dict[str, Any]] = []
         page_token = ""
         for _ in range(50):
             params: dict[str, Any] = {"page_size": 50}
             if page_token:
                 params["page_token"] = page_token
-            data = self.docs.client._request(
-                "GET", f"/wiki/v2/spaces/{space_id}/nodes", params=params
-            )
+            try:
+                data = self.docs.client._request(
+                    "GET", f"/wiki/v2/spaces/{space_id}/nodes", params=params
+                )
+            except FeishuError as exc:
+                if exc.code == 131006:
+                    raise DocsPermissionError(
+                        "应用未被加入该飞书知识空间（需在知识库设置里把应用加为成员），"
+                        f"空间 {space_id}",
+                        code=exc.code,
+                    ) from exc
+                if is_scope_denied(exc):
+                    raise DocsPermissionError(
+                        f"缺少 wiki 空间读权限：{exc.message}", code=exc.code
+                    ) from exc
+                raise DocsContentUnavailable(
+                    f"读取飞书知识空间失败：{exc.message}"
+                ) from exc
             nodes.extend(data.get("items") or [])
             page_token = str(data.get("page_token") or "")
             if not page_token:

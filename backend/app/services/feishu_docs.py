@@ -63,8 +63,19 @@ class DocsContentUnavailable(FeishuError):
     """文档存在但正文取不到（对象被删 / 无协作权限 / 类型不支持）。"""
 
 
-def _is_scope_denied(exc: FeishuError) -> bool:
+def is_scope_denied(exc: FeishuError) -> bool:
+    """这个错误是不是「应用身份缺权限」。
+
+    ⚠️ **注意与 ``131006`` 区分** ——
+    ``99991672`` = 没申请 scope；
+    ``131006``   = scope 有，但应用没被加入该知识空间。
+    两者处理方式不同，所以单独判。
+    """
     return exc.code in SCOPE_DENIED_CODES
+
+
+#: 兼容旧名（内部调用点较多，统一保留别名避免大面积改动）。
+_is_scope_denied = is_scope_denied
 
 
 class FeishuDocsClient:
@@ -151,8 +162,20 @@ class FeishuDocsClient:
     # ── 路径 A1：导出任务 ──────────────────────────────────────
 
     def _fetch_via_export(self, obj_token: str, obj_type: str) -> tuple[bytes, str]:
-        """用 ``drive/v1/export_tasks`` 把云文档导出成文件再下载。"""
-        extension = "xlsx" if obj_type == OBJ_TYPE_SHEET else "docx"
+        """用 ``drive/v1/export_tasks`` 把云文档导出成文件再下载。
+
+        ⚠️ **``type`` 必须是飞书认识的类型名**
+        官方可选值：``docx``（新版云文档）/ ``doc``（旧版，已废弃）/
+        ``sheet`` / ``bitable``。传错会报 ``1069914 file token invalid``
+        或 ``1069918 file extension mismatch``。
+        ⇒ 统一映射到受支持的类型，不直接透传 ``obj_type``。
+        """
+        export_type = {
+            OBJ_TYPE_SHEET: "sheet",
+            OBJ_TYPE_DOCX: "docx",
+            OBJ_TYPE_FILE: "docx",  # file 是云空间里的文件，按新版云文档导出
+        }.get(obj_type, "docx")
+        extension = "xlsx" if export_type == "sheet" else "docx"
         try:
             data = self.client._request(
                 "POST",
@@ -160,7 +183,7 @@ class FeishuDocsClient:
                 json={
                     "file_extension": extension,
                     "token": obj_token,
-                    "type": obj_type,
+                    "type": export_type,
                 },
             )
         except FeishuError as exc:
@@ -176,20 +199,36 @@ class FeishuDocsClient:
         if not ticket:
             raise DocsContentUnavailable("飞书未返回导出任务票据")
 
-        result = self._poll_export(ticket)
+        result = self._poll_export(ticket, obj_token)
         file_token = str(result.get("file_token") or "")
         if not file_token:
             raise DocsContentUnavailable("飞书导出任务未产出文件")
         content = self.download_drive_file(file_token)
         return content, f"feishu_scheme.{extension}"
 
-    def _poll_export(self, ticket: str, *, max_attempts: int = 10) -> dict[str, Any]:
-        """轮询导出任务直到完成。"""
+    def _poll_export(
+        self, ticket: str, obj_token: str, *, max_attempts: int = 12
+    ) -> dict[str, Any]:
+        """轮询导出任务直到完成。
+
+        ⚠️ **必须带 ``token`` 查询参数** —— 官方文档明确要求：
+        ``GET /drive/v1/export_tasks/{ticket}?token={云文档 token}``。
+        漏掉会返回 ``99992402 field validation failed``。
+
+        ⚠️ **``job_status`` 是整数**
+            0=成功  1=初始化  2=处理中  3=内部错误
+            107=文档过大  108=超时  109=内容块无权限  110=无权限
+            111=文档已删除  122=禁止导出副本  123=文档不存在  6000=图片过多
+        """
         import time
 
         for attempt in range(max_attempts):
             try:
-                data = self.client._request("GET", f"/drive/v1/export_tasks/{ticket}")
+                data = self.client._request(
+                    "GET",
+                    f"/drive/v1/export_tasks/{ticket}",
+                    params={"token": obj_token},
+                )
             except FeishuError as exc:
                 if _is_scope_denied(exc):
                     raise DocsPermissionError(
@@ -197,14 +236,24 @@ class FeishuDocsClient:
                     ) from exc
                 raise
             result = data.get("result") or {}
-            state = str(result.get("job_status") or result.get("state") or "")
-            if state in ("0", "completed", "success"):
+            # ⚠️ job_status 可能是 int，也可能是字符串（不同版本飞书不一致）。
+            # 统一转 int 再比较 —— 直接比字符串会漏掉 int 0（成功）。
+            raw_status = result.get("job_status")
+            try:
+                status = int(raw_status)
+            except (TypeError, ValueError):
+                status = -1
+            if status == 0:
                 return result
-            if state in ("2", "failed", "cancelled"):
-                raise DocsContentUnavailable(
-                    f"飞书导出任务失败：{result.get('job_error_msg') or state}"
-                )
-            time.sleep(1.0 + attempt * 0.5)
+            if status in (1, 2):
+                # 初始化 / 处理中 —— 继续等。
+                time.sleep(1.0 + attempt * 0.5)
+                continue
+            # 其余都是终态失败。
+            raise DocsContentUnavailable(
+                f"飞书导出任务失败（状态 {status}）："
+                f"{result.get('job_error_msg') or '无详细原因'}"
+            )
         raise DocsContentUnavailable("飞书导出任务超时")
 
     # ── 路径 A2：docx blocks 自组装 ────────────────────────────
@@ -268,29 +317,73 @@ class FeishuDocsClient:
         return "".join(parts).strip()
 
     @staticmethod
-    def _block_table(block: dict[str, Any]) -> list[list[str]]:
+    def _cell_text(cell_block: dict[str, Any]) -> str:
+        """取一个单元格块里的文本。
+
+        ⚠️ **飞书表格的真实结构**（2026-11-20 实测）：
+        ``table.cells`` 里放的是**单元格 block_id 的字符串列表**，
+        不是单元格对象。单元格本身是另一个块（``block_type=32``，
+        即 ``table_cell``），它的文字在 ``children`` 指向的
+        **子块**（``block_type=2`` 文本块）里。
+
+        ⇒ 必须两跳：cell block → children → text block → elements
+        """
+        parts: list[str] = []
+        for child in cell_block.get("children") or []:
+            # child 是 block_id 字符串 —— 内容由调用方回填到 child_texts
+            if isinstance(child, str):
+                continue
+            if isinstance(child, dict):
+                parts.append(FeishuDocsClient._block_text(child))
+        return "".join(parts).strip()
+
+    def _block_table(
+        self, block: dict[str, Any], blocks_by_id: dict[str, dict[str, Any]]
+    ) -> list[list[str]]:
         """取表格块的二维文本。
 
-        ⚠️ 飞书表格块用**嵌套**结构：
-        ``table.cells[].body[].elements[].text_run.content``
-        —— 中间隔了两层，不能只取一层。
+        ⚠️ **必须按 block_id 回查** —— ``table.cells`` 只是 id 列表，
+        直接当对象用会抛 ``'str' object has no attribute 'get'``。
+
+        ⚠️ **单元格文本要再下钻一层**
+        cell block（type=32）的文字不在自己身上，而在它的**子块**
+        （type=2 文本块）里 —— 飞书把 cell 内容包成了独立块。
         """
         table = block.get("table") or {}
-        cells = table.get("cells") or []
+        cell_ids = table.get("cells") or []
+        if not cell_ids:
+            return []
+        property_ = table.get("property") or {}
+        column_size = int(property_.get("column_size") or 0) or 1
+
+        flat: list[str] = []
+        for cell_id in cell_ids:
+            cell_block = blocks_by_id.get(str(cell_id))
+            if cell_block is None:
+                flat.append("")
+                continue
+            flat.append(self._cell_text_with_lookup(cell_block, blocks_by_id))
+
+        # 按列数还原成二维
         rows: list[list[str]] = []
-        for cell in cells:
-            body = cell.get("body") or {}
-            elements = body.get("elements") or []
-            parts: list[str] = []
-            for element in elements:
-                if not isinstance(element, dict):
-                    continue
-                run = element.get("text_run") or {}
-                content = str(run.get("content") or "")
-                if content:
-                    parts.append(content)
-            rows.append(["".join(parts).strip()])
+        for index in range(0, len(flat), column_size):
+            rows.append(flat[index : index + column_size])
         return rows
+
+    def _cell_text_with_lookup(
+        self, cell_block: dict[str, Any], blocks_by_id: dict[str, dict[str, Any]]
+    ) -> str:
+        """取单元格文本 —— 下钻到它的子块（文本块）。"""
+        parts: list[str] = []
+        for child_id in cell_block.get("children") or []:
+            child = blocks_by_id.get(str(child_id))
+            if child is None:
+                continue
+            if int(child.get("block_type") or 0) == 2:
+                text = self._block_text(child)
+                if text:
+                    parts.append(text)
+        return "".join(parts).strip()
 
     def _blocks_to_docx(self, blocks: list[dict[str, Any]]) -> bytes:
         """把 blocks 组装成最小可解析 docx。
@@ -298,16 +391,46 @@ class FeishuDocsClient:
         ⚠️ 只保留**正文段落**与**表格文本** —— 不重建样式、不重建图片。
         目的只有一个：让 ``scheme_document.parse_document`` 能识别
         「考核指标 / 分值 / 评分标准」表头，走既有的解析链路。
+
+        ⚠️ **表格必须有表头行** —— 没有表头行，
+        ``parse_document`` 认不出哪列是「考核指标」、哪列是「分值」，
+        整张表会被当成无结构文本丢掉。
+
+        ⚠️ **必须过滤掉表格内部的子块**
+        飞书的表格 cell 里装着**独立的文本块**（block_type=2）。
+        这些块的 ``parent_id`` 指向 cell，不是文档根。
+        若不筛掉，它们会被当成正文段落重复输出 ——
+        实测表现为「表格里每个单元格的内容在正文又出现一遍」。
         """
+        blocks_by_id = {
+            str(block.get("block_id")): block for block in blocks if block.get("block_id")
+        }
+        # 收集「被表格 cell 引用」的块 id —— 这些是表格内容，不是正文。
+        inside_table: set[str] = set()
+        for block in blocks:
+            if int(block.get("block_type") or 0) == 31:
+                table = block.get("table") or {}
+                for cell_id in table.get("cells") or []:
+                    cell = blocks_by_id.get(str(cell_id))
+                    if cell is None:
+                        continue
+                    inside_table.add(str(cell_id))
+                    for child_id in cell.get("children") or []:
+                        inside_table.add(str(child_id))
+
         body_parts: list[str] = []
         for block in blocks:
             block_type = int(block.get("block_type") or 0)
+            block_id = str(block.get("block_id") or "")
             if block_type == 31:  # table
-                rows = self._block_table(block)
+                rows = self._block_table(block, blocks_by_id)
                 if not rows:
                     continue
                 body_parts.append(self._docx_table_xml(rows))
             elif block_type == 2:  # text
+                # ⚠️ 跳过表格内部的文本块 —— 否则内容会重复一遍。
+                if block_id and block_id in inside_table:
+                    continue
                 text = self._block_text(block)
                 if text:
                     body_parts.append(self._docx_paragraph_xml(text))
@@ -326,14 +449,24 @@ class FeishuDocsClient:
 
     @staticmethod
     def _docx_table_xml(rows: list[list[str]]) -> str:
-        cells_xml: list[str] = []
+        """把二维表格渲染成 docx 表格 XML。
+
+        ⚠️ **必须渲染每一列** —— 只渲染第一列会把
+        「指标 / 分值 / 评分标准」压成一列，
+        ``parse_document`` 就认不出列含义了。
+        """
+        row_xml: list[str] = []
         for row in rows:
-            cell = row[0] if row else ""
-            safe = str(cell).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            cells_xml.append(
-                f'<w:tc><w:p><w:r><w:t xml:space="preserve">{safe}</w:t></w:r></w:p></w:tc>'
-            )
-        return f"<w:tbl><w:tr>{''.join(cells_xml)}</w:tr></w:tbl>"
+            cells: list[str] = []
+            for cell in row:
+                safe = (
+                    str(cell).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                )
+                cells.append(
+                    f'<w:tc><w:p><w:r><w:t xml:space="preserve">{safe}</w:t></w:r></w:p></w:tc>'
+                )
+            row_xml.append(f"<w:tr>{''.join(cells)}</w:tr>")
+        return f"<w:tbl>{''.join(row_xml)}</w:tbl>"
 
     @staticmethod
     def _build_docx_package(document_xml: str) -> bytes:
@@ -487,5 +620,6 @@ __all__ = [
     "DocsContentUnavailable",
     "DocsPermissionError",
     "FeishuDocsClient",
+    "is_scope_denied",
     "build_docs_client",
 ]
