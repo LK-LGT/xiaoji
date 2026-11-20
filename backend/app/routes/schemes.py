@@ -491,6 +491,95 @@ def _scheme_result(db, record_id):
     }
 
 
+@router.get("/scheme-records/{record_id}/verification")
+def record_verification(
+    record_id: str, user: Employee = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    """网盘实测值 vs 员工申报值 —— **只提示，不判定，不自动改分**。
+
+    主管在评分页调这个端点，看到「申报 6 条 / 实测 5 条」，
+    自己判断是口径问题还是申报问题。
+
+    ⚠️ **差异不产生任何分数影响** —— 与 ``semantic_qc`` /
+    ``distribution_qc`` 口径一致：数据源只提供依据，判定权在人。
+    """
+    from ..domain.baidu_pan_models import BaiduPanCount
+    from ..services.baidu_pan_service import SOURCE_CODE, compare_with_report
+
+    record, employee, ctx, form, response = response_context(db, user, record_id)
+    own = record.employee_id == user.id
+
+    # ⚠️ 员工**本人**也能看自己的核对结果 —— 这是他的数据。
+    # 主管/HR 也能看（``response_context`` 已经做过权限校验）。
+    payload = form["scheme_payload"]
+    metrics = payload.get("metrics") or []
+
+    # 取最新的计数快照（覆盖周期窗口）。
+    snapshot = db.scalar(
+        select(BaiduPanCount)
+        .where(BaiduPanCount.source_code == SOURCE_CODE)
+        .order_by(BaiduPanCount.window_end.desc())
+        .limit(1)
+    )
+
+    reported_values = (response.values if response else {}) or {}
+    metric_values = (response.metric_values if response else {}) or {}
+
+    items: list[dict[str, Any]] = []
+    for metric in metrics:
+        code = metric.get("code")
+        if not code:
+            continue
+        # 员工申报的「实际完成值」—— ratio 型指标在 metric_values 里。
+        reported = None
+        mv = metric_values.get(code)
+        if isinstance(mv, dict):
+            reported = mv.get("actual")
+        if reported in (None, ""):
+            reported = reported_values.get(f"actual_{code}")
+        if reported in (None, ""):
+            continue
+
+        actual = None
+        if snapshot is not None:
+            # ⚠️ 网盘是**部门级**计数，不是个人级 —— 只有当指标配了
+            #    部门维度时才可比。这里保守处理：只报部门总量，
+            #    由主管自己判断归属，不做自动匹配。
+            actual = None
+
+        items.append(
+            {
+                "metric_code": code,
+                "metric_name": metric.get("name"),
+                "reported": reported,
+                "actual": actual,
+                "comparison": compare_with_report(reported, actual),
+            }
+        )
+
+    return ok(
+        {
+            "record_id": record.id,
+            "is_own": own,
+            "snapshot": {
+                "window_start": snapshot.window_start,
+                "window_end": snapshot.window_end,
+                "total": snapshot.total,
+                "daily_counts": snapshot.daily_counts or {},
+                "as_of": snapshot.as_of.isoformat() if snapshot.as_of else None,
+                "scanned_path": snapshot.scanned_path,
+            }
+            if snapshot
+            else None,
+            "items": items,
+            "notice": (
+                "网盘计数为**部门级**总量，未按人拆分；"
+                "差异提示仅供参考，不产生任何分数影响，请人工评定。"
+            ),
+        }
+    )
+
+
 @router.get("/scheme-records/{record_id}")
 def record_form(
     record_id: str, user: Employee = Depends(get_current_user), db: Session = Depends(get_db)
