@@ -87,11 +87,28 @@ def _card_texts(card: dict) -> list[str]:
 # ===========================================================================
 
 
-def test_qa_ai_card_renders_answer_as_plain_text():
-    """⚠️ 答案必须是 ``plain_text`` —— 不是 ``markdown``。
+def test_qa_ai_card_renders_answer_as_sanitized_markdown():
+    """⚠️ 答案用 ``markdown`` 渲染，但**必须先清洗**。
 
-    markdown 元素会解析 ``<at>`` / 链接，模型输出可能被渲染成
+    ⚠️ **为什么改成 markdown**
+    --------------------------
+    原来用 ``plain_text`` 直出，代价是 **Markdown 源码全部外泄** ——
+    用户看到 ``| 指标 | 权重 |``、``**加粗**`` 这些符号本身。
+    一张卡片 14 行竖线，可读性极差。
+
+    ⇒ 改用 ``markdown`` 元素保留格式。
+
+    ⚠️ **但安全不能丢**
+    ------------------
+    ``markdown`` 会解析 ``<at>`` / 链接，模型输出可能被渲染成
     「@某人」或外链，让用户误以为是系统发的通知。
+    ⇒ 所以必须**先清洗再渲染**（见 ``feishu_card_render.sanitize_markdown``）。
+
+    ⚠️ **飞书 JSON 2.0 的结构要求**
+    -----------------------------
+    ``markdown`` 是**元素本身**（``{"tag":"markdown","content":...}``），
+    **不能**包在 ``div`` 的 text 里 —— 那样飞书会**拒收整张卡**：
+    ``type of element is not supported tag: markdown``。
     """
     card = feishu_card.build_qa_ai_card(
         answer="你的得分是 88 分。",
@@ -100,9 +117,25 @@ def test_qa_ai_card_renders_answer_as_plain_text():
         period="202611",
     )
     tags = [element.get("tag") for element in card["body"]["elements"]]
-    assert "markdown" not in tags
+    assert "markdown" in tags
+    # ⚠️ 绝不能是 div 包 markdown —— 飞书会拒收
+    assert not any(
+        element.get("tag") == "div"
+        and (element.get("text") or {}).get("tag") == "markdown"
+        for element in card["body"]["elements"]
+    )
     # 答案内容确实在卡片里
     assert any("88 分" in content for content in _card_texts(card))
+
+
+def test_qa_ai_card_sanitizes_dangerous_markdown():
+    """⚠️ markdown 渲染 ⇒ 必须清洗危险语法。"""
+    card = feishu_card.build_qa_ai_card(
+        answer='<at user_id="ou_x">李四</at> 你的得分是 88 分',
+    )
+    raw = str(card)
+    assert "<at" not in raw
+    assert "李四" not in raw
 
 
 def test_qa_ai_card_cleans_malicious_source_ids():
