@@ -64,7 +64,7 @@ from sqlalchemy.orm import Session
 from ..core.config import settings
 from ..core.db import get_db
 from ..domain.bot_models import BotSession
-from ..services import feishu_bot, feishu_card, feishu_event
+from ..services import feishu_bot, feishu_card, feishu_event, feishu_intent
 from ..services.feishu_client import FeishuClient
 from ..services.feishu_identity_service import FeishuIdentityService
 
@@ -404,12 +404,17 @@ async def _read_verified_body(request: Request) -> dict[str, Any]:
 # ===========================================================================
 
 
-def _handle_message_event(
+async def _handle_message_event(
     db: Session,
     client: FeishuClient,
     body: dict[str, Any],
 ) -> dict[str, Any]:
-    """处理员工消息：意图路由 → 回卡片。"""
+    """处理员工消息：意图路由 → 回卡片。
+
+    ⚠️ **async 的原因**：`performance_qa` 走 AI 问答，
+    内部要等 L3（最长 35 秒）。同步调用会**堵住事件循环** ——
+    整个后端（包括其他人的请求）都卡住。
+    """
     message = extract_message_event(body)
     text = message["text"]
     open_id = message["open_id"]
@@ -440,17 +445,55 @@ def _handle_message_event(
 
     from ..services import feishu_scheme
 
-    if intent not in (feishu_bot.INTENT_MONTH_PLAN, feishu_scheme.INTENT, "performance_qa"):
+    # ⚠️ **未命中关键词 ≠ 拒绝** ——
+    #    员工的说法千变万化（「我表现怎么样」「分数怎么算出来的」
+    #    「上个月我拿了多少分」），关键词不可能穷举。
+    #
+    #    早期版本在这里回一张「请发送 xxx」的提示卡，
+    #    用户收到后只会觉得**机器人坏了** —— 那是最差的体验。
+    #
+    #    ⇒ 现在改成：没命中也**照样进问答**，
+    #      让 L3 模型自己判断「这个问题我能不能答」。
+    #
+    #    ⚠️ **放宽的是识别，不是权限**：
+    #      真正的范围收敛在 ``qa_permission.resolve_scope``，
+    #      按员工身份解析 ``allowed_tools``；问答链路**只读**。
+    #
+    #    ⚠️ **写操作意图优先级更高**（见上），
+    #      「填月计划时顺便看看我的绩效」不会被兜底抢走。
+    if intent == feishu_bot.INTENT_NONE:
+        # 只记意图与长度，**不记原文** ——
+        # 员工可能顺手问些隐私内容，日志会长期留存。
+        logger.info(
+            "飞书消息未命中关键词，走模型兜底：intent=%s 文本长度=%d 疑似绩效相关=%s",
+            intent,
+            len(text),
+            feishu_intent.is_performance_related(text),
+        )
+        intent = feishu_bot.INTENT_PERFORMANCE_QA
+    elif intent not in (
+        feishu_bot.INTENT_MONTH_PLAN,
+        feishu_scheme.INTENT,
+        feishu_bot.INTENT_PERFORMANCE_QA,
+    ):
+        # ⚠️ **兜底之后不该再有这个分支** ——
+        #    保留它是为了「将来新增意图时忘了加进上面的名单」，
+        #    那种情况下宁可回提示卡，也不要**静默**当成问答处理。
+        logger.warning(
+            "飞书消息命中未处理的意图 %s，回提示卡（文本长度=%d）",
+            intent,
+            len(text),
+        )
         feishu_bot.send_card(
             client,
             receive_id=open_id,
             card=feishu_card.build_prompt_card(
                 session_id=session.id,
                 plan_month=feishu_bot._current_month(),
-                hint="发送「考核填报」填写部门考核方案；发送「填月计划」填写月计划；发送「我的绩效指标怎么算」查询计算依据，可附上月份（如 2026-11）。",
+                hint="发送「考核填报」填写部门考核方案；发送「填月计划」填写月计划；直接问绩效相关问题（如「我的分数怎么算的」）即可。",
             ),
         )
-        return {"code": 0, "message": "未知意图，已给出提示"}
+        return {"code": 0, "message": "未处理的意图，已给出提示"}
 
     # ── 绑定员工 ─────────────────────────────────────────────
     employee = FeishuIdentityService(db).resolve_employee(
@@ -468,13 +511,30 @@ def _handle_message_event(
         )
         return {"code": 0, "message": "未绑定员工"}
 
-    if intent == "performance_qa":
-        from ..services import feishu_qa
+    if intent == feishu_bot.INTENT_PERFORMANCE_QA:
+        from ..services import feishu_qa_ai
 
         try:
             period = feishu_bot.extract_plan_month(text) or feishu_bot._current_month()
-            content = feishu_qa.answer(db, employee, text, period)
-            card = feishu_card.build_qa_card(content)
+            outcome = await feishu_qa_ai.answer_ai(db, employee, text, period)
+            if outcome.candidates:
+                # ⚠️ 同月多个任务 → **让用户选**，绝不猜。
+                #    ⚠️ question 要**跟着卡片走** —— 用户点完按钮后，
+                #    我们要用当初那个问题继续问。
+                card = feishu_card.build_qa_task_picker_card(
+                    candidates=outcome.candidates,
+                    period=period,
+                    question=text,
+                )
+            else:
+                card = feishu_card.build_qa_ai_card(
+                    answer=outcome.text,
+                    sources=outcome.sources,
+                    citation_count=outcome.citation_count,
+                    degraded=outcome.degraded,
+                    dropped_citations=outcome.dropped_citations,
+                    period=period,
+                )
         except HTTPException as exc:
             card = feishu_card.build_error_card(str(exc.detail))
         feishu_bot.send_card(client, receive_id=open_id, card=card)
@@ -508,7 +568,88 @@ def _handle_message_event(
     return {"code": 0, "message": "已发送填表卡片"}
 
 
-def _handle_card_action(
+async def _handle_qa_select_task(
+    db: Session,
+    client: FeishuClient,
+    action: dict[str, Any],
+) -> dict[str, Any]:
+    """处理「选择要查询的考核任务」按钮。
+
+    ⚠️ **归属校验换成「任务归属校验」**
+    ------------------------------
+    填表卡片靠 ``session_id`` 校验归属；问答选择卡没有会话，
+    所以必须**用点击者自己的员工身份**去校验：
+
+    ① 解析点击者 → 员工；
+    ② 用**该员工**去解析任务范围（``qa_permission.resolve_scope``）；
+    ③ 权限不够 → 403 卡片。
+
+    ⇒ 卡片被转发给 B，B 点下去查到的也是 **B 有权查的任务**，
+    不会泄露 A 的绩效。
+
+    ⚠️ **question 从卡片载荷里带过来**
+    -------------------------------
+    用户先问了问题 → 系统发现多任务 → 给选择卡 →
+    点某个按钮 → 用**当初那个问题**继续问。
+    所以按钮的 value 里必须带着 question。
+    """
+    from ..services import feishu_qa_ai
+
+    open_id = action["open_id"]
+    task_id = str(action["value"].get("task_id") or "").strip()
+    period = str(action["value"].get("period") or "").strip()
+    question = str(action["value"].get("question") or "").strip()
+
+    if not open_id:
+        logger.warning("飞书绩效问答选择任务回调缺少 open_id，已忽略")
+        return {"code": 0, "message": "回调参数不完整，已忽略"}
+
+    if not task_id:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card("未指定考核任务，请重新提问。"),
+        )
+        return {"code": 0, "message": "未指定任务"}
+
+    employee = FeishuIdentityService(db).resolve_employee(
+        open_id=open_id,
+        user_id=action.get("user_id") or "",
+    )
+    if employee is None:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                "找不到你的账号。\n\n请先让 HR 在系统里完成飞书账号绑定。"
+            ),
+        )
+        return {"code": 0, "message": "未绑定员工"}
+
+    try:
+        outcome = await feishu_qa_ai.answer_ai(
+            db,
+            employee,
+            question or "我的绩效是多少分？",
+            period,
+            task_id=task_id,
+        )
+        card = feishu_card.build_qa_ai_card(
+            answer=outcome.text,
+            sources=outcome.sources,
+            citation_count=outcome.citation_count,
+            degraded=outcome.degraded,
+            dropped_citations=outcome.dropped_citations,
+            period=period,
+        )
+    except HTTPException as exc:
+        card = feishu_card.build_error_card(str(exc.detail))
+
+    feishu_bot.send_card(client, receive_id=open_id, card=card)
+    return {"code": 0, "message": "已发送绩效查询结果"}
+
+
+async def _handle_card_action(
     db: Session,
     client: FeishuClient,
     body: dict[str, Any],
@@ -518,12 +659,23 @@ def _handle_card_action(
     """处理卡片交互：校验归属 → 写草稿 → 回执。
 
     ⚠️ **约束 C3**：``open_id`` 必须与会话记录一致。
-    卡片可以转发 —— 不校验就是「B 点了卡片，草稿写进了 A 的名下」。
+   卡片可以转发 —— 不校验就是「B 点了卡片，草稿写进了 A 的名下」。
     """
     action = extract_card_action(body)
     open_id = action["open_id"]
     session_id = str(action["value"].get("session_id") or "").strip()
     action_name = action["action"]
+
+    # ── 绩效问答「选择任务」：**不走会话** ────────────────────
+    # ⚠️ 必须**在会话校验之前**处理 ——
+    #    问答任务选择卡没有 session_id（它不属于填表会话），
+    #    走下面的会话校验会被当成「参数不完整」直接丢掉。
+    #
+    # ⚠️ 归属校验在这里**换成任务归属校验**：
+    #    卡片可以转发 —— 必须确认「点按钮的人」确实有权查这个任务，
+    #    否则就是「B 点了卡片，查到了 A 的绩效」。
+    if action_name == feishu_card.ACTION_SELECT_TASK:
+        return await _handle_qa_select_task(db, client, action)
 
     if not open_id or not session_id:
         event = body.get("event") or {}
@@ -633,10 +785,10 @@ async def receive_bot_event(
     if feishu_event.is_url_verification(body):
         return {"challenge": feishu_event.extract_challenge(body)}
 
-    return receive_bot_event_body(db, body)
+    return await receive_bot_event_body(db, body)
 
 
-def receive_bot_event_body(db: Session, body: dict[str, Any]) -> dict[str, Any]:
+async def receive_bot_event_body(db: Session, body: dict[str, Any]) -> dict[str, Any]:
     """处理**已通过来源校验**的机器人事件体。
 
     ⚠️ **为什么抽成独立函数**（2026-11-17）：
@@ -649,6 +801,10 @@ def receive_bot_event_body(db: Session, body: dict[str, Any]) -> dict[str, Any]:
 
     ⚠️ **调用方必须已完成来源校验**（Verification Token / 验签 / 解密）。
        本函数**不再**重复校验 —— 统一入口已经校验过了。
+
+    ⚠️ **async 的原因**：AI 问答要等 L3（最长 35 秒）。
+       同步等待会堵住事件循环。
+       同步调用方（WebSocket 接收器）请用 `receive_bot_event_body_sync`。
     """
     # ⚠️ 应急开关：机器人关闭时**只握手不处理业务**。
     #   返回 code 0 而不是报错 —— 报错会让飞书反复重推。
@@ -679,9 +835,9 @@ def receive_bot_event_body(db: Session, body: dict[str, Any]) -> dict[str, Any]:
 
     try:
         if event_type == EVENT_CARD_ACTION:
-            result = _handle_card_action(db, client, body, event_id=event_id)
+            result = await _handle_card_action(db, client, body, event_id=event_id)
         elif event_type == EVENT_MESSAGE_RECEIVE:
-            result = _handle_message_event(db, client, body)
+            result = await _handle_message_event(db, client, body)
         else:
             # ⚠️ 其他事件类型**返回成功并忽略** —— 报错会让飞书反复重推。
             logger.info("飞书机器人事件类型未处理：%s", event_type or "-")
@@ -703,6 +859,42 @@ def receive_bot_event_body(db: Session, body: dict[str, Any]) -> dict[str, Any]:
 
     db.commit()
     return result
+
+
+def receive_bot_event_body_sync(db: Session, body: dict[str, Any]) -> dict[str, Any]:
+    """同步版 `receive_bot_event_body`（给 WebSocket 接收器用）。
+
+    ⚠️ **为什么需要它**
+    ------------------
+    ``backend/scripts/run_feishu_ws.py`` 的 SDK 回调是**同步**的
+    （飞书 SDK 的 ``on_event`` 不支持 async）。
+
+    ⇒ 这里用 ``asyncio.run`` 在**当前线程**跑一遍事件循环。
+
+    ⚠️ **调用方限制**
+    --------------
+    只能在**没有正在运行的事件循环**的线程里调用
+    （WebSocket 接收器是独立进程/线程，满足）。
+    在 FastAPI 的 async 端点里调用会抛
+    ``RuntimeError: asyncio.run() cannot be called from a running event loop`` ——
+    那种场景请直接 ``await receive_bot_event_body(...)``。
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # 没有运行中的事件循环 —— 可以安全地起一个新的。
+        return asyncio.run(receive_bot_event_body(db, body))
+
+    # ⚠️ 已经有事件循环在跑（比如在 async 上下文里误调了同步版）。
+    #   不能嵌套 asyncio.run —— 只能丢到独立线程里跑。
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(
+            asyncio.run, receive_bot_event_body(db, body)
+        ).result()
 
 
 @router.post("/card/actions")
@@ -737,7 +929,7 @@ async def receive_card_action(
     client = _client()
 
     try:
-        result = _handle_card_action(db, client, body, event_id=event_id)
+        result = await _handle_card_action(db, client, body, event_id=event_id)
     except Exception:
         db.rollback()
         logger.exception("飞书机器人卡片回调处理异常")

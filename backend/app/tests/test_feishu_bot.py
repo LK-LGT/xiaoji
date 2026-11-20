@@ -42,25 +42,44 @@ from backend.app.services import feishu_bot
 
 
 def test_qa_message_routes_without_changing_active_form(db, org, monkeypatch):
+    """⚠️ 绩效问答**不能**打断正在进行的填表会话。
+
+    这条约束在接入 AI 问答后依然成立 —— AI 问答要等 L3（可能 35 秒），
+    但**不应该**改掉用户正在填的草稿状态。
+    """
+    import asyncio
     from copy import deepcopy
 
-    from backend.app.services import feishu_qa
+    from backend.app.services import feishu_qa_ai
 
     session = feishu_bot.get_or_create_session(db, open_id="ou_emp_a", app_id=settings.feishu_app_id)
     session.state = feishu_bot.STATE_COLLECTING
     session.intent = feishu_bot.INTENT_MONTH_PLAN
     session.collected = {"task_name": "保留草稿"}
     calls = []
-    monkeypatch.setattr(feishu_qa, "answer", lambda db, employee, question, period: calls.append(
-        (employee.id, period)
-    ) or "系统计算依据")
+
+    class FakeOutcome:
+        text = "AI 解读结果"
+        sources = ["tool:call_1"]
+        citation_count = 1
+        degraded = False
+        dropped_citations = 0
+        candidates = []
+
+    async def fake_answer_ai(db, employee, question, period, **kwargs):
+        calls.append((employee.id, period))
+        return FakeOutcome()
+
+    monkeypatch.setattr(feishu_qa_ai, "answer_ai", fake_answer_ai)
+
     class Client:
         def send_card_message(self, receive_id, card, **kwargs):
             calls.append((receive_id, card))
+
     body = deepcopy(OFFICIAL_MESSAGE_EVENT)
     body["event"]["sender"]["sender_id"] = {"open_id": "ou_emp_a", "user_id": "u_emp_a"}
     body["event"]["message"]["content"] = json.dumps({"text": "我2026-11的指标怎么算"})
-    result = feishu_bot_routes._handle_message_event(db, Client(), body)
+    result = asyncio.run(feishu_bot_routes._handle_message_event(db, Client(), body))
     assert result["message"] == "已发送绩效查询结果"
     assert calls[0] == (org["a"].id, "2026-11")
     assert calls[1][0] == "ou_emp_a"  # 即使从群聊发问，也只私发本人。
@@ -535,14 +554,31 @@ def test_message_event_strips_at_mention_prefix(http, client_db, org):
     assert sessions[0].intent == feishu_bot.INTENT_MONTH_PLAN
 
 
-def test_message_event_unknown_intent_sends_hint(http, client_db, org):
-    """听不懂 → 给提示，**不报错**（报错会让飞书反复重推）。"""
+def test_message_event_unknown_intent_goes_to_qa_fallback(http, client_db, org):
+    """未命中关键词 → **走问答兜底**，不是回提示卡。
+
+    ⚠️ **为什么改了行为**
+    ----------------------
+    原来：关键词没命中 → 回一张「请发送 xxx」的提示卡。
+
+    那是最差的体验 —— 用户明明在正常提问（「我表现怎么样」这种
+    **极自然的口语问法**命中不了），却收到一张「我不会用」的提示
+    ⇒ **用户以为机器人坏了**。
+
+    员工的说法千变万化，关键词不可能穷举。
+    ⇒ 现在改成：没命中也照样进问答，让 L3 模型自己判断能不能答。
+
+    ⚠️ **放宽的是识别，不是权限** ——
+    数据范围仍在 ``qa_permission.resolve_scope`` 里收敛，问答链路只读。
+    """
     resp = http.post(EVENTS_URL, json=_message_event("今天天气不错"))
 
     assert resp.status_code == 200
     assert resp.json()["code"] == 0
+    # 仍然发了一张卡 —— 但是**问答卡**，不是「请发送 xxx」的提示卡
     assert len(http.feishu_sent) == 1
-    assert "月计划" in str(http.feishu_sent[0]["card"])
+    card_text = str(http.feishu_sent[0]["card"])
+    assert "月计划" not in card_text, "不应再回「怎么用」的提示卡"
 
 
 def test_message_event_unbound_employee_gets_hint(http, client_db):

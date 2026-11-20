@@ -63,22 +63,19 @@ STATE_IDLE = "idle"
 STATE_COLLECTING = "collecting"
 STATE_COMPLETED = "completed"
 
-#: 意图
-INTENT_NONE = "none"
-INTENT_MONTH_PLAN = "month_plan"
-
-#: 员工发的消息里，命中这些关键词就当作「要填月计划」
-MONTH_PLAN_KEYWORDS = (
-    "填月计划",
-    "填月度计划",
-    "月计划",
-    "月度计划",
-    "写计划",
-    "填表",
+# ⚠️ 意图识别已抽到 ``feishu_intent`` 模块（分层路由 + 领域词库）。
+#    这里保留别名是为了**不破坏**既有 import —— 几十处调用方用
+#    ``feishu_bot.INTENT_NONE`` / ``feishu_bot.detect_intent``。
+from .feishu_intent import (  # noqa: E402
+    CANCEL_KEYWORDS,
+    INTENT_CANCEL,
+    INTENT_MONTH_PLAN,
+    INTENT_NONE,
+    INTENT_PERFORMANCE_QA,
+    MONTH_PLAN_KEYWORDS,
+    PERFORMANCE_KEYWORDS,
+    detect_intent,
 )
-
-#: 取消关键词
-CANCEL_KEYWORDS = ("取消", "算了", "不填了")
 
 
 def _now() -> datetime:
@@ -93,26 +90,6 @@ def _session_ttl() -> timedelta:
 # ===========================================================================
 # 意图识别
 # ===========================================================================
-
-
-def detect_intent(text: str) -> str:
-    """从员工消息里识别意图。
-
-    ⚠️ 这是**纯函数**，不碰数据库 —— 好测。
-    """
-    if not text:
-        return INTENT_NONE
-    normalized = text.strip().lower()
-    if any(keyword in normalized for keyword in CANCEL_KEYWORDS):
-        return "cancel"
-    from .feishu_scheme import INTENT, KEYWORDS
-    if any(keyword in normalized for keyword in KEYWORDS):
-        return INTENT
-    if any(keyword in normalized for keyword in MONTH_PLAN_KEYWORDS):
-        return INTENT_MONTH_PLAN
-    if any(keyword in normalized for keyword in ("绩效", "指标", "扣分", "得分", "评分", "部门统计", "团队统计")):
-        return "performance_qa"
-    return INTENT_NONE
 
 
 def extract_plan_month(text: str) -> str:

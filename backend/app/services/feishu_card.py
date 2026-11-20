@@ -51,6 +51,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import feishu_card_render
+
 #: 卡片 JSON 2.0 版本标识（**字符串**，不是数字）
 CARD_SCHEMA_VERSION = "2.0"
 
@@ -59,6 +61,8 @@ ACTION_FILL_MONTH_PLAN = "fill_month_plan"
 ACTION_SUBMIT_DRAFT = "submit_draft"
 ACTION_CANCEL = "cancel"
 ACTION_CONFIRM = "confirm"
+#: 绩效问答 —— 选择考核任务（多任务时让用户明确选）
+ACTION_SELECT_TASK = "qa_select_task"
 
 
 def build_qa_card(content: str) -> dict[str, Any]:
@@ -68,6 +72,160 @@ def build_qa_card(content: str) -> dict[str, Any]:
         "header": _header("绩效查询与计算依据"),
         "body": {"elements": [{"tag": "div", "text": _text(content)}]},
     }
+
+
+def build_qa_ai_card(
+    *,
+    answer: str,
+    sources: list[str] | None = None,
+    citation_count: int = 0,
+    degraded: bool = False,
+    dropped_citations: int = 0,
+    period: str = "",
+    task_name: str = "",
+) -> dict[str, Any]:
+    """构造「AI 绩效问答」卡片。
+
+    ⚠️ **为什么答案用 `plain_text` 而不是 `markdown`**
+    ----------------------------------------------
+    AI 回答的文本是**模型输出**，不是可信的模板内容。
+    飞书的 `markdown` 元素会解析 `<at>`、链接、强调等语法 ——
+    恶意或幻觉的内容可能被渲染成「@某人」或外链，
+    让用户误以为是系统发的通知。
+
+    ⇒ 答案一律 `plain_text`。代价是没有粗体/列表，
+    但**安全优先**。
+
+    ⚠️ **来源徽章也要清洗**
+    ----------------------
+    `sources` 来自模型（形如 `tool:call_xxx`、evidence UUID）。
+    直接展示等于把模型输出原样透给用户 ——
+    可能包含换行、超长串、甚至伪造的「来源」条目。
+    ⇒ 逐条清洗：只保留可打印字符、限长、限条数。
+
+    Args:
+        answer: AI 回答正文。
+        sources: 已核验的数据来源标识。
+        citation_count: 引用数量（展示用）。
+        degraded: 是否降级（AI 不可用时的规则型回答）。
+        dropped_citations: 被剔除的无效引用数（> 0 时给中性提示）。
+        period: 周期（展示用）。
+        task_name: 任务名（展示用）。
+    """
+    elements: list[dict[str, Any]] = []
+
+    # ── 上下文抬头（纯文本，不用 markdown）────────────────────
+    context_bits = [bit for bit in (period, task_name) if bit]
+    if context_bits:
+        elements.append({"tag": "div", "text": _text(" · ".join(context_bits))})
+
+    # ── 答案正文：Markdown + 真表格 ───────────────────────────
+    #
+    # ⚠️ **为什么不用 plain_text 直出**
+    #   AI 回答是**模型的 Markdown 输出**。用 plain_text 直出等于把
+    #   Markdown 源码原样打印给用户 ——
+    #   ``| 指标 | 权重 |``、``**加粗**``、``- 列表`` 符号全露出来，
+    #   一张卡片 14 行竖线，可读性极差。
+    #
+    # ⚠️ **但 markdown 元素必须先清洗**
+    #   markdown 会解析 ``<at>``、链接等语法，模型输出是**不可信输入** ——
+    #   幻觉或恶意内容可能被渲染成「@某人」或外链。
+    #   ⇒ 清洗只做删除（见 ``feishu_card_render.sanitize_markdown``）。
+    #
+    # ⚠️ **而且飞书 markdown 元素不支持表格**
+    #   ⇒ 表格必须提取出来，转成飞书 ``table`` 组件（真表格）。
+    #
+    # ⚠️ **顺序必须保持**
+    #   模型常写成「结论 → 表格 → 补充说明」。
+    #   把表格全塞到末尾会打乱语义 ⇒ 按**出现位置**逐块渲染。
+    #
+    # ⚠️ **markdown 是元素本身**，不能包在 ``div`` 的 text 里 ——
+    #   那样飞书会**拒收整张卡**：
+    #   ``type of element is not supported tag: markdown``。
+    blocks = feishu_card_render.extract_blocks(answer)
+    for block in blocks:
+        if block.table is not None:
+            component = feishu_card_render.build_table_component(block.table)
+            if component is not None:
+                elements.append(component)
+                continue
+            # ⚠️ 超限（列数/行数）→ 回退成文本，至少别丢内容
+            fallback = feishu_card_render.sanitize_markdown(block.table.raw)
+            if fallback:
+                elements.append(_markdown(fallback))
+            continue
+        body = feishu_card_render.sanitize_markdown(block.text)
+        if body:
+            elements.append(_markdown(body))
+
+    if not blocks:
+        elements.append(_text("（无内容）"))
+
+    # ── 来源徽章 ──────────────────────────────────────────────
+    cleaned = _clean_sources(sources)
+    if cleaned:
+        elements.append({
+            "tag": "div",
+            "text": _text(f"数据来源（{len(cleaned)} 项）：" + "、".join(cleaned)),
+        })
+    elif citation_count:
+        elements.append({"tag": "div", "text": _text(f"引用来源 {citation_count} 项")})
+
+    # ── 降级提示：必须显性，不能把「AI 挂了」伪装成正常回答 ──
+    if degraded:
+        elements.append({
+            "tag": "div",
+            "text": _text("⚠️ AI 解读暂不可用，以下为系统直接给出的数据。"),
+        })
+
+    # ── 引用缺口：中性提示（不是降级）─────────────────────────
+    if dropped_citations > 0:
+        elements.append({
+            "tag": "div",
+            "text": _text(f"注：有 {dropped_citations} 处引用未能核验，已从来源中剔除。"),
+        })
+
+    return build_card(
+        title="绩效问答",
+        elements=elements,
+        header_template="orange" if degraded else "blue",
+    )
+
+
+def _clean_sources(sources: list[str] | None, *, limit: int = 6, max_len: int = 40) -> list[str]:
+    """清洗来源标识（模型输出，不可信）。
+
+    ⚠️ 只保留 **ASCII 标识符字符** —— 字母、数字、下划线、连字符、冒号、点、井号。
+
+    为什么不是「保留所有字母数字」：``str.isalnum()`` 对中文也返回 True，
+    模型吐一句「伪造的第二行」会原样混进来源区，看起来像个正经来源条目。
+    真实的来源标识（``tool:call_xxx``、UUID）**全是 ASCII**，
+    所以限定 ASCII 字符集既保留了正常条目，又挡掉了自然语言注入。
+
+    ⚠️ 另外还要去掉换行 —— 换行会把一条来源拆成两行，
+    后一行看起来像另一条来源。
+
+    Args:
+        limit: 最多保留几条。
+        max_len: 单条最长字符数。
+    """
+    if not sources:
+        return []
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-:.#")
+    cleaned: list[str] = []
+    for raw in sources:
+        if not isinstance(raw, str):
+            continue
+        text = "".join(ch for ch in raw if ch in allowed)
+        if not text:
+            continue
+        if len(text) > max_len:
+            text = text[: max_len - 1] + "…"
+        if text not in cleaned:
+            cleaned.append(text)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
 
 
 def _text(content: str) -> dict[str, Any]:
@@ -416,10 +574,71 @@ def build_error_card(message: str) -> dict[str, Any]:
     )
 
 
+def build_qa_task_picker_card(
+    *,
+    candidates: list[dict[str, Any]],
+    period: str = "",
+    question: str = "",
+) -> dict[str, Any]:
+    """构造「请选择要查询的考核任务」卡片。
+
+    ⚠️ **为什么要这个卡片**
+    ----------------------
+    同月有多个考核任务时，机器人**不能猜** ——
+    猜错就是答错人的绩效 / 错月份的绩效，比答不出来严重得多。
+    所以让用户明确选一次。
+
+    ⚠️ **候选名必须可区分**
+    ----------------------
+    同名任务（比如 23 个「2026 年 11 月月度考核」）如果都显示成同一个名字，
+    用户还是选不出来。所以直接用后端算好的 `label`（带区分后缀）。
+
+    ⚠️ **用 `plain_text` 而非 `markdown`**
+    ------------------------------
+    任务名来自数据库，可能含 ``<at>`` 之类的飞书语法 ——
+    用 markdown 会被解析成「@某人」。纯文本最安全。
+
+    ⚠️ **question 跟着卡片走**
+    ----------------------
+    用户点完按钮后要用**当初那个问题**继续问，
+    所以必须把 question 放进按钮的回调载荷。
+    """
+    lines: list[str] = []
+    buttons: list[dict[str, Any]] = []
+    for index, item in enumerate(candidates, start=1):
+        label = str(item.get("label") or item.get("name") or item.get("task_id") or "")
+        lines.append(f"{index}. {label}")
+        buttons.append(
+            _button(
+                f"{index}",
+                ACTION_SELECT_TASK,
+                {
+                    "task_id": str(item.get("task_id") or ""),
+                    "period": period or str(item.get("period") or ""),
+                    "question": question,
+                },
+                type="default",
+            )
+        )
+
+    header = f"你在 {period} 有多个考核任务，请选择要查询的任务：" if period else "请选择要查询的考核任务："
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": _text(header + "\n" + "\n".join(lines)),
+        },
+    ]
+    if buttons:
+        elements.append({"tag": "action", "actions": buttons})
+
+    return build_card(title="选择考核任务", elements=elements, header_template="orange")
+
+
 __all__ = [
     "ACTION_CANCEL",
     "ACTION_CONFIRM",
     "ACTION_FILL_MONTH_PLAN",
+    "ACTION_SELECT_TASK",
     "ACTION_SUBMIT_DRAFT",
     "CARD_SCHEMA_VERSION",
     "build_card",
@@ -427,4 +646,6 @@ __all__ = [
     "build_error_card",
     "build_month_plan_form_card",
     "build_prompt_card",
+    "build_qa_ai_card",
+    "build_qa_task_picker_card",
 ]

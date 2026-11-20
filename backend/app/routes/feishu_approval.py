@@ -119,7 +119,7 @@ class NotifyRequest(BaseModel):
 # ===========================================================================
 
 
-def _try_dispatch_to_bot(db: Session, body: dict[str, Any]) -> dict[str, Any] | None:
+async def _try_dispatch_to_bot(db: Session, body: dict[str, Any]) -> dict[str, Any] | None:
     """把机器人事件转给机器人处理器；**不是**机器人事件则返回 ``None``。
 
     ⚠️ **为什么需要这个函数**：
@@ -164,7 +164,12 @@ def _try_dispatch_to_bot(db: Session, body: dict[str, Any]) -> dict[str, Any] | 
     logger.info("统一入口分发：命中机器人事件类型 %s", event_type)
     # ⚠️ 复用机器人端点自己的处理逻辑 —— **不复制一份**。
     #   复制会导致两边行为漂移（比如幂等键规则改了只改一处）。
-    return receive_bot_event_body(db, body)
+    #
+    # ⚠️ `receive_bot_event_body` 是 **async** 函数（返回协程）——
+    #   因为 `performance_qa` 走 AI 问答，内部要等 L3（最长 35 秒）。
+    #   同步调用会**堵住事件循环** —— 整个后端（包括其他人的请求）都卡住。
+    #   ⇒ 这里**必须 await**。
+    return await receive_bot_event_body(db, body)
 
 
 @router.post("/approval/events")
@@ -266,7 +271,7 @@ async def receive_approval_event(
     #
     #   ⇒ 分发后：机器人事件转到机器人处理器，其余仍走审批回流。
     #     **不改**现有审批链路的行为（审批事件类型不匹配 → 原样处理）。
-    bot_result = _try_dispatch_to_bot(db, body)
+    bot_result = await _try_dispatch_to_bot(db, body)
     if bot_result is not None:
         return bot_result
 

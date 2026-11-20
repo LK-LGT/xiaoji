@@ -30,7 +30,7 @@ def dispatch(body: dict[str, Any]) -> dict[str, Any]:
     from backend.app.routes.feishu_bot import (
         BOT_EVENT_TYPES,
         extract_event_type,
-        receive_bot_event_body,
+        receive_bot_event_body_sync,
     )
     from backend.app.services import feishu_approval_sync, feishu_event
     from backend.app.services.org_change_queue import (
@@ -42,7 +42,9 @@ def dispatch(body: dict[str, Any]) -> dict[str, Any]:
     event_type = extract_event_type(body)
     with get_sessionmaker()() as db:
         if event_type in BOT_EVENT_TYPES:
-            result = receive_bot_event_body(db, body)
+            # ⚠️ 用**同步版** —— 飞书 SDK 的回调是同步的，
+            #   不能直接 await。同步版内部会起自己的事件循环。
+            result = receive_bot_event_body_sync(db, body)
         elif event_type.startswith("contact."):
             parsed = parse_contact_event(body)
             if parsed is None:

@@ -4,13 +4,14 @@ from datetime import timedelta
 import pytest
 from fastapi import HTTPException
 
-from backend.app.tests.test_scheme_management import setup, payload
+from backend.app.dependencies import get_current_user
 from backend.app.domain.bot_models import BotSession
 from backend.app.domain.models import AssessmentRecord, SelfReview
 from backend.app.domain.scheme_models import SchemeResponse
-from backend.app.services import feishu_scheme as flow, feishu_bot, scheme_service
 from backend.app.routes.feishu_bot import _handle_card_action
-from backend.app.dependencies import get_current_user
+from backend.app.services import feishu_bot, scheme_service
+from backend.app.services import feishu_scheme as flow
+from backend.app.tests.test_scheme_management import payload, setup
 
 
 @pytest.fixture
@@ -75,6 +76,8 @@ def test_invalid_numbers_preserve_step(case, raw):
 
 
 def test_callback_generation_owner_and_expiration(case):
+    import asyncio
+
     db, _, _, _, session, _ = case
     class Client:
         def send_card_message(self, *args, **kwargs):
@@ -84,12 +87,17 @@ def test_callback_generation_owner_and_expiration(case):
     def callback(open_id="ou_E"):
         return {"event": {"operator": {"open_id": open_id}, "action": {
             "value": value, "form_value": {"f0": "12", "f1": "10", "f2": "12"}}}}
-    assert "不匹配" in _handle_card_action(db, Client(), callback("ou_other"), event_id="a")["message"]
+    # ⚠️ `_handle_card_action` 是 async（绩效问答要等 L3）—— 必须 await。
+    assert "不匹配" in asyncio.run(
+        _handle_card_action(db, Client(), callback("ou_other"), event_id="a")
+    )["message"]
     assert session.collected["index"] == 0
-    _handle_card_action(db, Client(), callback(), event_id="b")
+    asyncio.run(_handle_card_action(db, Client(), callback(), event_id="b"))
     db.commit()
     assert session.collected["index"] == 1
-    assert "失效" in _handle_card_action(db, Client(), callback(), event_id="c")["message"]
+    assert "失效" in asyncio.run(
+        _handle_card_action(db, Client(), callback(), event_id="c")
+    )["message"]
     session.expires_at = feishu_bot._now() - timedelta(seconds=1)
     db.commit()
     with pytest.raises(HTTPException, match="过期"):

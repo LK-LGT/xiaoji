@@ -3,14 +3,28 @@
 对应前端 `src/api/employeeAi.ts` 的 `/employee/ai/*` 调用。
 前端经 Vite 代理把 `/api/*` 重写到 `/v1/*`，故此处统一使用 `/v1/employee/ai` 前缀。
 
-注意：当前 `MODEL_MODE=echo`，模型调用走确定性假模型（`agent-service` 的
-`EchoModelClient`），输出可复现。真实模型接入前，所有端点返回结构完整的空结果，
-保证前端不因缺字段而崩溃。
+## Step 6 计划助手工具化
+
+计划助手的 8 个端点（月/周/日 上下文 + 生成 + 调整 + 检查 + 示例提取）
+已从「结构完整的空结果」升级为**真实实现**：
+
+```
+前端 → 本路由 → plan_ai_service → agent-service /v1/agent/plan
+                                             ↓ 模型自主调工具
+                                      backend /v1/plan-tools/*
+```
+
+⚠️ **默认关闭**（``PLAN_AI_ENABLED=false``）：
+关闭时端点仍返回**结构完整的空结果**，前端不崩、不白屏。
+理由：计划会变成**考核指标**，真模型输出必须由人工确认后才落库。
+
+⚠️ 其余端点（会话、建议动作、取消等）行为不变。
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -18,10 +32,11 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from ..core.config import settings
 from ..core.db import get_db
 from ..dependencies import get_current_user
 from ..domain.models import Employee
-from ..services import ai_service
+from ..services import ai_service, plan_ai_service, plan_tool_service
 
 logger = logging.getLogger(__name__)
 
@@ -96,37 +111,47 @@ async def get_month_plan_ai_context(
     planMonth: str,
     intentText: str | None = Query(None),
     selectedKnowledgeTypes: str | None = Query(None),
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取月计划 AI 上下文。
 
     响应结构：AiContextResponse
     """
-    return _ok(_empty_context_response())
+    return _ok(await _build_context(
+        db, current_user=current_user, plan_type="month", period=planMonth,
+        intent_text=intentText or "",
+    ))
 
 
 @router.get("/week-plans/context")
 async def get_week_plan_ai_context(
     weekStart: str,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取周计划 AI 上下文。
 
     响应结构：AiContextResponse
     """
-    return _ok(_empty_context_response())
+    return _ok(await _build_context(
+        db, current_user=current_user, plan_type="week", period=weekStart,
+    ))
 
 
 @router.get("/day-plans/context")
 async def get_day_plan_ai_context(
     planDate: str,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """获取日计划 AI 上下文。
 
     响应结构：AiContextResponse
     """
-    return _ok(_empty_context_response())
+    return _ok(await _build_context(
+        db, current_user=current_user, plan_type="day", period=planDate,
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -139,100 +164,251 @@ async def get_day_plan_ai_context(
 @router.post("/month-plans/generate")
 async def generate_month_plan_ai(
     payload: AiOperationPayload,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """生成月计划建议。
 
     响应结构：AiGenerateResponse
     """
-    return _ok(_empty_generate_response())
+    if not plan_ai_service.is_enabled():
+        return _ok(_empty_generate_response())
+
+    result = await plan_ai_service.call_plan_agent(
+        db,
+        current_user=current_user,
+        mode="generate",
+        intent_text=payload.intentText,
+        plan_type="month",
+        period=payload.planMonth,
+        current_form=_extract_current_form(payload),
+    )
+    return _ok({
+        "suggestionId": _new_suggestion_id(),
+        "items": plan_ai_service.shape_items(result["items"]),
+        "warnings": result["warnings"],
+        "missingContext": result["missingContext"],
+        "notice": _build_notice(result),
+        "draftVersionId": 0,
+        "draftVersionNo": 0,
+        "effectiveOperationMode": "GENERATE",
+        "generationProfile": "EMPLOYEE_EXECUTION",
+        "generationProfileLabel": "员工执行",
+    })
 
 
 @router.post("/month-plans/check")
 async def check_month_plan_ai(
     payload: AiOperationPayload,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """检查月计划内容。
 
     响应结构：AiCheckResponse
+
+    ⚠️ **只提示不阻断** —— 判重等问题只是建议，员工仍可提交。
     """
-    return _ok(
-        {
-            "suggestionId": "",
-            "issues": [],
-            "notice": "",
-        }
+    if not plan_ai_service.is_enabled():
+        return _ok({"suggestionId": "", "issues": [], "notice": ""})
+
+    result = await plan_ai_service.call_plan_agent(
+        db,
+        current_user=current_user,
+        mode="check",
+        intent_text=payload.intentText,
+        plan_type="month",
+        period=payload.planMonth,
+        current_form=_extract_current_form(payload),
     )
+    return _ok({
+        "suggestionId": _new_suggestion_id(),
+        "issues": _findings_to_issues(plan_ai_service.shape_findings(result["findings"])),
+        "notice": _build_notice(result),
+    })
 
 
 @router.post("/month-plans/items/optimize")
 async def optimize_month_plan_item_ai(
     payload: AiOperationPayload,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """优化单条月计划任务。
 
     响应结构：AiOptimizeResponse
     """
-    return _ok(
-        {
+    if not plan_ai_service.is_enabled():
+        return _ok({
             "suggestionId": "",
             "item": _empty_plan_item(),
             "warnings": [],
             "notice": "",
             "draftVersionId": 0,
             "draftVersionNo": 0,
-        }
+        })
+
+    form = _extract_current_form(payload)
+    # ⚠️ 优化单条 = 让模型「调整」这**一条**。
+    #    用 adjust 模式 + 把当前表单作为草稿传进去，
+    #    模型只会改这一条 —— 而不是重新生成整个计划。
+    result = await plan_ai_service.call_plan_agent(
+        db,
+        current_user=current_user,
+        mode="adjust",
+        intent_text=payload.intentText or "优化这条计划任务，使其更具体可执行",
+        instruction=payload.instruction or "优化这条计划任务，使其更具体可执行",
+        plan_type="month",
+        period=payload.planMonth,
+        current_form=form,
     )
+    items = plan_ai_service.shape_items(result["items"])
+    return _ok({
+        "suggestionId": _new_suggestion_id(),
+        "item": items[0] if items else _empty_plan_item(),
+        "warnings": result["warnings"],
+        "notice": _build_notice(result),
+        "draftVersionId": 0,
+        "draftVersionNo": 0,
+    })
 
 
 @router.post("/week-plans/generate")
 async def generate_week_plan_ai(
     payload: AiOperationPayload,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """生成周计划建议。
 
     响应结构：WeekPlanAiDraft
     """
-    return _ok(_empty_week_plan_draft())
+    if not plan_ai_service.is_enabled():
+        return _ok(_empty_week_plan_draft())
+
+    result = await plan_ai_service.call_plan_agent(
+        db,
+        current_user=current_user,
+        mode="generate",
+        intent_text=payload.intentText,
+        plan_type="week",
+        period=payload.weekStart,
+        current_form=_extract_current_form(payload),
+    )
+    return _ok({
+        "suggestionId": _new_suggestion_id(),
+        "items": _to_week_items(plan_ai_service.shape_items(result["items"])),
+        "warnings": result["warnings"],
+        "missingContext": result["missingContext"],
+        "notice": _build_notice(result),
+        "draftVersionId": 0,
+        "draftVersionNo": 0,
+    })
 
 
 @router.post("/week-plans/adjust")
 async def adjust_week_plan_ai(
     payload: AiOperationPayload,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """调整周计划建议。
 
     响应结构：WeekPlanAiDraft
     """
-    return _ok(_empty_week_plan_draft())
+    if not plan_ai_service.is_enabled():
+        return _ok(_empty_week_plan_draft())
+
+    result = await plan_ai_service.call_plan_agent(
+        db,
+        current_user=current_user,
+        mode="adjust",
+        intent_text=payload.intentText,
+        instruction=payload.instruction,
+        plan_type="week",
+        period=payload.weekStart,
+        current_form=_extract_current_form(payload),
+    )
+    return _ok({
+        "suggestionId": _new_suggestion_id(),
+        "items": _to_week_items(plan_ai_service.shape_items(result["items"])),
+        "warnings": result["warnings"],
+        "missingContext": result["missingContext"],
+        "notice": _build_notice(result),
+        "draftVersionId": 0,
+        "draftVersionNo": 0,
+    })
 
 
 @router.post("/day-plans/generate")
 async def generate_day_plan_ai(
     payload: AiOperationPayload,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """生成日计划建议。
 
     响应结构：DayPlanAiDraft
     """
-    return _ok(_empty_day_plan_draft())
+    if not plan_ai_service.is_enabled():
+        return _ok(_empty_day_plan_draft())
+
+    result = await plan_ai_service.call_plan_agent(
+        db,
+        current_user=current_user,
+        mode="generate",
+        intent_text=payload.intentText,
+        plan_type="day",
+        period=payload.planDate,
+        current_form=_extract_current_form(payload),
+    )
+    return _ok({
+        "suggestionId": _new_suggestion_id(),
+        "relatedWeekPlanItemIds": [],
+        "content": _items_to_day_content(result["items"]),
+        "remark": "",
+        "warnings": result["warnings"],
+        "missingContext": result["missingContext"],
+        "notice": _build_notice(result),
+        "draftVersionId": 0,
+        "draftVersionNo": 0,
+    })
 
 
 @router.post("/day-plans/adjust")
 async def adjust_day_plan_ai(
     payload: AiOperationPayload,
+    current_user: Employee = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """调整日计划建议。
 
     响应结构：DayPlanAiDraft
     """
-    return _ok(_empty_day_plan_draft())
+    if not plan_ai_service.is_enabled():
+        return _ok(_empty_day_plan_draft())
+
+    result = await plan_ai_service.call_plan_agent(
+        db,
+        current_user=current_user,
+        mode="adjust",
+        intent_text=payload.intentText,
+        instruction=payload.instruction,
+        plan_type="day",
+        period=payload.planDate,
+        current_form=_extract_current_form(payload),
+    )
+    return _ok({
+        "suggestionId": _new_suggestion_id(),
+        "relatedWeekPlanItemIds": [],
+        "content": _items_to_day_content(result["items"]),
+        "remark": "",
+        "warnings": result["warnings"],
+        "missingContext": result["missingContext"],
+        "notice": _build_notice(result),
+        "draftVersionId": 0,
+        "draftVersionNo": 0,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -250,14 +426,35 @@ async def extract_plan_example(
     """从上传文件中提取计划示例。
 
     响应结构：AiGenerationExample
+
+    ⚠️ **只做文本提取，不调模型**：
+    这一步的价值是「让 AI 学用户的写法风格」，
+    原文必须**原样**传给模型（前端会带上 exampleContent）。
+    如果这里做「AI 总结」，就把用户的原话改写成 AI 的话，
+    学风格的效果全丢了 —— 而且多一次模型调用、多一个失败点。
+
+    ⚠️ 因此这里只做：解码 + 截断 + 类型判断。
     """
-    return _ok(
-        {
-            "fileName": file.filename or "",
+    file_name = file.filename or ""
+    raw = await file.read()
+    # ⚠️ 大小上限 —— 防止有人上传 500MB 把服务拖垮
+    if len(raw) > _EXAMPLE_MAX_BYTES:
+        return _ok({
+            "fileName": file_name,
             "content": "",
-            "truncated": False,
-        }
-    )
+            "truncated": True,
+        })
+
+    content = _decode_example(raw, file_name)
+    truncated = False
+    if len(content) > _EXAMPLE_MAX_CHARS:
+        content = content[:_EXAMPLE_MAX_CHARS]
+        truncated = True
+    return _ok({
+        "fileName": file_name,
+        "content": content,
+        "truncated": truncated,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +599,200 @@ async def create_ai_conversation(
         biz_id=str(payload.bizId) if payload.bizId is not None else None,
     )
     return _ok(_serialize_conversation(conversation))
+
+
+# ---------------------------------------------------------------------------
+# 计划助手辅助
+#
+# ⚠️ 这一段是 Step 6 新增的。所有函数都是**纯转换**或**纯查询**，
+#    没有副作用 —— 便于测试。
+# ---------------------------------------------------------------------------
+
+#: 示例文件大小上限（字节）—— 防止超大文件拖垮服务
+_EXAMPLE_MAX_BYTES = 5 * 1024 * 1024
+#: 示例文本长度上限（字符）
+_EXAMPLE_MAX_CHARS = 20000
+
+
+def _new_suggestion_id() -> str:
+    """生成建议 ID —— 前端用它关联「这次 AI 建议」和「采纳动作」。"""
+    return uuid.uuid4().hex
+
+
+def _decode_example(raw: bytes, file_name: str) -> str:
+    """解码上传文件为文本。
+
+    ⚠️ 编码探测顺序：UTF-8 → GBK（国内 Excel 导出常见）→ 兜底 latin-1。
+       GBK 必须放前面 —— 中文计划示例用 GBK 存的比例很高，
+       只试 UTF-8 会把文件解成乱码，用户以为功能坏了。
+    """
+    for encoding in ("utf-8-sig", "utf-8", "gbk", "gb18030"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1", errors="replace")
+
+
+def _extract_current_form(payload: AiOperationPayload) -> dict[str, Any]:
+    """从请求体里取出当前表单（草稿）。
+
+    ⚠️ 前端字段名可能随版本演进（``currentForm`` / ``draft`` / ``current_form``），
+       所以这里**都认** —— 找不到就返回空字典，不报错。
+    """
+    data = payload.model_dump()
+    for key in ("currentForm", "draft", "current_form", "form"):
+        value = data.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _to_week_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把月计划条目转成周计划条目形状。
+
+    ⚠️ 周计划条目字段不同（``content`` 而不是 ``taskContent``）。
+       所以做一次**字段重映射**，而不是直接把月计划条目塞过去。
+    """
+    result: list[dict[str, Any]] = []
+    for item in items:
+        content = (item.get("taskContent") or item.get("content") or "").strip()
+        result.append({
+            "id": None,
+            "monthPlanItemId": None,
+            "content": content,
+            "deliverable": item.get("deliverable") or "",
+            "quality": item.get("quality") or "",
+            "plannedFinishDate": item.get("estimatedEndDate") or "",
+        })
+    return result
+
+
+def _items_to_day_content(items: list[dict[str, Any]]) -> str:
+    """把条目列表拼成日计划的 ``content`` 文本。
+
+    ⚠️ 日计划是**一段文本**，不是条目数组 —— 所以用换行拼接。
+    """
+    lines: list[str] = []
+    for item in items:
+        name = (item.get("taskName") or "").strip()
+        content = (item.get("taskContent") or "").strip()
+        if name and content:
+            lines.append(f"{name}：{content}")
+        elif name or content:
+            lines.append(name or content)
+    return "\n".join(lines)
+
+
+def _findings_to_issues(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把体检结论转成前端 ``AiCheckIssue`` 形状。
+
+    ⚠️ ``severity`` → ``level`` 的映射：
+       ``info`` → INFO，``warning`` → WARNING。
+       最高只到 WARNING —— 体检**不阻断**，不用 HIGH 吓人。
+    """
+    issues: list[dict[str, Any]] = []
+    for index, finding in enumerate(findings):
+        severity = str(finding.get("severity") or "info")
+        level = "WARNING" if severity == "warning" else "INFO"
+        target = finding.get("targetIndex")
+        field_path = f"items[{target}]" if isinstance(target, int) and target >= 0 else f"plan[{index}]"
+        issues.append({
+            "code": str(finding.get("kind") or "other"),
+            "level": level,
+            "fieldPath": field_path,
+            "message": str(finding.get("message") or ""),
+            "suggestion": str(finding.get("suggestion") or ""),
+        })
+    return issues
+
+
+def _build_notice(result: dict[str, Any]) -> str:
+    """组装给用户看的一句话提示。"""
+    warnings = result.get("warnings") or []
+    missing = result.get("missingContext") or []
+    parts: list[str] = []
+    if result.get("degraded"):
+        parts.append("AI 建议暂不可用，已返回空结果")
+    elif warnings:
+        parts.append(str(warnings[0]))
+    if missing:
+        parts.append(f"缺少上下文：{'、'.join(str(m) for m in missing[:3])}")
+    return "；".join(parts)
+
+
+async def _build_context(
+    db: Session, *, current_user: Employee, plan_type: str, period: str,
+    intent_text: str = "",
+) -> dict:
+    """组装计划助手的上下文响应。
+
+    ⚠️ 这里的上下文是**真实数据**：自己的历史计划 + 部门参考。
+       前端用它显示「可参考的历史计划数量」和「缺什么信息」。
+
+    ⚠️ 部门参考**只在配置打开且用户有部门时**才有 ——
+       否则 contextOptions 里会标 ``available=False``，
+       前端如实显示「部门参考不可用」，不假装有。
+    """
+    response = _empty_context_response()
+    response["enabled"] = plan_ai_service.is_enabled()
+    response["providerCode"] = settings.model_mode
+    response["modelName"] = settings.model_name
+    response["generationProfile"] = "EMPLOYEE_EXECUTION"
+    response["generationProfileLabel"] = "员工执行"
+
+    if not response["enabled"]:
+        response["notice"] = "AI 计划助手未启用"
+        return response
+
+    months = max(1, min(int(settings.plan_ai_history_months or 6), 24))
+    history = plan_tool_service.load_my_plan_history(
+        db, employee_id=current_user.id, months=months, plan_type="month",
+    )
+    response["historyPlanCount"] = int(history.get("planCount") or 0)
+
+    available: list[str] = []
+    if history.get("planCount"):
+        available.append("HISTORY_PLANS")
+        months_seen = sorted({
+            str(p.get("planMonth")) for p in history.get("plans") or [] if p.get("planMonth")
+        }, reverse=True)
+        response["historyMonthOptions"] = [
+            {"month": m, "label": f"{m[:4]}年{int(m[4:6])}月", "available": True,
+             "planCount": sum(1 for p in history.get("plans") or [] if p.get("planMonth") == m)}
+            for m in months_seen
+        ]
+    if current_user.department_id and settings.plan_ai_department_context:
+        dept = plan_tool_service.load_department_plan_history(
+            db, employee_id=current_user.id, months=months,
+        )
+        if dept.get("planCount"):
+            available.append("DEPARTMENT_GOAL")
+
+    # 上下文类型选项 —— 前端据此渲染可勾选的上下文清单
+    option_specs = (
+        ("HISTORY_PLANS", "最近三个月已审批月计划", "HISTORY_PLANS" in available),
+        ("DEPARTMENT_GOAL", "部门目标", "DEPARTMENT_GOAL" in available),
+        ("ORGANIZATION", "组织信息", bool(current_user.department_id)),
+        ("JOB_DESCRIPTION", "岗位说明", False),
+        ("LEADER_REQUIREMENT", "领导要求", False),
+        ("DELIVERABLE_TEMPLATES", "交付物与验收模板", False),
+        ("ENTERPRISE_KNOWLEDGE", "企业知识依据", False),
+    )
+    response["contextOptions"] = [
+        {"type": key, "label": label, "available": ok} for key, label, ok in option_specs
+    ]
+
+    missing: list[str] = []
+    if not intent_text.strip():
+        missing.append("未填写计划意图，AI 只能参考历史计划生成")
+    if not history.get("planCount"):
+        missing.append("没有历史月计划可参考，AI 建议仅供参考")
+    response["missingContext"] = missing
+    response["availableContext"] = available
+    if missing:
+        response["notice"] = "；".join(missing)
+    return response
 
 
 def _empty_context_response() -> dict:
@@ -579,3 +970,4 @@ def _as_id(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
+
