@@ -38,7 +38,9 @@ from backend.app.services.baidu_pan_client import (
     BaiduPanClient,
     BaiduPanError,
     PanFile,
+    business_day,
     count_by_day,
+    parse_period_from_path,
     sum_range,
 )
 from backend.app.services.baidu_pan_service import (
@@ -185,36 +187,90 @@ def test_refresh_error_raises_auth_error():
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def test_list_files_recursive_uses_cursor_not_arithmetic():
-    """⚠️ **必须用响应里的 cursor** —— 官方明确禁止自行累加。
-
-    第二页的请求 ``start`` 必须是响应给的 ``cursor``（这里是 7），
-    不是 ``0 + 3 = 3``。
-    """
+def test_list_files_recursive_reads_root_dir():
+    """根目录一次读到文件。"""
     client = make_client(
         [
             {
                 "errno": 0,
-                "has_more": 1,
-                "cursor": 7,
                 "list": [
-                    {"server_filename": "a.mp4", "isdir": 0, "server_ctime": 100},
-                    {"server_filename": "b.mp4", "isdir": 0, "server_ctime": 200},
-                    {"server_filename": "c.mp4", "isdir": 0, "server_ctime": 300},
+                    {
+                        "server_filename": "a.mp4",
+                        "isdir": 0,
+                        "path": "/x/a.mp4",
+                        "server_ctime": 100,
+                    },
                 ],
-            },
+            }
+        ]
+    )
+    files = client.list_files_recursive("AT", "/x")
+    assert [f.name for f in files] == ["a.mp4"]
+
+
+def test_list_files_recursive_walks_into_subdirs():
+    """⚠️ **自建递归** —— 逐层下钻收文件（实测 listall 读不了业务目录）。"""
+    client = make_client(
+        [
+            # 第一层：目录
             {
                 "errno": 0,
-                "has_more": 0,
                 "list": [
-                    {"server_filename": "d.mp4", "isdir": 0, "server_ctime": 400},
+                    {"server_filename": "11月", "isdir": 1, "path": "/成品-小瑶/11月"},
+                ],
+            },
+            # 第二层：日期目录
+            {
+                "errno": 0,
+                "list": [
+                    {
+                        "server_filename": "11.19",
+                        "isdir": 1,
+                        "path": "/成品-小瑶/11月/11.19",
+                    },
+                ],
+            },
+            # 第三层：文件
+            {
+                "errno": 0,
+                "list": [
+                    {
+                        "server_filename": "a.mp4",
+                        "isdir": 0,
+                        "path": "/成品-小瑶/11月/11.19/a.mp4",
+                        "server_ctime": 100,
+                    },
                 ],
             },
         ]
     )
-    files = client.list_files_recursive("AT", "/apps/绩效校验")
-    assert len(files) == 4
-    assert [f.name for f in files] == ["a.mp4", "b.mp4", "c.mp4", "d.mp4"]
+    files = client.list_files_recursive("AT", "/成品-小瑶")
+    assert len(files) == 1
+    assert files[0].name == "a.mp4"
+    assert files[0].path == "/成品-小瑶/11月/11.19/a.mp4"
+
+
+def test_list_files_recursive_survives_unreadable_subdir():
+    """⚠️ **单个目录读不到不该让整轮失败** —— 记录后继续。"""
+    client = make_client(
+        [
+            {
+                "errno": 0,
+                "list": [
+                    {"server_filename": "坏目录", "isdir": 1, "path": "/x/坏目录"},
+                    {
+                        "server_filename": "好文件.mp4",
+                        "isdir": 0,
+                        "path": "/x/好文件.mp4",
+                        "server_ctime": 100,
+                    },
+                ],
+            },
+            {"errno": 20020, "show_msg": "不在允许范围内"},
+        ]
+    )
+    files = client.list_files_recursive("AT", "/x")
+    assert [f.name for f in files] == ["好文件.mp4"]
 
 
 def test_list_files_recursive_stops_on_has_more_zero():
@@ -303,6 +359,83 @@ def test_count_by_day_skips_directories():
 def test_sum_range_inclusive():
     counts = {"2026-10-31": 5, "2026-11-01": 3, "2026-11-02": 4, "2026-11-03": 9}
     assert sum_range(counts, "2026-11-01", "2026-11-02") == 7
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 5b. 业务日期解析（⚠️ 最关键的业务逻辑）
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_parse_period_from_path_month_day():
+    """``/成品-小瑶/11月/11.19/xxx.mp4`` → 2026-11-19。"""
+    year, month, day = parse_period_from_path(
+        "/成品-小瑶/11月/11.19/xxx.mp4", default_year=2026
+    )
+    assert (year, month, day) == (2026, 11, 19)
+
+
+def test_parse_period_from_path_full_year_month():
+    """``/鹿13/2026年11月/...`` → 年月从目录名取。"""
+    year, month, day = parse_period_from_path(
+        "/鹿13/2026年11月/2026.11.19/a.mp4", default_year=2020
+    )
+    assert (year, month, day) == (2026, 11, 19)
+
+
+def test_parse_period_from_path_month_only():
+    """只有月份没有日期 ⇒ 归到当月 1 号（不假装是某一天）。"""
+    year, month, day = parse_period_from_path(
+        "/成品-小瑶/11月/a.mp4", default_year=2026
+    )
+    assert (year, month, day) == (2026, 11, 1)
+
+
+def test_parse_period_from_path_no_match():
+    """解析不出 ⇒ 全 0。"""
+    assert parse_period_from_path("/随便/某个目录/a.mp4") == (0, 0, 0)
+
+
+def test_business_day_uses_dir_not_ctime():
+    """⚠️⚠️ **核心回归**：业务日期取自**目录名**，不是上传时间。
+
+    实测（2026-11-20）：``11.19`` 目录里的文件 ctime 是 **2026-11-20**，
+    11.5 目录里的是 **2026-11-06** ⇒ 按 ctime 归日会整体错位。
+    """
+    # 11.19 目录，文件却上传于 11.20
+    item = PanFile(
+        path="/成品-小瑶/11月/11.19/麻花上衣.mp4",
+        name="麻花上衣.mp4",
+        is_dir=False,
+        size=1,
+        ctime=int(time.mktime(time.strptime("2026-11-20", "%Y-%m-%d"))),
+        mtime=0,
+    )
+    assert business_day(item, default_year=2026) == "2026-11-19"
+
+
+def test_business_day_falls_back_to_ctime():
+    """⚠️ 目录名解析不出 ⇒ **降级**用上传时间（并由调用方知晓这是降级）。"""
+    item = PanFile(
+        path="/随便/目录/a.mp4",
+        name="a.mp4",
+        is_dir=False,
+        size=1,
+        ctime=int(time.mktime(time.strptime("2026-11-05", "%Y-%m-%d"))),
+        mtime=0,
+    )
+    assert business_day(item, default_year=2026) == "2026-11-05"
+
+
+def test_count_by_day_uses_business_day():
+    """⚠️ 计数按**业务日期**归集 —— 目录里的文件算到目录名那天。"""
+    ctime_1120 = int(time.mktime(time.strptime("2026-11-20", "%Y-%m-%d")))
+    files = [
+        PanFile("/成品-小瑶/11月/11.19/a.mp4", "a.mp4", False, 1, ctime_1120, 0),
+        PanFile("/成品-小瑶/11月/11.19/b.mp4", "b.mp4", False, 1, ctime_1120, 0),
+        PanFile("/成品-小瑶/11月/11.5/c.mp4", "c.mp4", False, 1, ctime_1120, 0),
+    ]
+    counts = count_by_day(files, extensions="mp4")
+    assert counts == {"2026-11-19": 2, "2026-11-05": 1}
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -501,14 +634,35 @@ def test_probe_access_reports_permission_error(db):
     assert probe["errno"] == 42213
 
 
-def test_watch_path_under_apps(db, monkeypatch):
-    """⚠️ **必须落在 ``/apps/{应用名}`` 下** —— 百度硬限制。"""
+def test_watch_path_uses_configured_business_dir(db, monkeypatch):
+    """⚠️ **直接配网盘业务目录**，不加 ``/apps`` 前缀。
+
+    实测（2026-11-20）：``file?method=list`` 能读任意授权目录，
+    而 ``multimedia?method=listall`` 读不了业务目录（报 20020）。
+    """
     from backend.app.core import config
 
-    monkeypatch.setattr(config.settings, "baidu_pan_app_name", "绩效校验")
-    monkeypatch.setattr(config.settings, "baidu_pan_watch_dir", "/短视频成片")
+    monkeypatch.setattr(config.settings, "baidu_pan_watch_dir", "/成品-小瑶")
     service = BaiduPanService(db, FakePanClient())
-    assert service.watch_path() == "/apps/绩效校验/短视频成片"
+    assert service.watch_path() == "/成品-小瑶"
+
+
+def test_watch_path_normalizes_missing_leading_slash(db, monkeypatch):
+    from backend.app.core import config
+
+    monkeypatch.setattr(config.settings, "baidu_pan_watch_dir", "成品-小瑶")
+    service = BaiduPanService(db, FakePanClient())
+    assert service.watch_path() == "/成品-小瑶"
+
+
+def test_watch_path_falls_back_to_apps_dir(db, monkeypatch):
+    """没配目录 ⇒ 退回平台生成的 ``/apps/{应用名}``。"""
+    from backend.app.core import config
+
+    monkeypatch.setattr(config.settings, "baidu_pan_watch_dir", "")
+    monkeypatch.setattr(config.settings, "baidu_pan_app_name", "绩效校验")
+    service = BaiduPanService(db, FakePanClient())
+    assert service.watch_path() == "/apps/绩效校验"
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -315,13 +315,17 @@ class Settings(BaseSettings):
     baidu_pan_app_key: str = ""
     baidu_pan_app_secret: str = ""
     baidu_pan_app_id: str = ""
-    # ⚠️ **应用名** —— 决定网盘里的默认目录 ``/apps/{应用名}``。
+    # ⚠️ **应用名** —— 平台为应用生成的默认目录是 ``/apps/{应用名}``。
     #    必须与百度开放平台里填的「应用名称」**完全一致**。
     baidu_pan_app_name: str = "绩效校验"
     # OAuth 回调地址。留空则用 ``oob``（授权页直接显示授权码，无需公网域名）。
     baidu_pan_redirect_uri: str = ""
-    # 校验目录（相对 ``/apps/{应用名}`` 的子路径，如 ``/短视频成片``）。
-    # 留空则用应用根目录。
+    # ⚠️ **要校验的网盘目录**（绝对路径，如 ``/成品-小瑶``）。
+    #
+    # ⚠️ **不要加 ``/apps/{应用名}`` 前缀** —— 实测（2026-11-20）：
+    #     用户授权后 ``file?method=list`` 能读**任意授权目录**，
+    #     而 ``multimedia?method=listall`` 反而读不了业务目录（报 20020）。
+    #     ⇒ 递归用自建下钻，路径直接配网盘里的业务目录。
     baidu_pan_watch_dir: str = ""
     # 计数规则：只统计这些扩展名的文件（逗号分隔）。留空则统计全部非目录文件。
     baidu_pan_count_extensions: str = "mp4,mov,m4v,avi,mkv,flv,wmv"

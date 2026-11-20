@@ -24,8 +24,10 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 from urllib.parse import urlencode
 
@@ -45,6 +47,14 @@ OAUTH_SCOPE = "basic,netdisk"
 
 #: ``oob`` 模式 —— 不需要公网域名，授权页直接显示授权码。
 REDIRECT_URI_OOB = "oob"
+
+#: 递归下钻的最大深度。
+#: ⚠️ 业务目录形如 ``/成品-小瑶/10月/10.31`` —— 3 层就够。
+#: 深度越大 = 请求数越多（百度未审核应用限 10 次/小时）。
+DEFAULT_MAX_DEPTH = 4
+
+#: 单次列表接口翻页的安全上限（防止死循环）。
+max_files_guard = 100000
 
 
 class BaiduPanError(Exception):
@@ -249,24 +259,56 @@ class BaiduPanClient:
     ) -> list[PanFile]:
         """递归列出目录下的所有文件。
 
-        ⚠️ **必须走 ``multimedia?method=listall``** —— 递归只有它支持，
-        但它**只允许访问 ``/apps/{appname}`` 下的路径**。
+        ⚠️⚠️ **为什么自己下钻而不用 ``multimedia?method=listall``**
+        ------------------------------------------------------------------
+        百度官方说 ``listall`` 只允许访问 ``/apps/{appname}``，
+        **但实测（2026-11-20）**：
 
-        ⚠️ **分页必须用响应里的 ``cursor``** —— 官方明确说
-        *"当 has_more=1 时，必须使用响应中的 cursor 作为下一次查询的 start，
-        不要自行累加固定步长"*。
+            - 用户授权后，``file?method=list`` **能读用户网盘的任意授权目录**
+              （含 ``/成品-小瑶`` 这种业务目录）
+            - 而 ``multimedia?method=listall`` 反而**读不了**这些路径
+              （报 ``20020 该路径不在允许的访问范围内``）
+
+        ⇒ **唯一可行的递归方式就是自己用 ``file?method=list`` 逐层下钻。**
+        官方那条 ``/apps`` 限制只对那几个"文件操作类"接口生效，
+        对"列表类"接口的实际约束比文档严。
+
+        ⚠️ **代价：请求数 = 目录数**。所以：
+        - 目录很多时要注意频控（百度未审核应用 10 次/小时）
+        - 用 ``max_depth`` 限制下钻深度
         """
         files: list[PanFile] = []
-        start = 0
-        for _ in range(max_pages):
-            page = self._listall_page(access_token, path, start=start, limit=limit)
-            files.extend(page["files"])
-            if not page["has_more"]:
-                break
-            start = page["cursor"]
-            if start is None:
-                break
+        self._walk(access_token, path, files, depth=0, max_depth=DEFAULT_MAX_DEPTH)
         return files
+
+    def _walk(
+        self,
+        access_token: str,
+        path: str,
+        out: list[PanFile],
+        *,
+        depth: int,
+        max_depth: int,
+    ) -> None:
+        """自建递归 —— 逐层列目录，遇到文件就收进 ``out``。"""
+        if depth > max_depth:
+            return
+        try:
+            items = self.list_dir(access_token, path)
+        except BaiduPanError as exc:
+            # ⚠️ **根目录读不到 ⇒ 整轮失败**（配置错了或没授权）——
+            #    必须让它冒泡，否则「扫了 0 个文件」会被当成「目录是空的」。
+            if depth == 0:
+                raise
+            # ⚠️ **子目录读不到不该让整轮失败** ——
+            #    记录后继续（可能是权限外目录或已删除）。
+            logger.warning("百度网盘目录读取失败 %s: %s", path, exc.message)
+            return
+        for item in items:
+            if item.is_dir:
+                self._walk(access_token, item.path, out, depth=depth + 1, max_depth=max_depth)
+            else:
+                out.append(item)
 
     def _listall_page(
         self, access_token: str, path: str, *, start: int, limit: int
@@ -314,14 +356,32 @@ class BaiduPanClient:
 
         ⚠️ ``file?method=list`` **不受** ``/apps`` 限制 ——
         但也**不递归**，只返回这一层。
+
+        ⚠️ **分页**：这个接口用 ``start`` + ``limit`` 翻页，
+        返回里没有 ``has_more``，靠**取满 limit 条**判断还有没有下一页。
         """
+        files: list[PanFile] = []
+        start = 0
+        while True:
+            page = self._list_dir_page(access_token, dir_path, start=start, limit=limit)
+            files.extend(page)
+            if len(page) < limit:
+                break
+            start += len(page)
+            if start >= max_files_guard:
+                break
+        return files
+
+    def _list_dir_page(
+        self, access_token: str, dir_path: str, *, start: int, limit: int
+    ) -> list[PanFile]:
         params = {
             "method": "list",
             "access_token": access_token,
             "dir": dir_path,
             "order": "time",
             "desc": 1,
-            "start": 0,
+            "start": start,
             "limit": limit,
             "folder": 0,
         }
@@ -400,11 +460,115 @@ def count_by_day(
         name = item.name.lower()
         if any(keyword in name for keyword in excluded):
             continue
-        if item.ctime <= 0:
+        day = business_day(item)
+        if not day:
             continue
-        day = time.strftime("%Y-%m-%d", time.localtime(item.ctime))
         counts[day] = counts.get(day, 0) + 1
     return counts
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 业务日期解析
+# ═══════════════════════════════════════════════════════════════════════
+
+
+#: 目录名 → 月份。支持 ``10月`` / ``2026年11月`` / ``2026-11``。
+_MONTH_PATTERNS = (
+    re.compile(r"^(\d{4})年(\d{1,2})月$"),
+    re.compile(r"^(\d{4})[-_](\d{1,2})$"),
+    re.compile(r"^(\d{1,2})月$"),
+)
+
+#: 目录名 → 日。支持 ``11.19`` / ``11-19`` / ``11_19`` / ``2026.11.19``。
+_DAY_PATTERNS = (
+    re.compile(r"^(\d{4})[.\-_](\d{1,2})[.\-_](\d{1,2})$"),
+    re.compile(r"^(\d{1,2})[.\-_](\d{1,2})$"),
+)
+
+
+def parse_period_from_path(path: str, *, default_year: int = 0) -> tuple[int, int, int]:
+    """从**路径里的目录名**解析出 (年, 月, 日)。
+
+    ⚠️⚠️ **为什么必须用目录名，不能用文件上传时间**
+    ------------------------------------------------------
+    实测（2026-11-20，用户网盘 ``/成品-小瑶/11月/11.19``）：
+
+        ``11.19`` 目录里的文件，上传时间是 **2026-11-20**；
+        ``11.5``  目录里的文件，上传时间是 **2026-11-06**。
+
+    ⇒ **上传时间 ≠ 制作日期**（往往晚一天甚至更久）。
+
+    若按 ``server_ctime`` 归日，整个统计会**整体错位** ——
+    11.19 做的片子会被算到 11.20 头上。
+
+    ⇒ 业务日期必须从**目录名**（``11月`` / ``11.19``）解析。
+
+    Args:
+        path: 文件的完整路径，如 ``/成品-小瑶/11月/11.19/xxx.mp4``。
+        default_year: 路径里没有年份时用它补全（默认 0 = 用当前年）。
+
+    Returns:
+        ``(year, month, day)``。解析不出就返回 ``(0, 0, 0)``。
+    """
+    parts = [p for p in (path or "").split("/") if p]
+    year = 0
+    month = 0
+    day = 0
+
+    # 先扫一遍：找月份目录与日期目录
+    for part in parts:
+        for pattern in _MONTH_PATTERNS:
+            match = pattern.match(part)
+            if match:
+                if len(match.groups()) == 2:
+                    year = int(match.group(1))
+                    month = int(match.group(2))
+                else:
+                    month = int(match.group(1))
+                break
+        for pattern in _DAY_PATTERNS:
+            match = pattern.match(part)
+            if match:
+                if len(match.groups()) == 3:
+                    # ``2026.11.19`` —— 年月日俱全
+                    year = int(match.group(1))
+                    month = int(match.group(2))
+                    day = int(match.group(3))
+                else:
+                    # ⚠️ ``11.19`` 是「11 月 19 日」—— 中文习惯是**月在前**。
+                    #   （写成 day=group1 会把 11.19 读成 11 月 11 日。）
+                    month = int(match.group(1))
+                    day = int(match.group(2))
+                break
+
+    if not month:
+        return (0, 0, 0)
+    if not year:
+        year = default_year or time.localtime().tm_year
+    if not day:
+        # 只有月份 —— 用当月最后一天？**不**，用 1 号更安全：
+        # 归到「当月」这个粒度上，不假装是某一天。
+        day = 1
+    return (year, month, day)
+
+
+def business_day(item: PanFile, *, default_year: int = 0) -> str:
+    """取文件的**业务日期**（YYYY-MM-DD）。
+
+    优先从路径目录名解析；解析不出才退回上传时间。
+
+    ⚠️ 退回上传时间是**降级** —— 实测里它比业务日期晚，
+    统计会错位。所以调用方应该优先保证目录名规范。
+    """
+    year, month, day = parse_period_from_path(item.path, default_year=default_year)
+    if year and month and day:
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError:
+            pass
+    if item.ctime > 0:
+        return time.strftime("%Y-%m-%d", time.localtime(item.ctime))
+    return ""
 
 
 def sum_range(counts: dict[str, int], start: str, end: str) -> int:

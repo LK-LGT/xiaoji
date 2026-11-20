@@ -166,17 +166,27 @@ class BaiduPanService:
     def watch_path(self) -> str:
         """要扫描的网盘绝对路径。
 
-        ⚠️ **必须在 ``/apps/{appname}`` 下** —— 这是百度硬限制。
-        应用名从 ``baidu_pan_app_name`` 配置读；读不到时退化为
-        ``/apps/绩效校验``。
+        ⚠️⚠️ **实测结论（2026-11-20，授权后验证）**
+        ----------------------------------------------------------
+        百度官方文档说"应用只能访问 ``/apps/{appname}``"，
+        **但实测**：
+
+            - ``file?method=list`` **能读用户网盘的任意授权目录**
+              （如 ``/成品-小瑶``）—— 这是业务目录，不在 ``/apps`` 下
+            - ``multimedia?method=listall`` 反而**读不了**这些路径
+              （报 ``20020``）
+
+        ⇒ 所以 ``watch_dir`` 直接配**网盘里的业务目录**，
+        **不要**加 ``/apps/{应用名}`` 前缀。
+
+        例：``BAIDU_PAN_WATCH_DIR=/成品-小瑶``
         """
-        base = settings.baidu_pan_app_name.strip() or "绩效校验"
-        root = f"/apps/{base}"
         sub = settings.baidu_pan_watch_dir.strip()
         if not sub:
-            return root
-        sub = sub if sub.startswith("/") else f"/{sub}"
-        return f"{root}{sub}"
+            # 没配就退回应用根目录（授权后平台生成的那个）。
+            base = settings.baidu_pan_app_name.strip() or "绩效校验"
+            return f"/apps/{base}"
+        return sub if sub.startswith("/") else f"/{sub}"
 
     def probe_access(self) -> dict[str, Any]:
         """探一下目录能不能读 —— 授权后立刻验，避免定时任务才发现问题。"""
