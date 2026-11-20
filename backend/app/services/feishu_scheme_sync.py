@@ -40,7 +40,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -161,6 +161,21 @@ class FeishuSchemeSyncService:
         self.db.flush()
 
         try:
+            # ── 0. 自动发现（先扫知识空间，补齐没有绑定的部门）──
+            # ⚠️ 顺序很重要：**先发现再同步** —— 本轮新发现的文档
+            #    本轮就能同步，不用等下一个周期。
+            # ⚠️ 发现失败**绝不能**拖垮整轮同步 —— 双保险：
+            #    这里 try 一次，``_auto_discover`` 内部也 try 一次。
+            try:
+                discover_result = self._auto_discover()
+            except Exception as exc:  # pragma: no cover
+                logger.warning("自动发现异常（不影响同步）：%s", exc)
+                discover_result = {
+                    "status": "failed",
+                    "reason": str(exc)[:500],
+                    "discovered": [],
+                }
+
             sources = self._load_sources(only_source_id)
             batch.source_count = len(sources)
             items: list[dict[str, Any]] = []
@@ -181,7 +196,7 @@ class FeishuSchemeSyncService:
             batch.changed_count = changed
             batch.published_count = published
             batch.failed_count = failed
-            batch.detail = {"items": items}
+            batch.detail = {"items": items, "discover": discover_result}
             if failed and published:
                 batch.status = STATUS_PARTIAL
             elif failed:
@@ -198,6 +213,42 @@ class FeishuSchemeSyncService:
             batch.finished_at = _now()
             self.db.flush()
             return batch
+
+    def _auto_discover(self) -> dict[str, Any]:
+        """自动发现 —— 扫描知识空间，给还没绑定的部门建立绑定。
+
+        ⚠️ **永不抛异常** —— 发现失败（空间没授权、应用没加成员等）
+        绝不能拖垮整轮同步。已绑定来源的同步必须照常进行。
+
+        ⚠️ **人工绑定优先** —— ``SchemeSourceService.discover``
+        内部已保证不覆盖人工绑定。
+        """
+        from ..core.config import settings
+
+        if not settings.feishu_scheme_sync_enabled:
+            return {
+                "status": "skipped",
+                "reason": "同步总开关未开启",
+                "discovered": [],
+            }
+        try:
+            from .feishu_scheme_source import SchemeSourceService
+
+            service = SchemeSourceService(self.db, self.docs)
+            result = service.discover()
+            if result.get("status") == "ok":
+                logger.info(
+                    "飞书方案自动发现：新增 %s 条绑定",
+                    len(result.get("discovered") or []),
+                )
+            return result
+        except Exception as exc:
+            logger.warning("飞书方案自动发现失败（不影响同步）：%s", exc)
+            return {
+                "status": "failed",
+                "reason": str(exc)[:500],
+                "discovered": [],
+            }
 
     def _load_sources(
         self, only_source_id: str | None

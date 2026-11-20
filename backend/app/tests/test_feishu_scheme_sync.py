@@ -61,7 +61,6 @@ from backend.app.services.feishu_scheme_sync import (
     next_effective_window,
 )
 
-
 # ─────────────────────────────────────────────────────────────
 # 假客户端
 # ─────────────────────────────────────────────────────────────
@@ -717,3 +716,88 @@ def test_auto_start_task_is_idempotent(db, monkeypatch):
         assert db.query(AssessmentTask).count() == 1
         second_task = second.detail["items"][0].get("task") or {}
         assert second_task.get("started") is False
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 11. 自动发现接进同步轮次
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_sync_runs_auto_discover_first(db, monkeypatch):
+    """⚠️ 回归：``run()`` 必须**先自动发现再同步**。
+
+    顺序错了会变成「本轮发现、下轮才同步」——
+    新部门的方案要多等一个周期才生效。
+    """
+    calls: list[str] = []
+
+    from backend.app.services import feishu_scheme_sync as sync_mod
+
+    original = sync_mod.FeishuSchemeSyncService._auto_discover
+
+    def spy(self):
+        calls.append("discover")
+        return original(self)
+
+    monkeypatch.setattr(sync_mod.FeishuSchemeSyncService, "_auto_discover", spy)
+
+    docs = make_docs(edit_times={"NODE1": "2000"})
+    make_source(db, docs, last_edit_time="1000")
+    service = FeishuSchemeSyncService(db, docs, actor_id="H")
+    service.run()
+    db.commit()
+
+    assert calls == ["discover"], "同步轮次里应调用一次自动发现"
+
+
+def test_discover_result_recorded_in_batch_detail(db):
+    """⚠️ 回归：自动发现结果要记进批次明细 —— 否则运维看不到发现情况。"""
+    docs = make_docs(edit_times={"NODE1": "2000"})
+    make_source(db, docs, last_edit_time="1000")
+    service = FeishuSchemeSyncService(db, docs, actor_id="H")
+    batch = service.run()
+    db.commit()
+
+    detail = batch.detail or {}
+    assert "discover" in detail, "批次明细里应有自动发现结果"
+    discover = detail["discover"]
+    assert discover.get("status") in ("ok", "skipped", "failed")
+    assert "discovered" in discover
+
+
+def test_discover_failure_does_not_break_sync(db, monkeypatch):
+    """⚠️ 回归：自动发现失败**不能**拖垮整轮同步。
+
+    场景：应用没被加入知识空间（131006）。
+    ⇒ 发现跳过，但已绑定来源照常同步。
+    """
+    docs = make_docs(edit_times={"NODE1": "2000"})
+    make_source(db, docs, last_edit_time="1000")
+    service = FeishuSchemeSyncService(db, docs, actor_id="H")
+
+    def boom(self):
+        raise RuntimeError("模拟发现炸了")
+
+    monkeypatch.setattr(
+        FeishuSchemeSyncService, "_auto_discover", boom, raising=True
+    )
+    batch = service.run()
+    db.commit()
+
+    # 发现炸了 → 整轮同步仍要有结果，且不抛异常
+    assert batch is not None
+    assert batch.status in ("succeeded", "failed", "partial")
+    assert len(batch.detail["items"]) == 1
+
+
+def test_discover_skipped_when_sync_disabled(db, monkeypatch):
+    """总开关关闭时不该跑自动发现。"""
+    from backend.app.core import config
+
+    monkeypatch.setattr(config.settings, "feishu_scheme_sync_enabled", False)
+    docs = make_docs(edit_times={"NODE1": "2000"})
+    make_source(db, docs, last_edit_time="1000")
+    service = FeishuSchemeSyncService(db, docs, actor_id="H")
+    result = service._auto_discover()
+    assert result["status"] == "skipped"
+    assert "discovered" in result
