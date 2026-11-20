@@ -219,24 +219,30 @@ def _author_alias(index: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _parse_month(value: str | None) -> str | None:
-    """把 ``2026-11`` / ``202611`` 归一成 ``202611``。"""
-    if not value:
-        return None
-    raw = value.strip().replace("-", "").replace("/", "")
-    return raw if len(raw) == 6 and raw.isdigit() else None
-
-
 def _month_range(months: int) -> tuple[str, str]:
-    """最近 N 个月（含当月）的 ``(起, 止)``，格式 ``YYYYMM``。"""
+    """最近 N 个月（含当月）的 ``(起, 止)``。
+
+    ⚠️ **格式必须是 ``YYYY-MM``**（``month_plan.plan_month`` 的库内格式）。
+
+    ⚠️ **BUG（真机端到端验证时暴露）**：这里原来返回 ``YYYYMM``（如
+    ``202606``~``202611``），拿它去和库里的 ``plan_month`` 做**字符串比较**：
+
+        "2026-11" >= "202606"   →  False
+
+    因为 ``-`` 的 ASCII 码是 45，比 ``0`` 的 48 小 → **所有历史计划都查不到**。
+    表现是工具永远返回 ``planCount: 0`` + 「该时间范围内没有历史计划」，
+    而模型会据此说「未查到历史计划」→ **参考材料静默失效**。
+
+    归一化只在这一层做（入参两种格式都接受），**出参必须统一成库内格式**。
+    """
     today = date.today()
-    end = today.strftime("%Y%m")
+    end = today.strftime("%Y-%m")
     start_month = today.month - (months - 1)
     year = today.year
     while start_month <= 0:
         start_month += 12
         year -= 1
-    return f"{year}{start_month:02d}", end
+    return f"{year}-{start_month:02d}", end
 
 
 def load_my_plan_history(

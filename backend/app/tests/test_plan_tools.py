@@ -50,13 +50,24 @@ def setup(monkeypatch):
                         employment_status="resigned", account_status="enabled"))
         db.flush()
 
-        plan = MonthPlan(id="P1", owner_id="ME", plan_month="202610", title="我的计划")
+        # ⚠️ **plan_month 必须用库内真实格式 ``YYYY-MM``**（带横杠）。
+        #
+        # ⚠️ **BUG（真机端到端验证时暴露）**：这里原来写 ``"202610"``（紧凑），
+        #    与生产库的真实格式 ``"2026-10"`` 不一致 —— 于是
+        #    **测试永远查不到数据但断言照过**，把一个真实的取数 bug 盖住了。
+        #
+        #    真机上的表现：工具恒返回 ``planCount: 0``，
+        #    模型据此说「未查到历史计划」→ **参考材料静默失效**，
+        #    而单测全绿。
+        #
+        #    所以测试数据必须**和真实写入的格式一模一样**。
+        plan = MonthPlan(id="P1", owner_id="ME", plan_month="2026-10", title="我的计划")
         db.add(plan)
         db.flush()
         db.add(MonthPlanItem(id="MI1", plan_id="P1", task_name="我的任务",
                              task_content="我的任务内容", deliverable="交付物A"))
 
-        peer_plan = MonthPlan(id="P2", owner_id="PEER", plan_month="202610",
+        peer_plan = MonthPlan(id="P2", owner_id="PEER", plan_month="2026-10",
                               title="同事计划", project_name="与王五合作的项目")
         db.add(peer_plan)
         db.flush()
@@ -114,6 +125,48 @@ def test_my_plan_history_has_no_employee_id_parameter(setup):
                            json={"months": 12, "employee_id": "PEER"},
                            headers=headers())
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# 0. 取数格式（真机端到端验证时暴露的 bug）
+# ---------------------------------------------------------------------------
+
+
+def test_month_range_uses_stored_plan_month_format(setup):
+    """``_month_range`` 必须产出**库内真实格式** ``YYYY-MM``。
+
+    ⚠️ **BUG（真机端到端验证时暴露）**：原来返回 ``YYYYMM``（``202606``~``202611``），
+    拿它和库里的 ``plan_month``（``2026-10``）做**字符串比较**：
+
+        "2026-10" >= "202606"   →  False
+
+    ``-`` 的 ASCII 码 45 < ``0`` 的 48 → **所有历史计划都查不到**。
+    真机表现：工具恒返回 ``planCount: 0``，模型据此说「未查到历史计划」
+    → **参考材料静默失效**，而单测因为造数格式也不一致，一直是绿的。
+
+    这个断言锁住格式 —— 一旦有人把格式改回 ``YYYYMM``，这里立刻红。
+    """
+    db, client = setup
+    start, end = plan_tool_service._month_range(12)
+    assert "-" in start and "-" in end, f"月份范围必须是 YYYY-MM，实际 {start}~{end}"
+    # 与库里真实写入的格式必须**可比较**
+    assert "2026-10" >= start, f"库内格式 {start} 与 '2026-10' 不可比较"
+
+
+def test_my_plan_history_finds_plans_with_real_stored_format(setup):
+    """用**真实库内格式**的历史计划，工具必须查得到。
+
+    ⚠️ 这条是上面那个 bug 的**行为级**断言：
+    工具返回的 ``planCount`` 必须 > 0，否则说明取数静默失效了。
+    """
+    db, client = setup
+    response = client.post("/v1/plan-tools/get_my_plan_history", json={"months": 12},
+                           headers=headers())
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["available"] is True, f"应查到历史计划，实际 {data}"
+    assert data["planCount"] >= 1, f"planCount 应 >=1，实际 {data['planCount']}"
+    assert data["itemCount"] >= 1, f"itemCount 应 >=1，实际 {data['itemCount']}"
 
 
 def test_department_history_requires_department_scope(setup):

@@ -32,7 +32,13 @@ def setup(monkeypatch):
         db.add(Employee(id="ME", name="我", department_id="D1",
                         employment_status="active", account_status="enabled"))
         db.flush()
-        plan = MonthPlan(id="P1", owner_id="ME", plan_month="202610", title="上月计划")
+        # ⚠️ **plan_month 用库内真实格式 ``YYYY-MM``**（带横杠）。
+        #
+        # ⚠️ **BUG（真机端到端验证时暴露）**：这里原来写 ``"202610"``（紧凑），
+        #    与生产库真实格式 ``"2026-10"`` 不一致 → 历史计划查不到 →
+        #    ``historyPlanCount`` 恒为 0。测试因为造数格式相同而一直是绿的，
+        #    把一个真实的取数 bug 盖住了。
+        plan = MonthPlan(id="P1", owner_id="ME", plan_month="2026-10", title="上月计划")
         db.add(plan)
         db.flush()
         db.add(MonthPlanItem(id="MI1", plan_id="P1", task_name="历史任务",
@@ -107,8 +113,24 @@ def test_disabled_context_reports_not_enabled(setup, monkeypatch):
 
 
 def test_default_is_disabled():
-    """默认必须关闭 —— 计划会变成考核指标，不能默认开。"""
-    fresh = Settings(agent_tool_secret="x" * 40, agent_shared_secret="y" * 40)
+    """**代码默认值**必须关闭 —— 计划会变成考核指标，不能默认开。
+
+    ⚠️ 这里断言的是**代码里的默认值**，不是「当前环境的实际值」。
+    所以不能直接 ``Settings()`` —— 它会读 ``backend/.env``，
+    而 ``.env`` 里可能已经配了 ``PLAN_AI_ENABLED=true``（生产启用），
+    那会让这条断言随环境漂移。
+
+    要断言代码默认值，得**显式传一个空环境**：
+    ``_env_file=None`` 让 pydantic-settings 不加载任何 ``.env``。
+    """
+    fresh = Settings(
+        agent_tool_secret="x" * 40,
+        agent_shared_secret="y" * 40,
+        # ⚠️ 不读 .env 就意味着**所有**环境变量都拿不到，
+        #    包括必填的 ``auth_token_secret`` —— 只能显式补上。
+        auth_token_secret="z" * 40,
+        _env_file=None,
+    )
     assert fresh.plan_ai_enabled is False
 
 
