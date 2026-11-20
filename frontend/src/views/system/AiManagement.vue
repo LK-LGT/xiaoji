@@ -135,6 +135,24 @@
           </el-table>
         </div>
       </el-tab-pane>
+
+      <!--
+        P1-5 数据源白名单。
+        放在 AI 控制中心而不是系统设置里，是因为它决定的是
+        「哪些数据能进 AI 的证据集」—— 属于 AI 输入边界。
+      -->
+      <el-tab-pane label="数据源白名单" name="data-sources">
+        <DataSourcePolicyPanel />
+      </el-tab-pane>
+
+      <!--
+        P2-3 Prompt 灰度与反馈闭环。
+        与模型配置分开成页签：模型换供应商是「能力」，Prompt 灰度是「策略」，
+        两者的审批节奏与风险面都不一样。
+      -->
+      <el-tab-pane label="Prompt 灰度" name="prompts">
+        <FeedbackPanel can-manage title="Prompt 版本与人工反馈" />
+      </el-tab-pane>
     </el-tabs>
 
     <el-dialog v-model="configDialog" :title="editingId === null ? '新增模型配置' : '编辑模型配置'" width="min(860px, 94vw)" destroy-on-close>
@@ -256,6 +274,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Connection, Edit, Plus, RefreshLeft, Search, SwitchButton } from '@element-plus/icons-vue'
 import AiInputSummary from '@/components/AiInputSummary.vue'
+import DataSourcePolicyPanel from '@/components/DataSourcePolicyPanel.vue'
+import FeedbackPanel from '@/components/FeedbackPanel.vue'
 import { isTechnicalEvent, normalizeTraceEvent, semanticEvidenceText } from '@/utils/aiTracePresentation'
 import {
   createAiConfigApi,

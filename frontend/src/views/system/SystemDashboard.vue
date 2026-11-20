@@ -53,12 +53,17 @@
         </article>
       </div>
 
+      <!--
+        P1-4 代理授权：主管请假期间把管理权临时交给受托人。
+        放在系统工作台，是因为 HR 需要在这里看到"当前谁代谁管着什么"。
+      -->
+      <DelegationPanel class="mt16" />
+
       <div class="system-dashboard-grid">
         <section class="section-card">
           <div class="section-header">
             <div><h2>配置风险</h2><p>风险项可直接进入对应管理页面处理。</p></div>
-          </div>
-          <div v-if="data.risks.length" class="risk-list">
+          </div>          <div v-if="data.risks.length" class="risk-list">
             <button v-for="risk in data.risks" :key="risk.code" type="button" class="risk-row" @click="router.push(risk.route)">
               <span :class="['risk-indicator', `is-${risk.level}`]"></span>
               <span><strong>{{ risk.title }}</strong><small>{{ risk.count ? `存在 ${risk.count} 项待处理` : '当前配置正常' }}</small></span>
@@ -136,6 +141,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { getSystemDashboard, type DashboardData } from '@/api/system'
+import DelegationPanel from '@/components/DelegationPanel.vue'
 
 const router = useRouter()
 const loading = ref(false)

@@ -81,6 +81,7 @@ import WorkdayRules from '@/views/system/WorkdayRules.vue'
 import WeekPlanStandardSupplement from '@/views/system/WeekPlanStandardSupplement.vue'
 import AuditLog from '@/views/system/AuditLog.vue'
 import AiManagement from '@/views/system/AiManagement.vue'
+import PerformanceAnalytics from '@/views/system/PerformanceAnalytics.vue'
 import EnterpriseKnowledge from '@/views/system/EnterpriseKnowledge.vue'
 import FeishuSyncManagement from '@/views/system/FeishuSyncManagement.vue'
 
@@ -89,6 +90,7 @@ import SchemeManagement from '@/views/performance/SchemeManagement.vue'
 import PerformanceDashboard from '@/views/performance/PerformanceDashboard.vue'
 import EmployeeSelfReview from '@/views/performance/EmployeeSelfReview.vue'
 import ManagerReview from '@/views/performance/ManagerReview.vue'
+import QaPanel from '@/views/qa/QaPanel.vue'
 
 import ReviewCenter from '@/views/dispute/ReviewCenter.vue'
 import DisputeDashboard from '@/views/dispute/DisputeDashboard.vue'
@@ -219,6 +221,12 @@ const router = createRouter({
     withAppShell('/performance/self-reviews', EmployeeSelfReview, { permission: 'performance:self-review:view' }),
     withAppShell('/performance/manager-reviews', ManagerReview, { permission: 'performance:manager-review:view' }),
 
+    // --- 问答 ---
+    // ⚠️ 全角色可见：问答的数据范围由**后端**按权限收敛
+    //    （`/v1/qa/tasks` 只返回有权问答的任务），
+    //    前端权限位只负责「谁能打开这个页面」。
+    withAppShell('/qa', QaPanel, { permission: 'performance:dashboard:view' }),
+
     // --- 系统管理 ---
     withAppShell('/system/dashboard', SystemDashboard, { permission: 'system:dashboard:view' }, '/dashboard'),
     withAppShell('/system/employee-register', EmployeeRegister, { permission: 'system:employee:register' }),
@@ -230,6 +238,7 @@ const router = createRouter({
     withAppShell('/system/week-plan-standard-supplements', WeekPlanStandardSupplement, { permission: 'system:week-standard:view' }),
     withAppShell('/system/audits', AuditLog, { permission: 'system:audit:view' }),
     withAppShell('/system/ai', AiManagement, { permission: 'system:dashboard:view' }),
+    withAppShell('/system/performance-analytics', PerformanceAnalytics, { permission: 'system:dashboard:view' }),
     withAppShell('/system/knowledge', EnterpriseKnowledge, { permission: 'system:knowledge:view' }),
     withAppShell('/system/feishu-sync', FeishuSyncManagement, { permission: 'system:feishu-sync:manage' }),
 

@@ -1263,6 +1263,37 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgb(216 137 53 / 38%)
   cursor: pointer;
   transition: border-color .18s ease, background-color .18s ease, transform .18s ease;
 }
+/* ⚠️ 窄屏时右侧标签（"今天日计划"等）会把中间的标题与描述挤到换行溢出。
+   让标签换行到卡片下方，并给文字区真正的弹性空间。 */
+@media (max-width: 1180px) {
+  .workbench-action-card {
+    grid-template-columns: 36px minmax(0, 1fr) 14px;
+    grid-template-areas:
+      "icon copy arrow"
+      "tag tag tag";
+    row-gap: 8px;
+  }
+
+  .workbench-action-card__icon {
+    grid-area: icon;
+  }
+
+  .workbench-action-card__copy {
+    grid-area: copy;
+  }
+
+  .workbench-action-card b {
+    grid-area: tag;
+    max-width: none;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .workbench-row-arrow {
+    grid-area: arrow;
+  }
+}
 .workbench-action-card:hover {
   border-color: #9fc5b8;
   background: var(--soft-blue);
@@ -1586,12 +1617,12 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgb(216 137 53 / 38%)
    3. 浮层宽度基于整个视口，无法与右侧工作区对齐。
 
    策略：
-   - 1180px 起，侧边栏改为可收起抽屉，主内容独占视口；
+   - 1024px 起，侧边栏改为可收起抽屉，主内容独占视口；
    - 所有浮层使用视口安全宽度，最大高度不超过视口；
    - 表格容器允许横向滚动，不再把整个页面撑宽；
    - 顶部操作区、表单栅格、通知面板在窄屏下自动换行。
    ───────────────────────────────────────────────────────────── */
-@media (max-width: 1180px) {
+@media (max-width: 1024px) {
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
   }

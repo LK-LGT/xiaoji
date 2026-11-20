@@ -19,6 +19,16 @@
         <el-table :data="meetings" stripe><el-table-column prop="title" label="会议" /><el-table-column prop="period" label="考核周期" /><el-table-column label="状态"><template #default="{ row }">{{ label(row.status) }}</template></el-table-column><el-table-column label="操作"><template #default="{ row }"><el-button link type="primary" @click="openMeeting(row.id)">会议材料与决议</el-button></template></el-table-column></el-table>
       </el-tab-pane>
       <el-tab-pane v-if="caps?.isHr" label="投递与同步" name="outbox"><el-button @click="loadOutbox">刷新状态</el-button><el-table :data="outbox"><el-table-column prop="topic" label="事件" /><el-table-column prop="status" label="状态" /><el-table-column prop="attempts" label="尝试次数" /><el-table-column prop="lastError" label="待处理问题" /></el-table></el-tab-pane>
+
+      <!--
+        P2-3 案例库。
+        复核人在处理申诉时需要**参考先例**，但案例不能当依据 ——
+        所以这个页签对所有人可读（can-publish 只给主管/HR），
+        且案例本身已脱敏、标注为参考做法。
+      -->
+      <el-tab-pane label="案例库" name="cases-library">
+        <CaseLibraryPanel :can-publish="Boolean(caps?.canManage || caps?.isHr)" title="历史处理案例（参考）" />
+      </el-tab-pane>
     </el-tabs>
 
     <el-dialog v-model="createDialog" title="发起申诉" width="660px"><el-form label-position="top"><el-form-item label="复核对象"><el-select v-model="create.target" class="full"><el-option v-for="o in options" :key="o.resultId" :label="o.label" :value="o.resultId" /></el-select></el-form-item><el-form-item label="标题"><el-input v-model="create.title" maxlength="200" /></el-form-item><el-form-item label="争议事项、依据及需要核查的内容"><el-input v-model="create.reason" type="textarea" :rows="6" maxlength="10000" /></el-form-item><p>提交后可追加 PDF、PNG、JPEG 证据；每个文件不超过10MB，最多20个。</p></el-form><template #footer><el-button @click="createDialog = false">取消</el-button><el-button type="primary" :loading="busy" @click="submitCase">提交申诉</el-button></template></el-dialog>
@@ -52,7 +62,7 @@
           <el-tab-pane label="中立核验报告">
             <el-button v-if="(active.canManage || isReviewer) && ['ACCEPTED', 'REVIEWING'].includes(active.status)" type="primary" :loading="busy" @click="generateReport">生成冻结数据核验报告</el-button>
             <p>报告提供事实、差异和待核实事项；裁决由授权人员完成。</p>
-            <div v-for="r in active.reports" :key="r.id" class="card"><h3>报告版本 {{ r.version }}</h3><p>{{ r.content.ai_status }}</p><h4>确认事实</h4><pre>{{ pretty(r.content.facts) }}</pre><h4>差异</h4><pre>{{ pretty(r.content.differences) }}</pre><h4>缺失与待核实</h4><pre>{{ pretty(r.content.missing) }}</pre><h4>证据完整性</h4><pre>{{ pretty(r.content.evidence) }}</pre><h4>评分历史</h4><pre>{{ pretty(r.content.history) }}</pre></div>
+            <VerificationReportPanel :reports="active.reports" />
           </el-tab-pane>
           <el-tab-pane label="操作时间线"><el-timeline><el-timeline-item v-for="e in active.events" :key="e.id" :timestamp="e.createdAt"><strong>{{ label(e.action) }}</strong> · {{ e.actorId }}<p>{{ e.payload.comment || e.payload.digest || '' }}</p><small>{{ e.digest }}</small></el-timeline-item></el-timeline></el-tab-pane>
           <el-tab-pane label="冻结快照"><pre>{{ pretty(active.snapshot) }}</pre></el-tab-pane>
@@ -73,6 +83,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { reviewApi, type ReviewCase, type Adjustment, type Meeting } from '@/api/reviewCenter'
+import CaseLibraryPanel from '@/components/CaseLibraryPanel.vue'
+import VerificationReportPanel from '@/components/VerificationReportPanel.vue'
 const loading = ref(false), busy = ref(false), error = ref(''), tab = ref('cases')
 const caps = ref<Awaited<ReturnType<typeof reviewApi.capabilities>>>()
 const cases = ref<ReviewCase[]>([]), adjustments = ref<Adjustment[]>([]), meetings = ref<Meeting[]>([])

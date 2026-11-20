@@ -68,6 +68,7 @@ const SECTION_TITLES: Record<string, string> = {
   '/employee/performance-evidence': '绩效依据',
   '/employee/appeals': '申诉记录',
   '/dispute/cases': '争议案件',
+  '/qa': '绩效问答',
 }
 
 const WORKSPACE_HOME_BY_PREFIX: ReadonlyArray<readonly [string, string]> = [
@@ -76,6 +77,10 @@ const WORKSPACE_HOME_BY_PREFIX: ReadonlyArray<readonly [string, string]> = [
   ['/leader', '/leader/workbench'],
   ['/employee', '/employee/dashboard'],
   ['/dispute', '/dispute/dashboard'],
+  // ⚠️ 顺序有意义：`/qa` 必须排在 `/performance` **之前**吗？—— 不需要，
+  //    两者前缀互不包含。但 `/qa` 归属「绩效管理」工作区，
+  //    所以它的面包屑上级应该是绩效管理工作台。
+  ['/qa', '/performance/dashboard'],
 ]
 
 const EXACT_NODES: Record<string, NavigationNode> = {

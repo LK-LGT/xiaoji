@@ -290,6 +290,34 @@
           />
         </div>
 
+        <!--
+          P2-1 评语质检 + 面谈提纲。
+          放在评价意见**上方**是有意的 —— 主管写评语时就能看到
+          「空洞措辞」「无据推断」这类问题，而不是写完提交后再回来找。
+        -->
+        <SemanticQcPanel :record-id="selectedRecord.record_id" class="semantic-qc-section" />
+
+        <!--
+          P0-1 互评：主管在评分前先看互评回收进度，
+          互评意见是评分参考材料（不会自动改分）。
+        -->
+        <PeerReviewPanel
+          :record-id="selectedRecord.record_id"
+          :task-id="selectedRecord.task_id"
+          :can-assign="canManagePeers"
+          class="peer-review-section"
+        />
+
+        <!--
+          P0-2 分布质检：只提供统计观察与核查线索，**不改分**。
+          放在评分表单上方，主管能带着分布背景做判断。
+        -->
+        <DistributionQcPanel
+          :period="selectedRecord.period"
+          :department-ids="selectedRecord.employee?.department_id || ''"
+          class="distribution-qc-section"
+        />
+
         <el-form :model="reviewFormData" label-width="100px">
           <el-form-item label="评分等级" required>
             <el-radio-group v-model="reviewFormData.grade">
@@ -356,6 +384,38 @@
             </div>
           </div>
         </div>
+
+        <!--
+          P2-3 反馈闭环。
+          评分提交后，主管顺手记录「AI 草稿好不好用」——
+          这是 Prompt 版本取舍的唯一可信依据（模型自评不算数）。
+          ⚠️ 反馈**不改分数**，只落 ai_feedback 表。
+        -->
+        <div class="feedback-section">
+          <div class="reference-title">💬 AI 草稿反馈（可选）</div>
+          <div class="feedback-body">
+            <el-radio-group v-model="feedbackAction" size="small">
+              <el-radio-button label="ACCEPT">采纳</el-radio-button>
+              <el-radio-button label="MODIFY">修改后采纳</el-radio-button>
+              <el-radio-button label="REJECT">拒绝</el-radio-button>
+            </el-radio-group>
+            <el-input
+              v-model="feedbackReason"
+              size="small"
+              placeholder="简单说明原因（可选）"
+              class="feedback-reason"
+            />
+            <el-button
+              size="small"
+              :loading="feedbackSubmitting"
+              :disabled="!feedbackAction"
+              @click="submitFeedback"
+            >
+              提交反馈
+            </el-button>
+          </div>
+          <p class="feedback-note">反馈只记录你对 AI 产出的评价，不会修改分数或已确认等级。</p>
+        </div>
       </div>
 
       <template #footer>
@@ -363,8 +423,7 @@
         <el-button type="primary" @click="saveReview" :loading="submitting">
           提交评分
         </el-button>
-      </template>
-    </el-dialog>
+      </template>    </el-dialog>
   </section>
 </template>
 
@@ -373,6 +432,12 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import dayjs from 'dayjs'
 import AttendancePanel from './AttendancePanel.vue'
+import SemanticQcPanel from '@/components/SemanticQcPanel.vue'
+import PeerReviewPanel from '@/components/PeerReviewPanel.vue'
+import DistributionQcPanel from '@/components/DistributionQcPanel.vue'
+import { feedbackApi } from '@/api/p2'
+import { http } from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 import {
   fetchAssessmentRecord,
   fetchAttendanceSummary,
@@ -393,6 +458,18 @@ const searchText = ref('')
 const showSelfReviewDialog = ref(false)
 const showReviewFormDialog = ref(false)
 const selectedRecord = ref<PendingAssessmentRecord | null>(null)
+const authStore = useAuthStore()
+/** P0-1：主管 / 部门负责人 / HR 可分派互评人。 */
+const canManagePeers = computed(() =>
+  (authStore.user?.roles || []).some((r) =>
+    ['manager', 'department_leader', 'hr'].includes(r),
+  ),
+)
+
+/** P2-3 AI 草稿反馈。 */
+const feedbackAction = ref<'ACCEPT' | 'MODIFY' | 'REJECT' | ''>('')
+const feedbackReason = ref('')
+const feedbackSubmitting = ref(false)
 
 /** 全部可见记录（含待评与已评）。 */
 const allRecords = ref<PendingAssessmentRecord[]>([])
@@ -554,6 +631,8 @@ async function submitReview(record: PendingAssessmentRecord) {
   reviewFormData.comment = record.manager_comment || ''
   reviewFormData.strengths = ''
   reviewFormData.improvements = ''
+  feedbackAction.value = ''
+  feedbackReason.value = ''
   showReviewFormDialog.value = true
   await loadDetail(record)
 }
@@ -581,7 +660,6 @@ async function saveReview() {
     // 后端契约：confirmed_rating + manager_comment
     // （后端 AssessmentRecord 暂未提供 strengths / improvements 落库字段，
     //   这两项目前仅作草稿展示，不随请求提交。）
-    const { http } = await import('@/api/http')
     await http.post(
       `/assessment/records/${selectedRecord.value.record_id}/manager-review`,
       {
@@ -599,12 +677,41 @@ async function saveReview() {
   }
 }
 
+/**
+ * P2-3 提交 AI 草稿反馈。
+ *
+ * ⚠️ 反馈**只写 ai_feedback**，不碰评分、不碰等级。
+ * 失败只提示，不阻断评分流程 —— 反馈是可选的，不能因为反馈接口挂了
+ * 就让主管提交不了评分。
+ */
+async function submitFeedback() {
+  if (!selectedRecord.value || !feedbackAction.value) return
+  feedbackSubmitting.value = true
+  try {
+    await feedbackApi.submit({
+      record_id: selectedRecord.value.record_id,
+      action: feedbackAction.value,
+      agent: 'comment_draft',
+      reason: feedbackReason.value || null,
+    })
+    ElMessage.success('反馈已记录')
+    feedbackAction.value = ''
+    feedbackReason.value = ''
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '反馈提交失败')
+  } finally {
+    feedbackSubmitting.value = false
+  }
+}
+
 async function viewReview(record: PendingAssessmentRecord) {
   selectedRecord.value = record
   reviewFormData.grade = record.confirmed_rating || 'B'
   reviewFormData.comment = record.manager_comment || ''
   reviewFormData.strengths = ''
   reviewFormData.improvements = ''
+  feedbackAction.value = ''
+  feedbackReason.value = ''
   showReviewFormDialog.value = true
   await loadDetail(record)
 }
@@ -773,6 +880,37 @@ onMounted(loadRecords)
 
 .attendance-section {
   margin-bottom: 18px;
+}
+
+.semantic-qc-section {
+  margin-bottom: 18px;
+}
+
+.feedback-section {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f5f7fa;
+  border-radius: 4px;
+  border-left: 3px solid #67c23a;
+}
+
+.feedback-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.feedback-reason {
+  flex: 1;
+  min-width: 220px;
+}
+
+.feedback-note {
+  font-size: 11px;
+  color: #909399;
+  margin: 8px 0 0 0;
+  line-height: 1.6;
 }
 
 .self-review-reference {

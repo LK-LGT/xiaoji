@@ -57,6 +57,23 @@
         </article>
       </div>
 
+      <!--
+        P2-2 趋势复盘报表。
+        放在统计卡片之后、任务列表之前 —— 领导进来第一屏就能看到
+        「谁在上升、谁在下降、谁有风险」，而不是先翻列表。
+      -->
+      <div class="section-card mt16">
+        <el-collapse v-model="trendExpanded" class="trend-collapse">
+          <el-collapse-item name="trend">
+            <template #title>
+              <span class="collapse-title">📈 趋势复盘报表</span>
+              <span class="collapse-hint">跨周期趋势 / 岗位横向 / 风险清单</span>
+            </template>
+            <TrendReportPanel />
+          </el-collapse-item>
+        </el-collapse>
+      </div>
+
       <!-- 任务列表 -->
       <div class="section-card">
         <div class="section-header">
@@ -87,7 +104,7 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="180" fixed="right">
+          <el-table-column label="操作" width="240" fixed="right">
             <template #default="{ row }">
               <el-button
                 link
@@ -105,6 +122,27 @@
                 @click="confirmTask(row.id)"
               >
                 确认成绩
+              </el-button>
+              <!--
+                P1-3 执行类指令：催办 / 导出都要走**两阶段确认**，
+                所以这里只打开确认对话框，真正执行由对话框里的
+                「确认执行」按钮触发。
+              -->
+              <el-button
+                link
+                type="warning"
+                size="small"
+                @click="openExecTool('exec_remind', row.id)"
+              >
+                催办
+              </el-button>
+              <el-button
+                link
+                type="warning"
+                size="small"
+                @click="openExecTool('exec_export', row.id)"
+              >
+                导出
               </el-button>
               <el-button
                 link
@@ -224,6 +262,13 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- P1-3 执行类指令两阶段确认对话框 -->
+    <ExecToolConfirmDialog
+      ref="execToolDialog"
+      :tool="execTool"
+      :task-id="execToolTaskId"
+    />
   </section>
 </template>
 
@@ -231,13 +276,29 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
+import TrendReportPanel from '@/components/TrendReportPanel.vue'
+import ExecToolConfirmDialog from '@/components/ExecToolConfirmDialog.vue'
+import type { ExecToolName } from '@/api/p0p1'
 
 const router = useRouter()
 const loading = ref(false)
+/** 趋势复盘默认折叠 —— 它是分析工具，不是主流程。 */
+const trendExpanded = ref<string[]>([])
 const creating = ref(false)
 const error = ref('')
 const searchText = ref('')
 const showCreateTaskDialog = ref(false)
+
+/** P1-3 执行类指令：当前打开的工具与目标任务。 */
+const execToolDialog = ref<InstanceType<typeof ExecToolConfirmDialog> | null>(null)
+const execTool = ref<ExecToolName>('exec_remind')
+const execToolTaskId = ref('')
+
+function openExecTool(tool: ExecToolName, taskId: string) {
+  execTool.value = tool
+  execToolTaskId.value = taskId
+  execToolDialog.value?.open()
+}
 
 // 统计数据
 const stats = reactive({
@@ -584,6 +645,26 @@ onMounted(loadDashboard)
   border: 1px solid #ebeef5;
   padding: 20px;
   margin-bottom: 20px;
+}
+
+.trend-collapse :deep(.el-collapse-item__header) {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  height: 32px;
+  line-height: 32px;
+  border-bottom: none;
+}
+
+.collapse-title {
+  font-weight: 600;
+}
+
+.collapse-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: #909399;
+  margin-left: 10px;
 }
 
 .section-header {

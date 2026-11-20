@@ -5,6 +5,12 @@
       <el-button type="primary" @click="openCreate">新增日期规则</el-button>
     </div>
 
+    <!--
+      P1-2 周期调度：工作日规则决定了"截止日怎么算"，
+      所以调度运行态放在同一页最直观。仅 HR 可见（组件内自动降级）。
+    -->
+    <SchedulerStatusPanel />
+
     <div class="filter-bar">
       <el-date-picker v-model="filters.month" type="month" value-format="YYYY-MM" placeholder="选择月份" />
       <el-select v-model="filters.ruleType" clearable placeholder="规则类型"><el-option v-for="item in ruleTypes" :key="item.value" :label="item.label" :value="item.value" /></el-select>
@@ -54,6 +60,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { changeWorkdayStatus, createWorkdayRule, getWorkdayRules, listEmployees, updateWorkdayRule, type WorkdayRule } from '@/api/system'
+import SchedulerStatusPanel from '@/components/SchedulerStatusPanel.vue'
 import { useAutoQuery } from '@/composables/useAutoQuery'
 
 const loading = ref(false), saving = ref(false), dialogVisible = ref(false), items = ref<WorkdayRule[]>([]), formRef = ref<FormInstance>()

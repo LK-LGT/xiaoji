@@ -120,3 +120,63 @@ test('exposes department week approval separately from the read-only ledger', ()
   assert.ok(!items.some((item) => item.path === '/department/week-plan-ledger'))
   assert.ok(!items.some((item) => item.label === '周计划台账'))
 })
+
+test('exposes the performance Q&A entry in every role workspace that can reach it', () => {
+  /**
+   * ⚠️ 这个测试锁定的是一个**曾经真实发生过的坑**：
+   *
+   * 「绩效问答」最初只挂在「绩效管理」工作区的菜单里，
+   * 但 `/qa` **不属于任何工作区的 `matches`**。
+   * 而侧边栏只渲染**当前工作区**的菜单 —— 于是：
+   *   - 路由 `/qa` 能打开，页面渲染正常；
+   *   - 但侧边栏**没有任何入口**能跳过去（工作区切换器又被 `v-if="false"` 关掉了）。
+   *
+   * 表现是「功能做完了，用户找不到入口」。
+   * 所以下面同时断言两件事：① 菜单里有入口；② 路径能归属到某个工作区。
+   */
+  const QA_PATH = '/qa'
+  const QA_PERMISSION = 'performance:dashboard:view'
+
+  // ① 员工工作台：员工最常查自己的绩效
+  const employee = availableWorkspaces(['dashboard:view', QA_PERMISSION])
+    .find((workspace) => workspace.id === 'employee')
+  assert.ok(employee, '员工应能看到员工工作台')
+  assert.ok(
+    visibleWorkspaceItems(employee, ['dashboard:view', QA_PERMISSION])
+      .some((item) => item.path === QA_PATH),
+    '员工工作台必须有「绩效问答」入口',
+  )
+
+  // ② 绩效管理工作台
+  const performance = availableWorkspaces([QA_PERMISSION])
+    .find((workspace) => workspace.id === 'performance')
+  assert.ok(performance, '绩效管理工作台应可见')
+  assert.ok(
+    visibleWorkspaceItems(performance, [QA_PERMISSION]).some((item) => item.path === QA_PATH),
+    '绩效管理工作台必须有「绩效问答」入口',
+  )
+
+  // ③ 主管 / 部门负责人：最需要查团队绩效的角色
+  for (const id of ['leader', 'department'] as const) {
+    const workspace = availableWorkspaces(['leader:workbench:view', 'department:dashboard:view', QA_PERMISSION])
+      .find((item) => item.id === id)
+    assert.ok(workspace, `${id} 工作台应可见`)
+    assert.ok(
+      visibleWorkspaceItems(workspace, ['leader:workbench:view', 'department:dashboard:view', QA_PERMISSION])
+        .some((item) => item.path === QA_PATH),
+      `${id} 工作台必须有「绩效问答」入口`,
+    )
+  }
+
+  // ④ 路径必须能归属到工作区 —— 否则菜单里的入口点了会「掉回」别的菜单
+  assert.equal(workspaceForPath(QA_PATH)?.id, 'performance')
+
+  // ⑤ 问答入口需要绩效看板权限；没有该权限的角色不应看到它
+  const noQaEmployee = availableWorkspaces(['dashboard:view'])
+    .find((workspace) => workspace.id === 'employee')
+  assert.ok(noQaEmployee)
+  assert.ok(
+    !visibleWorkspaceItems(noQaEmployee, ['dashboard:view']).some((item) => item.path === QA_PATH),
+    '没有绩效看板权限的角色不应看到问答入口',
+  )
+})

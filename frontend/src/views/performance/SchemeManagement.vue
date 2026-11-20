@@ -313,7 +313,7 @@ onMounted(() => run(load))
 .scheme-editor-drawer .el-drawer__footer {
   flex-shrink: 0;
 }
-@media (max-width: 1180px) {
+@media (max-width: 1024px) {
   .scheme-editor-drawer.el-drawer { width: 100vw !important; }
 }
 /* 遮罩覆盖页面，弹窗在侧边栏右侧的工作区内居中。 */
@@ -322,8 +322,8 @@ onMounted(() => run(load))
   padding-bottom: 20vh;
   box-sizing: border-box;
 }
-/* 1180px 以下侧边栏收起为抽屉，浮层回到整屏居中 */
-@media (max-width: 1180px) {
+/* 1024px 以下侧边栏收起为抽屉，浮层回到整屏居中 */
+@media (max-width: 1024px) {
   .scheme-import-overlay .el-overlay-dialog {
     left: 0;
   }
