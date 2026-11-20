@@ -19,6 +19,8 @@ node_modules/
 frontend/dist/
 dist/
 *.tsbuildinfo
+# Vite 依赖预构建缓存（本地生成，不进版本库）
+frontend/.vite/
 
 # 日志与临时文件
 *.log
@@ -67,3 +69,6 @@ frontend/public/*.docx
 
 # 后端一次性调试脚本（下划线开头）
 backend/_*.py
+# ⚠️ backend/scripts/ 下的下划线脚本同理 —— 它们是一次性排查产物，
+#    不该进版本库，也不该被 ruff 当成待修代码。
+backend/scripts/_*.py
