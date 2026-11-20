@@ -295,6 +295,45 @@ class Settings(BaseSettings):
     feishu_scheme_sync_alert_receiver_id: str = ""
     feishu_scheme_sync_alert_receiver_type: str = "chat_id"
 
+    # ─────────────────────────────────────────────────────────────
+    # 百度网盘绩效校验（BP-1）
+    #
+    # 目标：网盘里的成片文件数 → 校验员工申报的产出数量
+    #     网盘文件 → MetricValue（算分集） → 与申报值比对 → 提示主管
+    #
+    # ⚠️ **默认全部关闭** —— 未配置凭证时整条链路不启动。
+    #
+    # ⚠️ **目录权限现实（百度官方，2026-11-20 查证）**
+    #     - 应用只能访问「权限内目录」，默认是 ``/apps/{应用名}``
+    #     - 授权页面里勾选的目录 → 挂到 ``/apps/{应用名}/子目录``
+    #     - 递归接口 ``multimedia?method=listall`` **必须**在 ``/apps`` 下
+    # ⇒ 想校验网盘里的成片目录，必须在**授权时勾选**它。
+    # ─────────────────────────────────────────────────────────────
+    # 是否启用百度网盘取数校验。
+    baidu_pan_enabled: bool = False
+    # 应用凭证（百度网盘开放平台 → 控制台 → 应用详情页 → 基础信息）。
+    baidu_pan_app_key: str = ""
+    baidu_pan_app_secret: str = ""
+    baidu_pan_app_id: str = ""
+    # ⚠️ **应用名** —— 决定网盘里的默认目录 ``/apps/{应用名}``。
+    #    必须与百度开放平台里填的「应用名称」**完全一致**。
+    baidu_pan_app_name: str = "绩效校验"
+    # OAuth 回调地址。留空则用 ``oob``（授权页直接显示授权码，无需公网域名）。
+    baidu_pan_redirect_uri: str = ""
+    # 校验目录（相对 ``/apps/{应用名}`` 的子路径，如 ``/短视频成片``）。
+    # 留空则用应用根目录。
+    baidu_pan_watch_dir: str = ""
+    # 计数规则：只统计这些扩展名的文件（逗号分隔）。留空则统计全部非目录文件。
+    baidu_pan_count_extensions: str = "mp4,mov,m4v,avi,mkv,flv,wmv"
+    # 计数规则：文件名包含这些关键词的文件**不计入**（逗号分隔）。
+    # 用于排除「返工」「废片」等。
+    baidu_pan_exclude_keywords: str = "返工,废片,废弃,作废,rework,_v2,_v3,副本"
+    # 取数频率（秒）。百度接口有频控（未审核应用 10 次/小时）。
+    baidu_pan_sync_interval_seconds: int = 21600
+    # ⚠️ **是否允许自动刷新 token** —— refresh_token 只能用一次，
+    #    刷新后必须换成响应里的新值。换错会导致下次刷新失败。
+    baidu_pan_auto_refresh_token: bool = True
+
     @model_validator(mode="after")
     def _validate_auth_secret(self):
         """启动即校验认证密钥，避免弱密钥静默上线。"""

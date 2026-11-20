@@ -1362,6 +1362,7 @@ class CaseLibraryEntry(Base):
 # 再导入，否则会循环引用。
 # ---------------------------------------------------------------------------
 
+from . import baidu_pan_models as _baidu_pan_models  # noqa: E402,F401
 from . import bot_models as _bot_models  # noqa: E402,F401
 from . import feishu_scheme_models as _feishu_scheme_models  # noqa: E402,F401
 from . import notification_models as _notification_models  # noqa: E402,F401

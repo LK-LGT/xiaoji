@@ -155,6 +155,16 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    # BP-1：百度网盘绩效校验（取数 → 计数快照 → 主管核对）
+    from .routes import baidu_pan as baidu_pan_routes
+    app.include_router(baidu_pan_routes.router)
+    print("[APP] Baidu pan router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register baidu pan router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     from .routes import import_data as import_data_routes
     app.include_router(import_data_routes.router)
     print("[APP] Import data router registered successfully")
@@ -483,6 +493,11 @@ def _startup() -> None:
         start_feishu_scheme_scheduler()
     except Exception:
         logging.getLogger(__name__).exception("启动飞书方案自动同步失败")
+    try:
+        from .services.baidu_pan_scheduler import start as start_baidu_pan_scheduler
+        start_baidu_pan_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("启动百度网盘绩效校验失败")
 
 
 @app.on_event("shutdown")
@@ -521,6 +536,11 @@ def _shutdown() -> None:
         stop_feishu_scheme_scheduler()
     except Exception:
         logging.getLogger(__name__).exception("停止飞书方案自动同步失败")
+    try:
+        from .services.baidu_pan_scheduler import stop as stop_baidu_pan_scheduler
+        stop_baidu_pan_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("停止百度网盘绩效校验失败")
 
 
 # ---------------------------------------------------------------------------
