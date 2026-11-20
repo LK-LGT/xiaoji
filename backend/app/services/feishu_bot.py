@@ -66,7 +66,14 @@ STATE_COMPLETED = "completed"
 # ⚠️ 意图识别已抽到 ``feishu_intent`` 模块（分层路由 + 领域词库）。
 #    这里保留别名是为了**不破坏**既有 import —— 几十处调用方用
 #    ``feishu_bot.INTENT_NONE`` / ``feishu_bot.detect_intent``。
-from .feishu_intent import (  # noqa: E402
+#
+# ⚠️⚠️ **块级 noqa 只作用于整块**
+#   把「E402,F401」写在 ``from ... import (`` 那行，
+#   **会同时抑制整块的 F401** ——
+#   所以这里不需要给每个名字单独加 noqa。
+#   （曾经被删过两次：``INTENT_CANCEL`` / ``INTENT_PERFORMANCE_QA``
+#    是**公开 API**，路由层要用。⇒ 绝不能让 ruff --fix 碰这一块。）
+from .feishu_intent import (  # noqa: E402,F401
     CANCEL_KEYWORDS,
     INTENT_CANCEL,
     INTENT_MONTH_PLAN,
