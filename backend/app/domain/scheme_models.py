@@ -9,6 +9,7 @@ from sqlalchemy import (
     JSON,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     LargeBinary,
@@ -88,4 +89,32 @@ class SchemeImportBatch(Base):
     mapping: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     preview: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
+class PeerReview(Base):
+    """互评指派与回收（P0-1）。
+
+    - 一条记录 = 一个互评人对一个被评人的评价任务。
+    - 幂等：(record_id, reviewer_id) 唯一，重复指派直接复用。
+    - 只做参考：分数/评语仅供主管参阅，永不写入 Score。
+    """
+
+    __tablename__ = "performance_peer_review"
+    __table_args__ = (
+        UniqueConstraint("record_id", "reviewer_id", name="uq_peer_record_reviewer"),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    record_id: Mapped[str] = mapped_column(
+        ForeignKey("assessment_record.id"), nullable=False, index=True
+    )
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    reviewee_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    reviewer_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="assigned", nullable=False)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    comment: Mapped[str | None] = mapped_column(nullable=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    assigned_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)

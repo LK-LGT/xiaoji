@@ -144,6 +144,27 @@ class AgentClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """调 POST /v1/agent/plan。
+
+        ⚠️ **异步** —— 智能体服务会**回调本进程**取工具数据。
+           若这里用同步 httpx 阻塞事件循环，回调请求会被饿死，
+           表现为「计划助手一直转圈直到超时」。
+
+           与 ``qa`` 同样的处理：异步等待，给回调留出事件循环。
+        """
+        import asyncio
+
+        async with asyncio.timeout(45):
+            async with httpx.AsyncClient(timeout=45.0, follow_redirects=False, trust_env=False) as client:
+                response = await client.post(
+                    f"{self.base_url.rstrip('/')}/v1/agent/plan", json=payload, headers=self._headers(),
+                )
+                response.raise_for_status()
+                if len(response.content) > 262144:
+                    raise ValueError("智能体响应过大")
+                return response.json()
+
 
 # ---------------------------------------------------------------------------
 # 考核任务
@@ -322,7 +343,11 @@ def _create_evidence_from_self_review(
 
 
 def compute_score(db: Session, *, record_id: str) -> scoring.ScoreResult:
-    """算分 —— 唯一真值。**可复算**：关掉 AI 重跑，结果完全一致。"""
+    """算分 —— 唯一真值。**可复算**：关掉 AI 重跑，结果完全一致。
+
+    P1-1：算分后统一套用方案内的否决 / 联动扣分 / 封顶保底规则。
+    规则来自冻结快照的 ``scheme_payload["rules"]``，因此同样可复算。
+    """
     rec = db.get(AssessmentRecord, record_id)
     if rec is None:
         raise NotFound(f"考核记录 {record_id} 不存在")
@@ -337,9 +362,14 @@ def compute_score(db: Session, *, record_id: str) -> scoring.ScoreResult:
         from .scheme_points import score_points
 
         response = db.get(SchemeResponse, record_id)
-        return score_points(payload, response.reviews if response else {})
-    specs, inputs = _build_metric_context(db, snapshot, rec.employee_id, task.period)
-    return scoring.score_record(specs, inputs)
+        result = score_points(payload, response.reviews if response else {})
+    else:
+        specs, inputs = _build_metric_context(db, snapshot, rec.employee_id, task.period)
+        result = scoring.score_record(specs, inputs)
+    # P1-1：否决 / 联动 / 封顶保底 —— 无规则时是恒等变换，不影响既有方案。
+    from .scheme_rules import apply_rules
+
+    return apply_rules(payload, result)
 
 
 def persist_score(db: Session, *, record_id: str, result: scoring.ScoreResult) -> Score:

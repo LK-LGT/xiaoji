@@ -617,7 +617,7 @@ def _build_result_packages(
     ⚠️ 可见范围：`scope` 为 None 表示不限制（内部调用）；
     否则只聚合 `scope` 覆盖到的部门/直属下属所在部门。
     """
-    from ..domain.models import MonthPlan, MonthPlanItem
+    from ..domain.models import MonthPlan
     from ..domain.result_models import Result
 
     # 1) 该月份所有有月计划的员工

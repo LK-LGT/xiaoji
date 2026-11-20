@@ -145,6 +145,16 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    # FS-8：飞书绩效方案来源绑定与自动同步
+    from .routes import feishu_scheme as feishu_scheme_routes
+    app.include_router(feishu_scheme_routes.router)
+    print("[APP] Feishu scheme router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register feishu scheme router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     from .routes import import_data as import_data_routes
     app.include_router(import_data_routes.router)
     print("[APP] Import data router registered successfully")
@@ -318,6 +328,15 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    from .routes import delegation as delegation_routes
+    app.include_router(delegation_routes.router)
+    print("[APP] Delegation router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register delegation router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     from .routes.v1 import system_users as system_users_routes
     app.include_router(system_users_routes.router)
     print("[APP] System users router registered successfully")
@@ -454,6 +473,16 @@ def _startup() -> None:
         start_consumer()
     except Exception:
         logging.getLogger(__name__).exception("启动飞书事件消费调度器失败")
+    try:
+        from .services.period_scheduler_runner import start as start_period_scheduler
+        start_period_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("启动考核周期调度失败")
+    try:
+        from .services.feishu_scheme_scheduler import start as start_feishu_scheme_scheduler
+        start_feishu_scheme_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("启动飞书方案自动同步失败")
 
 
 @app.on_event("shutdown")
@@ -482,6 +511,16 @@ def _shutdown() -> None:
         stop_consumer()
     except Exception:
         logging.getLogger(__name__).exception("停止飞书事件消费调度器失败")
+    try:
+        from .services.period_scheduler_runner import stop as stop_period_scheduler
+        stop_period_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("停止考核周期调度失败")
+    try:
+        from .services.feishu_scheme_scheduler import stop as stop_feishu_scheme_scheduler
+        stop_feishu_scheme_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("停止飞书方案自动同步失败")
 
 
 # ---------------------------------------------------------------------------
@@ -1231,6 +1270,27 @@ def validate_citations(
 from .routes.agent_tools import router as agent_tools_router  # noqa: E402
 
 app.include_router(agent_tools_router)
+from .routes.plan_tools import router as plan_tools_router  # noqa: E402
+
+app.include_router(plan_tools_router)
+from .routes.exec_tools import router as exec_tools_router  # noqa: E402
+
+app.include_router(exec_tools_router)
+from .routes.exec_tokens import router as exec_tokens_router  # noqa: E402
+
+app.include_router(exec_tokens_router)
+from .routes.data_source import router as data_source_router  # noqa: E402
+
+app.include_router(data_source_router)
+from .routes.semantic_qc import router as semantic_qc_router  # noqa: E402
+
+app.include_router(semantic_qc_router)
+from .routes.trend_report import router as trend_report_router  # noqa: E402
+
+app.include_router(trend_report_router)
+from .routes.feedback import router as feedback_router  # noqa: E402
+
+app.include_router(feedback_router)
 from .routes.qa import router as qa_router  # noqa: E402
 
 app.include_router(qa_router)

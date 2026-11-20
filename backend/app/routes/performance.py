@@ -958,3 +958,39 @@ def get_my_performance(
             "total": len(records),
         }
     }
+
+
+# -------------------------------------------------------
+# 8. 周期调度（P1-2）：自动开启 / 倒计时 / 逾期告警
+# -------------------------------------------------------
+
+
+@router.get("/scheduler/status")
+def get_scheduler_status(
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """查看周期调度运行态。仅 HR 可见。"""
+    if not check_is_hr(db, current_user.id):
+        raise HTTPException(status_code=403, detail="无权查看调度状态")
+    from ..services.period_scheduler_runner import get_scheduler_status as status
+
+    return {"code": 0, "data": status()}
+
+
+@router.post("/scheduler/run")
+def run_scheduler_once(
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """手动触发一轮周期调度（自动开启任务 + 投递倒计时/逾期提醒）。
+
+    仅 HR 可调用 —— 该操作会推进任务状态并写通知。
+    """
+    if not check_is_hr(db, current_user.id):
+        raise HTTPException(status_code=403, detail="无权触发周期调度")
+    from ..services import period_scheduler
+
+    cycle = period_scheduler.run_cycle(db)
+    reminders = period_scheduler.deliver_reminders(db)
+    return {"code": 0, "data": {**cycle, **reminders}}

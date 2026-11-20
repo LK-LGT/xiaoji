@@ -12,6 +12,9 @@ SCENES = {
     "N8": ("绩效等级已发布", "{label}绩效结果已确认，请登录系统查看分数和等级。", "NOTICE", "/performance"),
     "N9": ("考核周期开始", "{label}考核已开始，请进入绩效系统查看任务。", "NOTICE", "/performance/self-reviews"),
     "N10": ("同步失败告警", "{label}同步发生异常，请进入系统查看告警。", "SYSTEM", "/system"),
+    "N12": ("互评待办", "{label}，请按时完成互评。", "TODO", "/performance/scheme-filling"),
+    "N13": ("互评逾期催办", "{label}，请尽快提交。", "TODO", "/performance/scheme-filling"),
+    "N14": ("考核逾期催办", "{label}已逾期，请立即完成。", "TODO", "/performance"),
 }
 
 

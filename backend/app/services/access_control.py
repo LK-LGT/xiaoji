@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -25,6 +26,8 @@ from ..domain.models import (
     HrDepartmentConfig,
     SystemAdmin,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class PermissionAction(StrEnum):
@@ -54,6 +57,9 @@ class AccessContext:
     direct_report_ids: frozenset[str] = field(default_factory=frozenset)
     managed_department_ids: frozenset[str] = field(default_factory=frozenset)
     employee_department_ids: frozenset[str] = field(default_factory=frozenset)
+    #: P1-4 代理授权：受托人通过委托获得的员工范围。
+    #: 到期后自动缩小 —— 委托失效不需要任何后台任务去「撤销」。
+    delegated_employee_ids: frozenset[str] = field(default_factory=frozenset)
 
     def has_permission(self, permission: str) -> bool:
         return permission in self.permissions
@@ -64,6 +70,7 @@ class AccessContext:
         规则（与 `PermissionAction` 保持一致）：
         - 本人 → `VIEW_OWN_SCORE`
         - 直属下属 / 所管理部门成员 → `VIEW_DIRECT_REPORT_SCORE`
+        - 代理授权范围内的人（P1-4）→ 同上
         - HR → `VIEW_ALL_SCORES`（看全员）
 
         ⚠️ 管理员**不**自动拥有查看全员成绩的权限 —— 管理权限
@@ -76,6 +83,10 @@ class AccessContext:
         if target == self.employee_id:
             return self.has_permission(PermissionAction.VIEW_OWN_SCORE)
         if target in self.direct_report_ids:
+            return self.has_permission(PermissionAction.VIEW_DIRECT_REPORT_SCORE)
+        if target in self.delegated_employee_ids:
+            # 代理授权：受托人对委托范围内的人拥有查看权。
+            # 委托到期后该集合自动缩小，权限随之消失。
             return self.has_permission(PermissionAction.VIEW_DIRECT_REPORT_SCORE)
         if self.has_permission(PermissionAction.VIEW_ALL_SCORES):
             return True
@@ -156,6 +167,10 @@ def can_access_employee(
             return True
         if target_employee.id in context.direct_report_ids:
             return True
+        if target_employee.id in context.delegated_employee_ids:
+            # P1-4 代理授权：委托有效期内，受托人对委托人管理的对象
+            # 有同等访问权。委托到期后集合自动缩小。
+            return True
         if "department_leader" in context.roles:
             target_departments = _employee_department_ids(
                 db, target_employee.id, target_employee.department_id
@@ -218,7 +233,17 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
         PermissionAction.SUBMIT_OWN_REVIEW,
     }
 
-    if direct_report_ids:
+    # P1-4 代理授权：委托有效期内，受托人对委托人管理的对象拥有同等权限。
+    # 到期后集合自动缩小，不需要后台任务去撤销。
+    delegated_ids: set[str] = set()
+    try:
+        from .delegation_service import delegated_employee_ids
+
+        delegated_ids = set(delegated_employee_ids(db, delegate_id=employee.id))
+    except Exception:  # pragma: no cover - 委托表缺失时不影响既有权限
+        logger.warning("读取代理授权失败（按无委托处理）", exc_info=True)
+
+    if direct_report_ids or delegated_ids:
         roles.add("manager")
         permissions.update(
             {
@@ -280,4 +305,5 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
         direct_report_ids=direct_report_ids,
         managed_department_ids=frozenset(managed_department_ids),
         employee_department_ids=frozenset(employee_department_ids),
+        delegated_employee_ids=frozenset(delegated_ids),
     )

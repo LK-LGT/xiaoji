@@ -467,6 +467,7 @@ def records(user: Employee = Depends(get_current_user), db: Session = Depends(ge
             result.append(
                 {
                     "id": r.id,
+                    "task_id": t.id,
                     "name": t.name,
                     "period": t.period,
                     "employee_name": e.name,
@@ -503,6 +504,7 @@ def record_form(
         {
             "payload": p,
             "is_own": own,
+            "task_id": record.task_id,
             "can_review": not own and ("department_leader" in ctx.roles or "manager" in ctx.roles),
             "status": record.status,
             "revision": response.revision if response else 0,
@@ -527,6 +529,86 @@ def submit_form(
     from ..services.scheme_submission import submit_response
 
     return ok(submit_response(db, user, record_id, body))
+
+
+class PeerAssignRequest(BaseModel):
+    reviewer_ids: list[str] = Field(min_length=1, max_length=20)
+    due_at: str | None = None
+
+
+class PeerSubmitRequest(BaseModel):
+    score: float | None = None
+    comment: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/scheme-records/{record_id}/peers")
+def peer_assign(
+    record_id: str,
+    body: PeerAssignRequest,
+    user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from datetime import datetime
+
+    from ..services import peer_service
+
+    due = None
+    if body.due_at:
+        try:
+            due = datetime.fromisoformat(body.due_at)
+        except ValueError:
+            service.fail("due_at 必须是 ISO 时间", 422)
+    return ok(peer_service.assign(db, user, record_id, body.reviewer_ids, due))
+
+
+@router.get("/scheme-records/{record_id}/peers")
+def peer_list(
+    record_id: str,
+    user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from ..services import peer_service
+
+    return ok(peer_service.list_for_record(db, user, record_id))
+
+
+@router.put("/peers/{peer_id}")
+def peer_submit(
+    peer_id: str,
+    body: PeerSubmitRequest,
+    user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from ..services import peer_service
+
+    return ok(peer_service.submit(db, user, peer_id, body.score, body.comment))
+
+
+@router.get("/scheme-tasks/{task_id}/peer-progress")
+def peer_progress(
+    task_id: str,
+    user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from ..services import peer_service
+    from ..services.access_control import build_access_context
+
+    ctx = build_access_context(db, user)
+    if not ({"hr", "department_leader", "manager"} & ctx.roles):
+        service.fail("仅HR/负责人/主管可查看互评进度", 403)
+    return ok(peer_service.progress_for_task(db, task_id))
+
+
+@router.post("/scheme-tasks/{task_id}/peer-remind")
+def peer_remind(
+    task_id: str,
+    user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from ..services import peer_service
+
+    service.hr(db, user)
+    return ok({"reminded": peer_service.remind_overdue(db, task_id=task_id)})
 
 
 @router.post("/scheme-tasks")

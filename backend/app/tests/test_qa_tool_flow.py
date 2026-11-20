@@ -82,7 +82,7 @@ def test_full_http_tool_roundtrip(flow, monkeypatch):
     calls = []
     class Model:
         model = "integration"
-        def complete_with_tools(self, messages, tools):
+        def complete_with_tools(self, messages, tools, schema=None):
             calls.append(messages)
             assert "tool_token" not in str(messages)
             if messages[-1]["role"] != "tool":

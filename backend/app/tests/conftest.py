@@ -176,3 +176,134 @@ def mock_config(db: Session):
     db.commit()
 
     return config
+
+
+@pytest.fixture
+def env():
+    """复核中心测试环境：内存库 + 组织/方案/评分种子数据 + FastAPI 应用。
+
+    供 ``test_review_center.py`` 与 ``test_verification_report.py`` 共用，
+    避免每个文件重复搭建同一套夹具。
+
+    Yields:
+        ``(db, people, app, client)`` —— people 为 ``{employee_id: Employee}``。
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy.pool import StaticPool
+
+    from backend.app.core.db import get_db
+    from backend.app.dependencies import get_current_user
+    from backend.app.domain.models import (
+        AssessmentRecord,
+        AssessmentTask,
+        ConfigSnapshot,
+        HrDepartmentConfig,
+        Score,
+    )
+    from backend.app.domain.review_models import ScoreHead
+    from backend.app.domain.scheme_models import SchemeResponse
+    from backend.app.routes.review_center import router
+    from backend.app.services import review_service
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    db.add_all(
+        [
+            Department(id="D", name="业务", leader_id="L"),
+            Department(id="X", name="其他", leader_id="XL"),
+            Department(id="HR", name="人事"),
+        ]
+    )
+    db.flush()
+    people = {
+        k: Employee(
+            id=k,
+            name=k,
+            department_id=d,
+            manager_id=m,
+            account_status="enabled",
+            employment_status="active",
+        )
+        for k, d, m in [
+            ("E", "D", "L"),
+            ("L", "D", None),
+            ("R", "D", None),
+            ("H", "HR", None),
+            ("H2", "HR", None),
+            ("XL", "X", None),
+            ("X", "X", None),
+        ]
+    }
+    db.add_all(people.values())
+    db.add(HrDepartmentConfig(department_id="HR", active=True))
+    payload = {
+        "scoring_mode": "direct_points",
+        "metrics": [
+            {"code": "K", "name": "业绩", "max_score": 100, "scoring_method": "manager_review"}
+        ],
+        "document": {
+            "adjustment_min": -5,
+            "adjustment_max": 5,
+            "grade_rules": [{"level": "A"}, {"level": "B"}],
+        },
+    }
+    db.add(
+        ConfigSnapshot(
+            id="S",
+            task_id="T",
+            metrics_json=[],
+            weights_json=[],
+            rubric_json=[],
+            form_template_json={"scheme_version_id": "V", "scheme_payload": payload},
+        )
+    )
+    db.flush()
+    db.add(AssessmentTask(id="T", name="考核", period="202611", snapshot_id="S"))
+    db.flush()
+    db.add(
+        AssessmentRecord(
+            id="REC", task_id="T", employee_id="E", status="confirmed", confirmed_rating="B"
+        )
+    )
+    db.flush()
+    db.add(
+        SchemeResponse(
+            record_id="REC",
+            values={},
+            metric_values={},
+            reviews={
+                "K": {"score": 70, "comment": "原始依据"},
+                "_grade": {"level": "B", "comment": "等级依据"},
+                "_adjustment": {"score": 0, "comment": "无加减分"},
+            },
+            reviewer_id="L",
+        )
+    )
+    db.flush()
+    review_service.persist_score(
+        db, record_id="REC", result=review_service.compute_score(db, record_id="REC")
+    )
+    db.commit()
+
+    app = FastAPI()
+    app.include_router(router)
+
+    def session():
+        try:
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+    app.dependency_overrides[get_db] = session
+    app.dependency_overrides[get_current_user] = lambda: db.get(Employee, "E")
+    yield db, people, app, TestClient(app)
+    db.close()
+    engine.dispose()

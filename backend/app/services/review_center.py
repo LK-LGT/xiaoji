@@ -283,6 +283,19 @@ def act_case(db, user, case, *, action, revision, comment, reviewer_id=None):
             fail("仅待受理案件可以受理")
         ext.accepted_by = user.id
         case.status = "ACCEPTED"
+        # P0-3：受理即自动产出中立核验报告（确定性复算 + 跨周期对比），
+        # 让评审人一进来就拿到事实基线，不必人工再点一次。
+        # ⚠️ 不在此处调用 generate_report：它内部会再次 lock_case 推进版本，
+        #    且快照缺失时抛 HTTPException 会连带回滚「受理」这一步。
+        #    故此处只做前置判断，真正的报告生成由调用方在受理后单独触发。
+        if ext.snapshot:
+            case_event(
+                db,
+                case,
+                user,
+                "REPORT_PENDING",
+                {"reason": "案件已受理，核验报告待生成", "record_id": ext.record_id},
+            )
     elif action == "ASSIGN":
         if case.status not in {"ACCEPTED", "REVIEWING"}:
             fail("请先受理案件")
@@ -355,6 +368,35 @@ def act_case(db, user, case, *, action, revision, comment, reviewer_id=None):
     return case
 
 
+def auto_generate_report(db, user, case):
+    """受理后自动补生成中立核验报告（P0-3 自动化）。
+
+    与 :func:`generate_report` 的区别：本函数**不消费版本号**，
+    内部捕获异常而不抛出，因此不会因为历史数据缺快照而让「受理」失败。
+
+    Returns:
+        ``(report_or_None, reason)`` —— 报告行（可能为 None）与说明。
+    """
+    ext = db.get(ReviewCase, case.id)
+    if ext is None:
+        return None, "历史案件尚未建立复核快照，无法生成核验报告"
+    if not ext.snapshot:
+        return None, "案件缺少冻结快照，无法生成核验报告"
+    existing = db.scalar(
+        select(VerificationReport.id)
+        .where(VerificationReport.case_id == case.id)
+        .order_by(VerificationReport.version.desc())
+        .limit(1)
+    )
+    if existing:
+        return None, "该案件已存在核验报告"
+    try:
+        report = generate_report(db, user, case, ext.revision)
+    except HTTPException as exc:
+        return None, exc.detail or "核验报告生成失败"
+    return report, None
+
+
 def opinion(db, user, case, *, revision, value, comment):
     require_view(db, user, case)
     require_independent(db, user, case)
@@ -424,6 +466,23 @@ def generate_report(db, user, case, revision):
         current = db.scalar(select(Score).where(Score.record_id == ext.record_id))
         if current and digest(score_content(current, db.get(AssessmentRecord, ext.record_id))) != digest(frozen["score"]):
             report["differences"].append({"type": "CURRENT_RESULT_CHANGED", "message": "当前评分已变化，调整时需重新核验最新版本"})
+        # ── P0-3 跨周期历史对比（只作线索，不作结论） ──
+        history = _cross_period_history(db, ext.record_id, frozen)
+        report["cross_period"] = history
+        for item in history["items"]:
+            report["facts"].append(
+                {
+                    "type": "CROSS_PERIOD_SCORE",
+                    "period": item["period"],
+                    "total": item["total"],
+                    "rating": item["rating"],
+                    "delta_vs_current": item["delta"],
+                }
+            )
+        if history["trend"]:
+            report["differences"].append(
+                {"type": "CROSS_PERIOD_TREND", "message": history["trend"]}
+            )
     else:
         report["facts"].append({"type": "RESULT_SNAPSHOT", "source": frozen.get("result_id"), "status": frozen.get("status"), "version": frozen.get("version")})
         report["missing"].append("成果认定需要人工复核；未关联考核记录，不能自动推导绩效分数")
@@ -435,6 +494,44 @@ def generate_report(db, user, case, revision):
     db.flush()
     case_event(db, case, user, "REPORT_GENERATED", {"report_id": row.id, "version": version, "digest": digest(report)})
     return row
+
+
+def _cross_period_history(db, record_id, frozen) -> dict:
+    """跨周期分数对比（P0-3）：同一员工此前各周期的得分与趋势。
+
+    仅作核查线索：不同周期方案可能不同，**不构成评分错误结论**。
+    """
+    rec = db.get(AssessmentRecord, record_id)
+    if not rec:
+        return {"items": [], "trend": None}
+    rows = db.execute(
+        select(AssessmentTask.period, Score.total, Score.trace_json)
+        .join(AssessmentRecord, AssessmentRecord.task_id == AssessmentTask.id)
+        .join(Score, Score.record_id == AssessmentRecord.id)
+        .where(
+            AssessmentRecord.employee_id == rec.employee_id,
+            AssessmentRecord.id != record_id,
+        )
+        .order_by(AssessmentTask.period)
+    ).all()
+    current_total = float((frozen.get("score") or {}).get("total") or 0.0)
+    items = [
+        {
+            "period": period,
+            "total": float(total),
+            "rating": (trace or {}).get("scheme_rating"),
+            "delta": round(float(total) - current_total, 4),
+        }
+        for period, total, trace in rows
+    ]
+    trend = None
+    if len(items) >= 2:
+        first, last = items[0]["total"], items[-1]["total"]
+        if last > first:
+            trend = f"历史分数由 {first} 上升至 {last}，当前 {current_total} 需结合本期目标核查"
+        elif last < first:
+            trend = f"历史分数由 {first} 下降至 {last}，当前 {current_total} 需结合本期目标核查"
+    return {"items": items, "trend": trend}
 
 
 def package(db, user, case):

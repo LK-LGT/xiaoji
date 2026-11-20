@@ -14,7 +14,12 @@ from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..domain.models import AiToolCall, AssessmentRecord, AssessmentTask, Employee
-from ..schemas import DepartmentStatsRequest, EvidenceQueryRequest, MetricValuesRequest
+from ..schemas import (
+    DepartmentStatsRequest,
+    EvidenceQueryRequest,
+    MetricValuesRequest,
+    ScoringBreakdownRequest,
+)
 from ..services import access_control, agent_tool_service, privacy
 from ..services.agent_tool_token import (
     AgentToolTokenError,
@@ -135,9 +140,12 @@ def _run_business_tool(tool: str, req: Any, ctx: AgentToolContext, db: Session) 
                 raise HTTPException(404, "RECORD_NOT_FOUND")
             if tool == "get_metric_values":
                 data = agent_tool_service.load_metric_values(db, employee_id=employee.id, task=task)
+            elif tool == "get_scoring_breakdown":
+                data = agent_tool_service.load_scoring_breakdown(db, employee_id=employee.id, task=task)
             else:
                 data = agent_tool_service.load_evidence(
-                    db, employee_id=employee.id, task=task, usage=req.usage, is_hr="hr" in context.roles,
+                    db, employee_id=employee.id, task=task, usage=req.usage,
+                    roles=context.roles,
                 )
         data = privacy.redact_obj({"task_id": task.id, "period": period, **data})
     except AgentToolTokenError as exc:
@@ -165,6 +173,18 @@ def get_metric_values(
     req: MetricValuesRequest, ctx: AgentToolContext = Depends(agent_tool_ctx), db: Session = Depends(get_db),
 ):
     return _run_business_tool("get_metric_values", req, ctx, db)
+
+
+@router.post("/get_scoring_breakdown")
+def get_scoring_breakdown(
+    req: ScoringBreakdownRequest, ctx: AgentToolContext = Depends(agent_tool_ctx), db: Session = Depends(get_db),
+):
+    """评分构成明细 —— 回答「这分数是怎么算出来的」。
+
+    ⚠️ 权限与 ``get_metric_values`` **同级**（都要求能看本人成绩），
+    但**内容不同**：这里多给了权重、等级分、贡献分与算式。
+    """
+    return _run_business_tool("get_scoring_breakdown", req, ctx, db)
 
 
 @router.post("/get_evidence")

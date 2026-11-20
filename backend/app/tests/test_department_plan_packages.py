@@ -7,7 +7,15 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.core.db import get_db
-from backend.app.domain.models import Base, DayPlan, Department, Employee, MonthPlan, MonthPlanItem, WeekPlan
+from backend.app.domain.models import (
+    Base,
+    DayPlan,
+    Department,
+    Employee,
+    MonthPlan,
+    MonthPlanItem,
+    WeekPlan,
+)
 from backend.app.domain.plan_models import PlanApproval
 from backend.app.main import app
 from backend.app.routes.auth import _generate_token

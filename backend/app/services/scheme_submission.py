@@ -105,6 +105,22 @@ def submit_response(db, user, record_id, body, *, source=SubmitSource.H5):
             service.fail("仅授权主管可以逐项评价", 403)
         if record.status != "self_review_submitted":
             service.fail("请等待员工完成填报", 409)
+        # P0-1 互评回收门禁：已指派未回收完成时阻塞主管评分，避免跳过互评直接定分。
+        # 互评仅供参考（永不写入 Score），但流程上必须先回收或由 HR/主管移除指派。
+        from sqlalchemy import select as _select
+
+        from ..domain.scheme_models import PeerReview as _PeerReview
+
+        _peers = db.scalars(
+            _select(_PeerReview).where(_PeerReview.record_id == record_id)
+        ).all()
+        _pending = [r for r in _peers if r.status != "submitted"]
+        if _pending:
+            service.fail(
+                f"互评尚未回收完成（已提交 {len(_peers) - len(_pending)}/{len(_peers)}），"
+                "请等待互评提交或移除无需评价的互评人后再评分",
+                409,
+            )
         manual = {m["code"] for m in p["metrics"] if m["scoring_method"] == "manager_review"}
         direct = p.get("scoring_mode") == "direct_points"
         if direct:

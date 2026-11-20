@@ -31,7 +31,7 @@ def resolve_scope(db: Session, employee: Employee, task_id: str, period: str | N
     if context.can_view_score_of(employee.id) and db.query(AssessmentRecord.id).filter_by(
         task_id=task.id, employee_id=employee.id,
     ).first():
-        tools.extend(["get_metric_values", "get_evidence"])
+        tools.extend(["get_metric_values", "get_evidence", "get_scoring_breakdown"])
     department_allowed = bool(employee.department_id and (
         employee.department_id in context.managed_department_ids
         or context.has_permission(PermissionAction.VIEW_ALL_SCORES)

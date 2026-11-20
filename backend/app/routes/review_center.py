@@ -133,7 +133,16 @@ def case_detail(case_id: str, user: Employee = Depends(get_current_user), db: Se
 @router.post("/cases/{case_id}/actions")
 def case_action(case_id: str, body: Action, user: Employee = Depends(get_current_user), db: Session = Depends(get_db)):
     row = svc.act_case(db, user, svc.get_case(db, case_id), **body.model_dump())
-    return ok(svc.serialize_case(db, row, user, detail=True))
+    # P0-3：受理后自动产出中立核验报告（评审人立即拿到事实基线）。
+    # 失败不阻断受理动作，只在返回体里带出说明。
+    auto_note = ""
+    if body.action == "ACCEPT":
+        report, reason = svc.auto_generate_report(db, user, row)
+        auto_note = reason or ""
+    payload = svc.serialize_case(db, row, user, detail=True)
+    if auto_note:
+        payload["reportNote"] = auto_note
+    return ok(payload)
 
 
 @router.post("/cases/{case_id}/opinions")

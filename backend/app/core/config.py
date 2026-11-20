@@ -47,6 +47,22 @@ class Settings(BaseSettings):
     model_name: str = "echo-deterministic"
     model_mode: str = "echo"  # echo | null | openai
 
+    # 计划助手（Step 6 工具层）
+    #
+    # ⚠️ 为什么默认关闭：
+    #   计划助手生成的内容会进入**考核指标链**（计划 → 指标 → 考核）。
+    #   真模型输出不可完全信任，必须由人工确认后才会落库；
+    #   在压测与契约测试全部通过前，保持关闭，只跑 echo 链路。
+    #
+    # 关闭时端点仍返回**结构完整的空结果**，前端不崩、不白屏。
+    plan_ai_enabled: bool = False
+    # 计划助手允许调用的工具（与计划域网关白名单一致）
+    plan_ai_allowed_tools: str = "get_my_plan_history,get_department_plan_history"
+    # 计划助手回看多少个月的历史计划
+    plan_ai_history_months: int = 6
+    # 部门级历史计划开关（关闭则只参考自己的历史）
+    plan_ai_department_context: bool = True
+
     # 业务开关
     # 强制分布策略（决策⑦）：第一期只做分布对比，不强制比例
     rating_policy: str = "reference_only"
@@ -67,9 +83,16 @@ class Settings(BaseSettings):
     feishu_app_secret: str = ""
     feishu_tenant_id: str = ""
     notification_enabled: bool = False
+    # 通知灰度（canary）：配置后仅向指定员工/场景/单据投递，
+    # 用于上线前验证飞书通道，不影响其他收件人。
     notification_canary_employee_id: str = ""
     notification_canary_scene: str = ""
     notification_canary_outbox_id: str = ""
+    # 考核周期调度（P1-2）：自动开启任务 / 截止倒计时 / 逾期告警。
+    # 默认关闭 —— 周期调度会改变任务状态（draft → in_progress）并建记录，
+    # 属于业务写操作，需显式开启。
+    period_scheduler_enabled: bool = False
+    period_scheduler_interval_seconds: int = 3600
     # 定时组织架构同步
     feishu_sync_enabled: bool = False
     feishu_sync_interval_seconds: int = 3600
@@ -198,6 +221,80 @@ class Settings(BaseSettings):
     # 冻结/未激活是否禁用账号。
     feishu_sync_inactive_disables_account: bool = True
 
+    # ─────────────────────────────────────────────────────────────
+    # 飞书绩效方案自动同步（FS-8）
+    #
+    # 目标：飞书上的部门绩效方案文档 → 全自动进系统
+    #     文档变更 → 自动建版本 → 自动发布 → 到周期自动发起考核
+    #
+    # ⚠️ **默认全部关闭** —— 这条链路会**写业务数据**（建方案版本、
+    #    发布方案、发起考核），必须显式开启。
+    #
+    # ⚠️ **权限现实（2026-11-20 实测，见 scripts/probe_feishu_docs.py）**
+    #     ✅ wiki get_node        → 变更检测可用
+    #     ❌ wiki 空间/节点列表    → 缺 wiki:wiki:readonly（自动发现不可用）
+    #     ❌ docx/drive/sheets    → 缺对应 scope（正文取不到）
+    # ⇒ 本应用当前**只能做变更检测**，正文抓取需 IT 补权限。
+    # ─────────────────────────────────────────────────────────────
+    # 是否启用飞书方案自动同步定时任务。
+    feishu_scheme_sync_enabled: bool = False
+    # 同步间隔（秒）。不得低于 60 秒，避免打爆飞书接口。
+    feishu_scheme_sync_interval_seconds: int = 1800
+    # 要扫描的飞书知识空间 ID（用于自动发现部门方案文档）。
+    # 留空则不启用自动发现，只同步已人工绑定的来源。
+    feishu_scheme_sync_space_id: str = ""
+    # 自动发现时使用的周期类型。
+    feishu_scheme_sync_period_type: str = "monthly"
+    # ⚠️ **是否自动发布**（用户已确认要全自动）。
+    #    False = 只建草稿，等人工在网页端确认发布（保守模式）。
+    #    True  = 建版本后立即发布生效。
+    feishu_scheme_sync_auto_publish: bool = True
+    # 自动发起考核：方案发布后是否按周期自动创建考核任务。
+    feishu_scheme_sync_auto_start_task: bool = False
+    # 自动发起考核时，自评与主管评分的截止天数（相对周期结束日）。
+    feishu_scheme_sync_self_review_days: int = 3
+    feishu_scheme_sync_manager_review_days: int = 7
+    # 同步告警接收人（open_id / chat_id）。留空则只入库不外发。
+    feishu_scheme_sync_alert_receiver_id: str = ""
+    feishu_scheme_sync_alert_receiver_type: str = "chat_id"
+
+    # ─────────────────────────────────────────────────────────────
+    # 飞书绩效方案自动同步（FS-8）
+    #
+    # 目标：飞书上的部门绩效方案文档 → 全自动进系统
+    #     文档变更 → 自动建版本 → 自动发布 → 到周期自动发起考核
+    #
+    # ⚠️ **默认全部关闭** —— 这条链路会**写业务数据**（建方案版本、
+    #    发布方案、发起考核），必须显式开启。
+    #
+    # ⚠️ **权限现实（2026-11-20 实测，见 scripts/probe_feishu_docs.py）**
+    #     ✅ wiki get_node        → 变更检测可用
+    #     ❌ wiki 空间/节点列表    → 缺 wiki:wiki:readonly（自动发现不可用）
+    #     ❌ docx/drive/sheets    → 缺对应 scope（正文取不到）
+    # ⇒ 本应用当前**只能做变更检测**，正文抓取需 IT 补权限。
+    # ─────────────────────────────────────────────────────────────
+    # 是否启用飞书方案自动同步定时任务。
+    feishu_scheme_sync_enabled: bool = False
+    # 同步间隔（秒）。不得低于 60 秒，避免打爆飞书接口。
+    feishu_scheme_sync_interval_seconds: int = 1800
+    # 要扫描的飞书知识空间 ID（用于自动发现部门方案文档）。
+    # 留空则不启用自动发现，只同步已人工绑定的来源。
+    feishu_scheme_sync_space_id: str = ""
+    # 自动发现时使用的周期类型。
+    feishu_scheme_sync_period_type: str = "monthly"
+    # ⚠️ **是否自动发布**（用户已确认要全自动）。
+    #    False = 只建草稿，等人工在网页端确认发布（保守模式）。
+    #    True  = 建版本后立即发布生效。
+    feishu_scheme_sync_auto_publish: bool = True
+    # 自动发起考核：方案发布后是否按周期自动创建考核任务。
+    feishu_scheme_sync_auto_start_task: bool = False
+    # 自动发起考核时，自评与主管评分的截止天数（相对周期结束日）。
+    feishu_scheme_sync_self_review_days: int = 3
+    feishu_scheme_sync_manager_review_days: int = 7
+    # 同步告警接收人（open_id / chat_id）。留空则只入库不外发。
+    feishu_scheme_sync_alert_receiver_id: str = ""
+    feishu_scheme_sync_alert_receiver_type: str = "chat_id"
+
     @model_validator(mode="after")
     def _validate_auth_secret(self):
         """启动即校验认证密钥，避免弱密钥静默上线。"""
@@ -230,6 +327,17 @@ class Settings(BaseSettings):
         """定时同步间隔不得低于 60 秒，避免打爆飞书接口。"""
         if self.feishu_sync_interval_seconds < 60:
             raise ValueError("FEISHU_SYNC_INTERVAL_SECONDS 不得小于 60 秒")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_scheme_sync(self):
+        """飞书方案自动同步的配置校验。"""
+        if self.feishu_scheme_sync_interval_seconds < 60:
+            raise ValueError("FEISHU_SCHEME_SYNC_INTERVAL_SECONDS 不得小于 60 秒")
+        if self.feishu_scheme_sync_period_type not in ("monthly", "quarterly", "annual"):
+            raise ValueError(
+                "FEISHU_SCHEME_SYNC_PERIOD_TYPE 应为 monthly/quarterly/annual"
+            )
         return self
 
     @property

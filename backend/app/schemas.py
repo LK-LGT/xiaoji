@@ -16,6 +16,13 @@ class MetricValuesRequest(BaseModel):
     period: str = Field(min_length=6, max_length=10)
 
 
+class ScoringBreakdownRequest(BaseModel):
+    """评分构成明细的查询参数。"""
+
+    model_config = ConfigDict(extra="forbid")
+    period: str = Field(min_length=6, max_length=10)
+
+
 class EvidenceQueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     period: str | None = Field(default=None, min_length=6, max_length=10)

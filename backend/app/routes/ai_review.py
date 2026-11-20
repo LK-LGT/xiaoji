@@ -185,6 +185,52 @@ async def preview_result_ai_review(
 
 
 # ---------------------------------------------------------------------------
+# 分布质检（P0-2）
+#
+# 只读分数、只产出统计观察：**不改分、不改等级、不强制分布**（决策⑦）。
+# ---------------------------------------------------------------------------
+
+
+@router.get("/distribution")
+async def distribution_qc(
+    period: str = Query(..., description="周期，如 202611"),
+    departmentIds: str = Query("", description="部门 ID，逗号分隔；留空表示全部"),
+    record: bool = Query(False, description="是否写入 AiReview 审计记录"),
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """周期分数分布质检（只提示，不改分）。"""
+    from ..services import distribution_qc as qc
+
+    ctx = access_control.build_access_context(db, current_user)
+    departments = [d.strip() for d in (departmentIds or "").split(",") if d.strip()]
+    if departments:
+        if "hr" not in ctx.roles:
+            if not set(departments) <= set(ctx.managed_department_ids):
+                raise HTTPException(status_code=403, detail="无权查看所选部门的分布数据")
+    else:
+        if "hr" not in ctx.roles:
+            departments = sorted(ctx.managed_department_ids)
+            if not departments:
+                raise HTTPException(status_code=403, detail="无权查看分布数据")
+    report = qc.analyze(db, period=period, department_ids=departments or None)
+    if record:
+        payload = qc.build_ai_review_payload(report)
+        ai_service.record_review(
+            db,
+            biz_type="PERFORMANCE_DISTRIBUTION",
+            biz_id=f"{period}:{','.join(departments)}",
+            result=payload,
+            status="RULE_ONLY",
+            overall_risk=payload["overallRisk"],
+            provider="",
+            model_name="",
+            prompt_version="distribution-qc-v1",
+        )
+    return _ok(report)
+
+
+# ---------------------------------------------------------------------------
 # 内部实现
 # ---------------------------------------------------------------------------
 

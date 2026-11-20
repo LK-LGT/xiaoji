@@ -184,6 +184,87 @@ class SystemAdmin(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
 
+class Delegation(Base):
+    """代理授权（主管请假/外出时的临时委托，P1-4）。
+
+    委托人在 ``starts_at`` ~ ``ends_at`` 期间，把**指定范围**的管理权限
+    临时交给受托人。范围由 ``scope_type`` + ``scope_value`` 决定：
+
+    - ``direct_reports``：委托人原有的直属下属（最常用）
+    - ``department``：委托人管理的整个部门
+    - ``explicit``：``scope_value`` 里逗号分隔的员工 ID 白名单
+
+    ⚠️ **有效期是硬闸门**：``ends_at`` 之前有效，之后自动失效，
+    不依赖任何后台任务去「撤销」—— 时间一到权限自然消失。
+    """
+
+    __tablename__ = "delegation"
+    __table_args__ = (
+        UniqueConstraint(
+            "delegator_id", "delegate_id", "scope_type", "scope_value",
+            name="uq_delegation_scope",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    # 委托人（请假的主管）
+    delegator_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("employee.id"), nullable=False, index=True
+    )
+    # 受托人（代为主管）
+    delegate_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("employee.id"), nullable=False, index=True
+    )
+    scope_type: Mapped[str] = mapped_column(String(32), default="direct_reports", nullable=False)
+    # department 时为部门 ID；explicit 时为逗号分隔的员工 ID
+    scope_value: Mapped[str] = mapped_column(String(256), default="", nullable=False)
+    reason: Mapped[str] = mapped_column(String(256), default="", nullable=False)
+    starts_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ends_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # 是否已撤销（到期前主动收回）
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
+class DataSourcePolicy(Base):
+    """数据源白名单（P1-4 授权边界的另一侧：数据可读性）。
+
+    HR 配置「哪些数据源可以进入算分 / 证据链」以及「哪些字段需要脱敏」。
+
+    - ``source_code``：数据源标识（如 ``attendance`` / ``feishu_approval`` / ``hr_core``）
+    - ``allowed``：是否允许进入算分集（``usage=scoring``）
+    - ``allowed_roles``：哪些角色可以读取该源（逗号分隔，如 ``hr,manager``）
+    - ``redacted_fields``：需要脱敏的字段（逗号分隔）
+    - ``note``：配置说明 / 依据
+
+    ⚠️ **默认不信任**：没有配置的数据源**不可读**。
+    这是白名单语义 —— 与「默认全放行」相比，漏配会导致「数据没进来」
+    （可见、可修），而不是「数据泄露了」（不可见、不可修）。
+    """
+
+    __tablename__ = "data_source_policy"
+    __table_args__ = (
+        UniqueConstraint("source_code", name="uq_datasourcepolicy_code"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    source_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    # 是否允许进入算分集
+    allowed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 可读角色（逗号分隔）；为空表示仅 HR
+    allowed_roles: Mapped[str] = mapped_column(String(256), default="hr", nullable=False)
+    # 需要脱敏的字段（逗号分隔）
+    redacted_fields: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+    note: Mapped[str] = mapped_column(String(256), default="", nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_now, onupdate=_now, nullable=False
+    )
+
+
 class OrganizationSyncBatch(Base):
     """飞书组织架构同步批次。"""
 
@@ -1173,6 +1254,102 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
 
+class AiFeedback(Base):
+    """P2-3 人工反馈 —— A/B 灰度回流的数据来源。
+
+    反馈是**人工产出**的判断（采纳/修改/拒绝草稿），因此它是灰度
+    对比的唯一可信依据 —— 模型自己说「我觉得好」不算数。
+
+    ⚠️ 只存反馈**结论**与**差异摘要**，不存评语正文 ——
+    正文可能含个人信息，留在 ``CommentDraft`` 里已有出处可查。
+    """
+
+    __tablename__ = "ai_feedback"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    record_id: Mapped[str] = mapped_column(String(64), ForeignKey("assessment_record.id"), nullable=False, index=True)
+    agent: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    #: ACCEPT（采纳）/ MODIFY（修改后采纳）/ REJECT（拒绝）
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: 反馈人
+    actor_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    #: 差异摘要（改了什么），不存正文
+    diff_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 反馈理由
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 评分维度（可选）：这条反馈针对哪个指标
+    dimension: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False, index=True)
+
+
+class PromptVersion(Base):
+    """P2-3 Prompt 版本与灰度配置。
+
+    灰度模型（``rollout``）：
+    - ``off``：完全不用该版本；
+    - ``canary``：按 ``canary_ratio`` 比例随机命中（默认桶固定，避免抖动）；
+    - ``full``：全量。
+
+    ⚠️ 命中是**确定性**的 —— 同一 ``record_id`` 永远落到同一个桶。
+    否则同一条记录在两次生成里用不同 prompt，灰度对比就失去意义。
+    """
+
+    __tablename__ = "prompt_version"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    agent: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: 完整 prompt 文本（不含凭据）
+    prompt_text: Mapped[str] = mapped_column(Text, nullable=False)
+    #: off / canary / full
+    rollout: Mapped[str] = mapped_column(String(32), default="off", nullable=False)
+    #: 灰度比例 0.0 ~ 1.0
+    canary_ratio: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    #: 灰度基准版本（对照组）
+    baseline_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("agent", "version", name="uq_promptversion_agent_version"),
+    )
+
+
+class CaseLibraryEntry(Base):
+    """P2-3 案例库 —— 已定稿的绩效处理案例，供后续参考与培训。
+
+    ⚠️ 入库门槛：必须是**已确认**的结论（``confirmed_rating`` 有值），
+    且必须**脱敏** —— 不存员工姓名、不存可识别的评语正文。
+    案例的用途是「参考做法」，不是「查某人历史」。
+    """
+
+    __tablename__ = "case_library_entry"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    #: 场景分类：veto / low_score / dispute / promotion / calibration ...
+    scenario: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    #: 结论等级（已确认）
+    rating: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    #: 评分区间描述（如 "40-60"）
+    score_range: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: 事实摘要（脱敏后的结构化描述）
+    facts_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    #: 处理要点（人工撰写）
+    resolution: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 来源记录 ID（可回溯，但不暴露员工身份）
+    source_record_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 是否已脱敏（入库时强制为 True）
+    redacted: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: 被复用次数（用于排序热度）
+    use_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False, index=True)
+
+
 # ---------------------------------------------------------------------------
 # 计划 / 争议 / AI / 成果 / 工作日规则域模型
 #
@@ -1186,6 +1363,7 @@ class AuditLog(Base):
 # ---------------------------------------------------------------------------
 
 from . import bot_models as _bot_models  # noqa: E402,F401
+from . import feishu_scheme_models as _feishu_scheme_models  # noqa: E402,F401
 from . import notification_models as _notification_models  # noqa: E402,F401
 from . import plan_models as _plan_models  # noqa: E402,F401
 from . import result_models as _result_models  # noqa: E402,F401

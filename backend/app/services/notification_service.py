@@ -27,7 +27,11 @@ def enqueue(
     object_id: str = "", object_type: str = "", label: str = "",
     event_key: str = "", due_at: datetime | None = None,
 ) -> Notification | None:
-    """同一业务事件只写一次；提醒用日期作为 event_key，形成每日频控。"""
+    """同一业务事件只写一次；提醒用日期作为 event_key，形成每日频控。
+
+    ⚠️ 命中去重时返回**已存在的行**（不是 None）。需要区分「新建」与
+       「已存在」的调用方请用 :func:`enqueue_new`。
+    """
     employee = db.get(Employee, employee_id)
     if employee is None or employee.employment_status != "active" or employee.account_status != "enabled":
         return None
@@ -72,6 +76,29 @@ def enqueue_safe(db: Session, **kwargs: Any) -> Notification | None:
     except Exception:
         logger.warning("通知旁路失败：scene=%s", kwargs.get("scene"), exc_info=True)
         return None
+
+
+def enqueue_new(db: Session, **kwargs: Any) -> Notification | None:
+    """仅当**新建**通知时返回行；命中去重（已存在）时返回 ``None``。
+
+    与 :func:`enqueue` 的区别：``enqueue`` 命中去重时返回已存在的行，
+    调用方无法区分「这条是我刚写的」还是「之前就有了」。
+    每日频控类调用（如周期调度提醒）需要这个区分，
+    否则重复投递会被误计为「已发送」，导致频控失效。
+    """
+    employee_id = kwargs.get("employee_id")
+    scene = kwargs.get("scene")
+    period = kwargs.get("period", "")
+    object_id = kwargs.get("object_id", "")
+    event_key = kwargs.get("event_key", "")
+    if scene in {"N3", "N4"} and not event_key:
+        event_key = now().date().isoformat()
+    key = hashlib.sha256(
+        f"{employee_id}|{scene}|{period}|{object_id}|{event_key}".encode()
+    ).hexdigest()
+    if db.query(Notification).filter_by(dedup_key=key).first():
+        return None
+    return enqueue_safe(db, **kwargs)
 
 
 def record_event(db: Session, record: AssessmentRecord, scene: str, *, event_key: str = "") -> None:

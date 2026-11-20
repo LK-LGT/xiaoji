@@ -15,6 +15,7 @@ from backend.app.domain.models import (
     AssessmentTask,
     Base,
     ConfigSnapshot,
+    DataSourcePolicy,
     Department,
     Employee,
     Evidence,
@@ -47,6 +48,11 @@ def setup(monkeypatch):
         db.get(AssessmentTask, "T").snapshot_id = "S"
         db.add(AssessmentRecord(id="R", task_id="T", employee_id="E"))
         db.add(MetricValue(employee_id="E", metric_code="GMV", period="202611", value=120, target=100, source="manual"))
+        # P1-5：白名单默认不信任，显式放行 manual / attendance 两个源
+        db.add(DataSourcePolicy(source_code="manual", display_name="人工录入",
+                                allowed=True, allowed_roles="hr,manager,employee"))
+        db.add(DataSourcePolicy(source_code="attendance", display_name="考勤系统",
+                                allowed=True, allowed_roles="hr,manager,department_leader,employee"))
         db.commit()
         app = FastAPI()
         app.include_router(router)
