@@ -9,7 +9,13 @@ from fastapi import HTTPException
 
 from backend.app import schemas
 from backend.app.domain.models import (
-    AssessmentRecord, AssessmentTask, ConfigSnapshot, Department, Employee, RatingDraft, Score,
+    AssessmentRecord,
+    AssessmentTask,
+    ConfigSnapshot,
+    Department,
+    Employee,
+    RatingDraft,
+    Score,
 )
 from backend.app.main import query_assessment_data
 from backend.app.services import qa_service

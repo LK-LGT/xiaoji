@@ -1,0 +1,234 @@
+"""问答核心逻辑（HTTP 端点与飞书机器人共用）。
+
+⚠️ **为什么要抽成服务**
+--------------------
+`/v1/qa/ask`（网页端）与飞书机器人的问答入口需要**完全一致**的
+行为：同一套权限收敛、同一套引用校验、同一套降级策略。
+
+如果飞书侧另写一份，就会出现「网页说能查、飞书说查不到」这类
+**行为漂移** —— 用户会认为功能有 bug。所以这里把核心逻辑抽出来，
+两个入口都调它。
+
+⚠️ **不做什么**
+--------------
+这里**不复用 HTTP 自调用**（`httpx.post("http://localhost:8000/v1/qa/ask")`）。
+原因有二：
+  ① 飞书侧没有登录态 —— 自调用拿不到「当前用户是谁」，
+     得再发明一套「用 open_id 换 token」的机制，纯属绕远路；
+  ② 自调用会把内部失败翻译成 HTTP 状态码，**降级路径会丢**
+     —— 网页端还能看到「AI 不可用 + 原始数据」，
+     飞书端就只能看到一个 500。
+
+⇒ 直接用员工身份调用本服务。
+
+⚠️ **为什么叫 `qa_chat_service` 而不是 `qa_service`**
+----------------------------------------------------
+`services/qa_service.py` **已经存在**，提供的是另一套东西
+（``query_self_result`` / ``query_self_progress`` 等**结构化查询**）。
+
+⇒ 名字必须区分开：
+  - ``qa_service`` —— 旧的**结构化查询**服务（已被 ``main.py`` 使用）
+  - ``qa_chat_service`` —— 新的**自然语言问答**服务（本文件）
+
+⚠️ 同名模块会**互相覆盖**（Python 同名模块只留一个），
+   一旦撞名，旧接口会突然「没有这个属性」——
+   所以这里刻意用不同的名字。
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Any
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.orm import Session
+
+from ..domain.models import AiTrace, AssessmentTask, Employee
+from . import agent_tool_service, privacy, qa_permission
+from .agent_tool_token import issue_agent_tool_token
+from .review_service import AgentClient
+
+
+class AgentQAResponse(BaseModel):
+    """L3 智能体的问答响应（契约）。
+
+    ⚠️ `extra="forbid"` —— L3 多返回一个字段就报错。
+    这是**故意**的：多出来的字段通常意味着契约漂移，
+    静默忽略会让「上游改了结构」变成查不出来的灵异问题。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    answer: str = Field(min_length=1, max_length=16000)
+    citations: list[str] = Field(default_factory=list, max_length=200)
+    sources: list[str] = Field(default_factory=list, max_length=200)
+    degraded: bool = False
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
+    agent_status: dict[str, str] = Field(default_factory=dict)
+
+
+@dataclass
+class QaResult:
+    """一次问答的结果（两个入口共用同一形状）。
+
+    ⚠️ `degraded` 与 `dropped_citations` 是**两件不同的事**：
+      - `degraded` → AI 整体不可用，回答是兜底文案
+      - `dropped_citations` > 0 → AI 回答**可用**，只是部分引用没能核验
+    """
+
+    answer: str
+    citations: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
+    data: dict[str, Any] = field(default_factory=dict)
+    degraded: bool = False
+    follow_up_questions: list[str] = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    trace_id: str = ""
+    dropped_citations: int = 0
+    period: str = ""
+    task_id: str = ""
+    task_name: str = ""
+    scope: str = "self"
+    completeness: float = 0.0
+
+
+async def ask_question_async(
+    db: Session,
+    employee: Employee,
+    *,
+    question: str,
+    task_id: str,
+    period: str | None = None,
+) -> QaResult:
+    """回答一个问题。
+
+    权限收敛、引用校验、降级策略与网页端**完全一致** ——
+    因为它们调的是同一个函数。
+
+    Raises:
+        HTTPException: 权限不足 / 任务不存在 / 周期不一致。
+            这些是**用户能改正**的错误（换个任务、换个月份），
+            所以直接抛 —— 飞书侧会把它转成错误卡片。
+    """
+    started = time.perf_counter()
+    scope = qa_permission.resolve_scope(db, employee, task_id, period)
+    task = db.get(AssessmentTask, task_id)
+
+    # ── 预取结构化数据（L2 侧算，AI 只解读）──────────────────
+    structured: dict[str, Any] = {}
+    for tool in scope.allowed_tools:
+        try:
+            if tool == "get_metric_values":
+                value = agent_tool_service.load_metric_values(db, employee_id=employee.id, task=task)
+            elif tool == "get_scoring_breakdown":
+                value = agent_tool_service.load_scoring_breakdown(db, employee_id=employee.id, task=task)
+            elif tool == "get_evidence":
+                # 不扩大可见性：预取默认使用普通员工视角。
+                value = agent_tool_service.load_evidence(db, employee_id=employee.id, task=task, usage=None)
+            else:
+                value = agent_tool_service.load_department_stats(
+                    db, department_id=employee.department_id, task_id=task.id,
+                )
+            structured[tool] = privacy.redact_obj(value)
+        except Exception:
+            structured[tool] = {"available": False}
+
+    # ── 调 L3 ────────────────────────────────────────────────
+    employee_id = employee.id
+    trace_id = str(uuid4())
+    payload: dict[str, Any] = {
+        "question": privacy.redact_text(question),
+        "context": {"period": scope.period, "scope": scope.scope, "task_id": task_id},
+        "allowed_tools": list(scope.allowed_tools),
+        "trace_id": trace_id,
+    }
+
+    # ⚠️ 结束读事务，等待 L3 时不持有数据库连接或 SQLite 事务。
+    #    L3 会回调本进程取工具数据 —— 若这里还持有事务，
+    #    SQLite 会因写锁冲突而报 "database is locked"。
+    db.rollback()
+
+    response: AgentQAResponse | None = None
+    try:
+        payload["tool_token"] = issue_agent_tool_token(
+            employee_id=employee_id,
+            task_id=task_id,
+            allow=scope.allowed_tools,
+            scope=scope.scope,
+        )
+        response = AgentQAResponse.model_validate(await AgentClient().qa(payload))
+        # ⚠️ 引用必须**全部**在 sources 内 —— 否则整份回答丢弃。
+        if not response.answer.strip() or set(response.citations) - set(response.sources):
+            raise ValueError("无效问答结果")
+    except Exception:
+        response = None
+
+    degraded = response is None or response.degraded
+    answer = (
+        response.answer
+        if response
+        else "AI 问答暂不可用，下方为系统查询数据，也可到汇总报表查看明细。"
+    )
+
+    # 数据完整度由 L2 已成功预取的数据源比例给出，**不接受模型自报**。
+    available = sum(v.get("available") is not False for v in structured.values())
+    total_tools = len(scope.allowed_tools)
+
+    # 引用缺口：模型引用了不存在的来源（已被 agent-service 剔除）。
+    # ⚠️ 这**不等于**降级 —— 工具正常、回答可读，只是引用有缺口。
+    agent_status = response.agent_status if response else {}
+    dropped_citations = int(agent_status.get("dropped_citations") or 0)
+
+    result = QaResult(
+        answer=answer,
+        citations=response.citations if response else [],
+        sources=response.sources if response else [],
+        data=structured,
+        degraded=degraded,
+        follow_up_questions=[],
+        tool_calls=response.tool_calls if response else [],
+        trace_id=trace_id,
+        dropped_citations=dropped_citations,
+        period=scope.period,
+        task_id=task_id,
+        task_name=task.name if task else "",
+        scope=scope.scope,
+        completeness=(available / total_tools) if total_tools else 0.0,
+    )
+
+    _record_trace(db, trace_id, result, started)
+    return result
+
+
+def _record_trace(db: Session, trace_id: str, result: QaResult, started: float) -> None:
+    """记 AI 调用流水。
+
+    ⚠️ 失败**不能影响主流程** —— 流水只是审计，不是业务必需。
+    """
+    try:
+        with db.begin_nested():
+            db.add(
+                AiTrace(
+                    id=trace_id,
+                    agent="qa",
+                    status="degraded" if result.degraded else "ok",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    output_json={
+                        "degraded": result.degraded,
+                        "tool_count": len(result.tool_calls),
+                        "dropped_citations": result.dropped_citations,
+                        "scope": result.scope,
+                    },
+                    error="QA_DEGRADED" if result.degraded else None,
+                )
+            )
+            db.flush()
+    except Exception:
+        pass
+
+
+__all__ = [
+    "QaResult",
+    "ask_question_async",
+]
