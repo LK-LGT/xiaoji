@@ -216,9 +216,36 @@ _NUMBER_BENIGN_CONTEXT = re.compile(
 #
 # ⚠️ 「个人绩效分」与「绩效分」会**重叠匹配** → 重复计数。
 #    所以这里用**互斥**的写法：只匹配词，不再叠加前缀变体。
+#
+# ⚠️⚠️ **必须要求「词 + 数值」才算泄漏**（实测踩到的坑 —— 误报 1 处/轮）：
+#    原来 `得分[:：]` 是**裸词**，于是模型写
+#      「- **质量得分**：实际 88 分，目标 100 分」
+#    里的「质量得分：」被判成「分数泄漏」。
+#    但这是**指标名称**（quality_score 的中文表述），
+#    88 分是**证据里的原始指标值**，不是绩效得分 —— 删了反而丢事实。
+#
+#    与生产代码 `agent-service/app/sanitize.py` 的 `_SCORE_WITH_VALUE` 保持一致：
+#    只有「绩效分/总分/得分 + 数值」才算泄漏。
 _SCORE_TERMS = re.compile(
-    r"(绩效分|总分|最终得分|综合得分|考核得分|分数为|得分[:：]|"
-    r"\bscore\b|加权总分|最终分数|绩效得分)",
+    r"(?:个人)?(?:绩效分|考核分|总分|最终分|最终得分|综合得分|考核得分|绩效得分)"
+    r"\s*(?:为|是|[:：])?\s*\d+(?:\.\d+)?\s*(?:分|%)?|"
+    r"分数为\s*\d+(?:\.\d+)?|"
+    r"\bscore\b\s*[:：=]?\s*\d+(?:\.\d+)?",
+    re.IGNORECASE,
+)
+
+# ⚠️ **只要「分数词」、不要数值** —— 用于「这个数字前面是不是分数词」的判断。
+#
+# ⚠️ 为什么不能直接用 `_SCORE_TERMS`：
+#    `_SCORE_TERMS` 要求「词 + 数值」连着出现（数值在词**后面**），
+#    而「数字前面的上下文是不是分数词」这个检查，数值在词**后面**，
+#    查**前面**的窗口自然匹配不上 → 分数数字被重复算成「编造数字」。
+#
+#    实例：「客户确认满足业务诉求（个人绩效分 95，审批通过）」
+#    → 查 "95" 前面 12 字 = "…（个人绩效分 " → 需要**裸词**才能命中。
+_SCORE_WORD = re.compile(
+    r"(?:个人)?(?:绩效分|考核分|总分|最终分|最终得分|综合得分|考核得分|绩效得分)"
+    r"|分数为|\bscore\b",
     re.IGNORECASE,
 )
 
@@ -265,6 +292,36 @@ def _contains_quote(fragment: str, source_texts: list[str]) -> bool:
     return False
 
 
+def _ratio_variants(ratio: float) -> list[str]:
+    """一个比率可能的**合理书写形式**。
+
+    ⚠️ 为什么需要变体（实测踩到的坑 —— 误报 4 处/轮）：
+        我们算 88/100 得到 ``0.88``（IEEE754 下可能是 0.8800000000000001），
+        模型写「比率为 0.88」是**完全正确**的转述。若只按原值比对，
+        浮点尾数会让**每一个派生比率**都被误判成「编造数字」。
+
+    所以这里同时给出：
+      - 原始字符串
+      - 2/3/4/6 位小数截断（0.88 / 0.880 / 0.8800）
+      - 百分比写法（88）
+
+    宁可**多放过**也不要误报 —— 误报会让人误以为模型比实际更差，
+    进而把精力浪费在不存在的问题上。
+    """
+    variants: list[str] = []
+    for digits in (2, 3, 4, 6):
+        text = f"{ratio:.{digits}f}"
+        if text not in variants:
+            variants.append(text)
+        trimmed = text.rstrip("0").rstrip(".")
+        if trimmed and trimmed not in variants:
+            variants.append(trimmed)
+    pct = f"{ratio * 100:.0f}"
+    if pct not in variants:
+        variants.append(pct)
+    return variants
+
+
 def _allowed_numbers(source_texts: list[str]) -> set[str]:
     """原文里出现过的数字（归一化后）。"""
     allowed: set[str] = set()
@@ -284,6 +341,7 @@ def detect_hallucination(
     attendance_present: bool,
     attendance_summaries: list[str] | None = None,
     evidence_impacts: list[str] | None = None,
+    extra_source_texts: list[str] | None = None,
 ) -> dict:
     """在模型产出里找幻觉。返回各类问题清单。
 
@@ -295,16 +353,62 @@ def detect_hallucination(
     证据的 ``impact`` 字段（审批意见、完成情况）**也是模型能看到的原文**。
     第一版压测漏了它 → 模型如实引用审批意见「成果内容与证据符合要求，同意通过」
     被误判成「编造引文」（22.7% 误报）。
+
+    ⚠️ ``extra_source_texts`` 是**兜底的口袋** ——
+    凡是「模型能看到、我们确实告诉过它、但没出现在任何 summary 里」的数字，
+    都要塞进来（证据条数、档位边界…），否则会被误判成编造。
     """
     all_source_texts = list(evidence_summaries)
     # ⚠️ impact 也是原文 —— 模型引用审批意见不算编造
     all_source_texts.extend(evidence_impacts or [])
     # 考勤也是原文 —— 模型如实引用「缺卡 2 次」不算编造
     all_source_texts.extend(attendance_summaries or [])
+    # ⚠️ 兜底口袋 —— 见上面的说明
+    all_source_texts.extend(extra_source_texts or [])
     for m in metric_values:
         all_source_texts.append(
             f"{m.get('code','')} {m.get('value','')} {m.get('target','')} {m.get('unit','')}"
         )
+        # ⚠️ **派生比率也是原文**（实测踩到的坑 —— 误报 4 处/轮）：
+        #   payload 里每个指标都带了 `ratio`（我们按业务规则算好的
+        #   value/target）和 `ratio_level`。模型据此写「比率为 0.95」
+        #   是**完全忠实**的转述，不是编造。
+        #   第一版只把 code/value/target/unit 算进「合法数字」→
+        #   0.95 / 0.85 / 0.75 / 0.88 全被判成「编造数字」。
+        #
+        #   比率还有一个坑：**浮点误差**。
+        #   4.5 / 6 = 0.75 精确，但 88/100=0.88、95/100=0.95 这类
+        #   在 IEEE754 下可能是 0.8800000000000001 —— 模型写成 0.88
+        #   是对的，我们算出的却是 0.8800000000000001 → 不匹配 → 误报。
+        #   所以比率要**按精度截断**后再比对。
+        ratio = m.get("ratio")
+        if ratio is not None:
+            all_source_texts.append(f"ratio {ratio}")
+            all_source_texts.append(f"ratio_level {m.get('ratio_level','')}")
+            for candidate in _ratio_variants(float(ratio)):
+                all_source_texts.append(f"ratio {candidate}")
+        # ⚠️ **level_scale 的档位边界也是原文**（实测踩到的坑 —— 误报 1 处/轮）：
+        #   payload 里每个指标都带了 `level_scale`：
+        #     [{"level":"C","min":0,"max":0.8},{"level":"B","min":0.8,"max":1.0},
+        #      {"level":"A","min":1.0,"max":999}]
+        #   模型据此写「B级区间（0.8≤比例<1.0）」或「B级区间（80%至100%）」
+        #   是**忠实引用档位定义**，不是编造。
+        #   `0.8` / `1.0` / `0` / `999` 都必须算合法。
+        for band in m.get("level_scale") or []:
+            all_source_texts.append(
+                f"level_scale {band.get('level','')} "
+                f"{band.get('min','')} {band.get('max','')}"
+            )
+            # 档位边界也常用百分比写法：「80%」≡「0.8」
+            for edge in (band.get("min"), band.get("max")):
+                if edge is None:
+                    continue
+                try:
+                    edge_float = float(edge)
+                except (TypeError, ValueError):
+                    continue
+                for candidate in _ratio_variants(edge_float):
+                    all_source_texts.append(f"level_scale {candidate}")
 
     issues: dict[str, list[str]] = {
         "fabricated_quotes": [],
@@ -394,7 +498,13 @@ def detect_hallucination(
                 continue
             # ⚠️ **分数数字**不算「编造数字」—— 它归 score_leak 管。
             #    否则同一处会既算「编造」又算「泄漏」，虚增两类计数。
-            if _SCORE_TERMS.search(masked[max(0, match.start() - 12):match.start()]):
+            #
+            # ⚠️ 这里要用 `_SCORE_WORD`（**只要词，不要数值**），
+            #    不能用 `_SCORE_TERMS`（要求「词+数值」）——
+            #    本检查是看「这个数字**前面**是不是分数词」，
+            #    而 `_SCORE_TERMS` 的数值部分正好在**这个数字之后**，
+            #    查前面的窗口自然匹配不上 → 分数数字被重复算成「编造」。
+            if _SCORE_WORD.search(masked[max(0, match.start() - 12):match.start()]):
                 continue
             issues["fabricated_numbers"].append(f"{raw}{unit}")
 
@@ -500,6 +610,24 @@ def post(path: str, payload: dict, timeout: int = 180) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _case_label(case: dict, index: int) -> str:
+    """给用例生成**唯一且可读**的标签。
+
+    ⚠️ 为什么不能用 `record_id[-12:]`：
+        record_id 形如 `REC_TASK_20261113150104_202611_2aaf32ea`，
+        尾段 = 周期码 + 员工ID。同一员工的**多条**考核记录这段完全相同
+        → 22 条用例全打成 "611_2aaf32ea"，报告里无法定位问题出在哪条。
+
+    ⚠️ 也不能只靠 record_id 里的时间戳 —— record_id 的格式**不统一**：
+        `R6E2E_REC_gda7d3ef` / `38a1e26e-4fbd-...`（UUID）里根本没有
+        14 位时间戳，正则会退化成取尾段，又变成"员工ID 重复"。
+
+    所以用 **员工名 + 序号**：人名便于人工辨认，序号保证唯一。
+    """
+    name = str(case.get("employee_name") or case.get("employee_id") or "?")[:8]
+    return f"#{index:02d}_{name}"
+
+
 def build_draft_payload(case: dict) -> dict:
     """把用例转成 draft 接口的请求体。
 
@@ -598,7 +726,7 @@ def main() -> int:
 
     for index, case in enumerate(cases, 1):
         payload = build_draft_payload(case)
-        label = case["record_id"][-12:]
+        label = _case_label(case, index)
         try:
             resp = post("/v1/agent/draft", payload)
         except urllib.error.HTTPError as exc:
@@ -636,10 +764,22 @@ def main() -> int:
             evidence_summaries=[e["summary"] for e in case["evidence"]],
             # ⚠️ impact 也是模型能看到的原文 —— 漏了会把「如实引用审批意见」误判成编造
             evidence_impacts=[e.get("impact", "") for e in case["evidence"]],
-            metric_values=case["metrics"],
+            # ⚠️ 必须用 **payload 里的 metrics**（含我们算好的 `ratio`/`level_scale`），
+            #    不能用 `case["metrics"]` —— 后者是**数据库原样**，
+            #    没有 ratio 字段 → 模型转述「比率为 0.95」会被误判成编造数字。
+            metric_values=payload["metrics"],
             legal_refs=legal_refs,
             attendance_present=bool(case.get("attendance")),
             attendance_summaries=[a["summary"] for a in case.get("attendance", [])],
+            # ⚠️ **证据/考勤条数也是原文**（实测踩到的坑 —— 误报 1 处/轮）：
+            #   模型写「现有 6 条 plan_result 证据」—— payload 里确实只给了 6 条
+            #   （提取时 `scoring[:6]` 截断），所以「6」是**对的事实陈述**。
+            #   但条数不在任何一段 evidence summary 里 → 数字 6 无处可查
+            #   → 被判成「编造数字」。
+            extra_source_texts=[
+                f"evidence_count {len(case['evidence'])}",
+                f"attendance_count {len(case.get('attendance') or [])}",
+            ],
         )
 
         # 模型声明的引用 ID 是否都合法
@@ -718,6 +858,27 @@ def main() -> int:
     print(f"检出问题        ：{len(cases) - clean}")
     print(f"请求失败        ：{failed}")
     print(f"耗时            ：{elapsed:.1f}s  （平均 {elapsed / max(1, len(cases)):.1f}s/例）")
+
+    # ⚠️ **样本覆盖率必须与结果一起看**
+    #
+    # 不披露的话，「2 个用例 100% 干净」会被误读成「模型很可靠」，
+    # 而真相是**全库只有 2 个人有可打分证据** —— 检出率低只说明
+    # 「在仅有的几个样本上没出错」，不能推广到整体。
+    emp_set = {c.get("employee_id") for c in cases if c.get("employee_id")}
+    print("\n--- ⚠️ 样本覆盖率（检出率必须连同它一起读）---")
+    print(f"  覆盖员工：{len(emp_set)} 人")
+    for idx, case in enumerate(cases, 1):
+        print(
+            f"    {_case_label(case, idx):18} "
+            f"指标={len(case.get('metrics') or []):2} "
+            f"评分证据={len(case.get('evidence') or []):2} "
+            f"考勤={len(case.get('attendance') or []):2}"
+        )
+    if len(emp_set) < 5:
+        print("  ⚠️ 样本极窄：**检出率低不代表模型可靠**。")
+        print("     要提升置信度需要真实业务数据灌库 —— "
+              "当前库内 85 人的证据几乎全是 reference_only（考勤类）。")
+
     print("\n--- 各类问题检出率 ---")
     for key in (
         "fabricated_quotes",
