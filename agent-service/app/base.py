@@ -69,8 +69,25 @@ class ModelClient(Protocol):
 
     def complete_with_tools(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+        schema: dict[str, Any] | None = None,
     ) -> tuple[Completion | None, str | None]:
         ...
+
+
+def _extract_payload(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """从消息列表里取出首条 user 消息的 JSON 载荷。
+
+    ⚠️ 解析失败返回 ``None`` —— 调用方据此判断「拿不到载荷」，
+    而不是让异常穿透到工具循环里。
+    """
+    for message in messages:
+        if message.get("role") == "user":
+            try:
+                parsed = json.loads(message.get("content") or "{}")
+            except (ValueError, TypeError):
+                return None
+            return parsed if isinstance(parsed, dict) else None
+    return None
 
 
 class EchoModelClient:
@@ -107,7 +124,29 @@ class EchoModelClient:
 
     def complete_with_tools(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+        schema: dict[str, Any] | None = None,
     ) -> tuple[Completion | None, str | None]:
+        # --- 计划助手：形状必须合法 ---
+        #
+        # ⚠️ 为什么要单独走这条路：
+        #   通用分支在有 tool observation 时返回的是 **QA 形状**
+        #   （answer + citations）。计划助手要的是 PlanOutput 形状
+        #   （items / findings / warnings / missing_context）——
+        #   形状不匹配 → Schema 校验失败 → 走降级 → **测不到真实链路**。
+        #
+        #   所以这里按 agent 名分流：plan 走 _plan，其余走原逻辑。
+        plan_payload = _extract_payload(messages)
+        if plan_payload is not None and plan_payload.get("agent") == "plan":
+            if any(m.get("role") == "tool" for m in messages):
+                # 工具已调完 → 直接给最终草稿
+                return Completion(content=self._plan(plan_payload)), None
+            if not tools:
+                return Completion(content=self._plan(plan_payload)), None
+            return Completion(tool_calls=[ToolCall(
+                id="call_echo_1", name=tools[0]["function"]["name"],
+                arguments=self._echo_plan_args(tools[0]),
+            )]), None
+
         observations = [m for m in messages if m.get("role") == "tool"]
         if observations:
             return Completion(content={
@@ -187,6 +226,71 @@ class EchoModelClient:
     def _qa(self, p: dict[str, Any]) -> dict[str, Any]:
         return {"answer": "（离线降级模式）请到后台报表查看明细。", "citations": []}
 
+    def _echo_plan_args(self, tool: dict[str, Any]) -> dict[str, Any]:
+        """为计划工具构造**合法**的离线参数。
+
+        ⚠️ 为什么不能硬编码一套参数发给所有工具：
+        #   ``get_my_plan_history`` 的 schema 是
+        #   ``{months, plan_type}``，``get_department_plan_history`` 是
+        #   ``{months, limit}``。多传一个字段就会被
+        #   ``additionalProperties: false`` 判 INVALID_ARGUMENTS，
+        #   工具直接失败 → 走降级 → **离线模式测不到真实链路**。
+
+        所以这里**按目标工具自己的 schema** 造参数。
+        """
+        params = (tool.get("function") or {}).get("parameters") or {}
+        properties = params.get("properties") or {}
+        args: dict[str, Any] = {}
+        for name, spec in properties.items():
+            if name == "months":
+                args[name] = 6
+            elif name == "plan_type":
+                args[name] = "month"
+            elif name == "limit":
+                args[name] = 20
+            elif "enum" in spec:
+                args[name] = spec["enum"][0]
+            elif spec.get("type") == "integer":
+                args[name] = 1
+            else:
+                args[name] = ""
+        return args
+
+    def _plan(self, p: dict[str, Any]) -> dict[str, Any]:
+        """离线计划草稿 —— 形状合法但内容是占位。
+
+        ⚠️ 关键：形状必须**完全符合** ``PlanOutput``。
+           否则 echo 模式会走「Schema 校验失败 → 降级」路径，
+           我们就测不到「真链路通不通」，只测到「降级通不通」。
+
+        ⚠️ 离线模式下**不产出真实内容** —— 因为没有真实历史计划，
+           编一份出来会让人误以为 AI 真查过数据。
+        """
+        mode = p.get("mode") or "generate"
+        if mode == "check":
+            return {
+                "items": [],
+                "findings": [{
+                    "kind": "other", "severity": "info", "target_index": -1,
+                    "message": "（离线演示）AI 计划检查未运行",
+                    "suggestion": "开启真模型后可获得逐条体检建议。",
+                }],
+                "warnings": [], "missing_context": [],
+            }
+        return {
+            "items": [{
+                "task_name": "（离线演示）待填写任务名称",
+                "task_content": "（离线演示）请手动填写任务内容",
+                "deliverable": "",
+                "quality": "",
+                "estimated_start_date": "",
+                "estimated_end_date": "",
+            }],
+            "findings": [],
+            "warnings": ["当前为离线演示模式，未生成真实计划建议"],
+            "missing_context": ["离线模式无法读取历史计划"],
+        }
+
 
 class NullModelClient:
     """永远失败的模型客户端 —— 用于验证降级路径。"""
@@ -200,6 +304,7 @@ class NullModelClient:
 
     def complete_with_tools(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+        schema: dict[str, Any] | None = None,
     ) -> tuple[Completion | None, str | None]:
         return None, "模型服务不可用"
 
@@ -254,10 +359,22 @@ def hash_input(payload: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
+class RatingItem(BaseModel):
+    """单条评级建议。
+
+    ⚠️ **没有 score / total 字段** —— 模型物理上无法给总分。
+    """
+
+    dimension: str = ""
+    level: str = ""
+    reason: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
 class RatingOutput(BaseModel):
     """评级建议。**没有 score 字段** —— 模型物理上无法给总分。"""
 
-    ratings: list[dict[str, Any]] = Field(default_factory=list)
+    ratings: list[RatingItem] = Field(default_factory=list)
 
 
 class EvidenceOutput(BaseModel):
@@ -346,6 +463,22 @@ class BaseAgent(ABC):
             "所有结论必须引用给定的 evidence id。"
         )
 
+    def output_schema(self) -> dict[str, Any]:
+        """输出契约的 JSON Schema —— 透传给模型作为**形状硬要求**。
+
+        ⚠️ 为什么不用厂商的 ``json_schema`` 响应格式：
+        各家支持程度不一（DeepSeek 只支持 ``json_object``）。
+        把形状写进 prompt 是**跨厂商唯一可靠**的做法。
+
+        ⚠️ 这**不是**安全边界 —— 安全边界是上层的
+        ``self.output_model.model_validate(raw)``。
+        这里只是**减少降级率**（模型少返回不合契约的形状）。
+        """
+        try:
+            return self.output_model.model_json_schema()
+        except Exception:
+            return {}
+
     # --- 主流程 ---
 
     def run(self, **kwargs: Any) -> AgentResult:
@@ -364,6 +497,7 @@ class BaseAgent(ABC):
             raw, err = self.client.complete(
                 self.system_prompt(),
                 json.dumps(payload, ensure_ascii=False),
+                schema=self.output_schema(),
             )
             if err:
                 last_error = err

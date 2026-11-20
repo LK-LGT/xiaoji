@@ -96,6 +96,7 @@ def build_plan_tool_registry(token: str, trace_id: str = "") -> ToolRegistry:
             parameters={"type": "object", "properties": properties,
                         "required": required, "additionalProperties": False},
             handler=http_handler(base_url, token, name, trace_id, prefix="/v1/plan-tools"),
+            trace_id=trace_id,
         ))
     return registry
 

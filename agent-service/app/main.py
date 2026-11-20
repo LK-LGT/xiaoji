@@ -23,7 +23,10 @@ from pydantic import BaseModel, Field
 
 from .agents import build_agents
 from .base import AgentResult, EchoModelClient, ModelClient, NullModelClient
+from .openai_client import build_client_from_env
+from .plan import PlanRequest, PlanResponse, run_plan
 from .qa import QARequest, QAResponse, answer_question
+from .sanitize import sanitize_comment
 
 
 def _load_dotenv() -> None:
@@ -75,11 +78,22 @@ _MODEL_NAME = os.getenv("MODEL_NAME", "echo-deterministic")
 def _build_client() -> ModelClient:
     """模型客户端。
 
-    现阶段用确定性假模型（不依赖网络），保证框架可独立跑通。
-    接 DeepSeek / 通义时替换此处即可 —— 业务代码零改动。
+    三种模式（`MODEL_MODE`）：
+    - ``null``  —— 永远失败，用于演练降级路径
+    - ``echo``  —— 确定性假模型（不依赖网络），保证框架可独立跑通
+    - ``openai`` —— 真模型（OpenAI 兼容协议：DeepSeek / 通义 / GLM / Ollama）
+
+    换供应商**只改配置**，业务代码零改动。
+    真模型配置不全时**自动退回 echo**，不阻塞服务启动。
     """
-    if os.getenv("MODEL_MODE") == "null":
+    mode = (os.getenv("MODEL_MODE") or "echo").strip().lower()
+    if mode == "null":
         return NullModelClient()
+    if mode == "openai":
+        client = build_client_from_env()
+        if client is not None:
+            return client
+        logger.warning("真模型配置不完整 —— 本次退回 echo 模式")
     return EchoModelClient()
 
 
@@ -358,14 +372,80 @@ def draft(req: DraftRequest, _auth: None = Depends(require_service_token)) -> Dr
     # 引用集合 = 评语实际引用的 ∪ 各维度已关联的
     cited = set(c_result.data.get("evidence_references", [])) | linked_evidence_ids
 
+    # --- 3.5 红线清洗（P3-2 压测驱动） ---
+    #    真模型压测发现两个**真实缺陷**：
+    #      ① 模型把证据 impact 里的「个人绩效分：95」抄进**评级理由/评语**（分数泄漏）
+    #      ② 模型给考勤编了个不存在的引用 ID（`attendance-2026-11-14`）
+    #    ⚠️ 这两个都**不能靠提示词解决** —— 分数确实在原文里，ID 是格式需要。
+    #       必须在输出侧做**确定性清洗**。
+    legal_refs = sorted(evidence_by_id.keys())
+
+    # ⚠️ **原文全集** —— 模型能看到的全部事实性文本。
+    #    用于判定引文是「如实引用」还是「模型编造」。
+    #    ⚠️ `impact`（审批意见/完成情况）**也是原文** —— 漏了它，
+    #    模型如实引用「成果内容与证据符合要求，同意通过」会被误判成编造。
+    source_texts: list[str] = []
+    for e in req.evidence:
+        if e.summary:
+            source_texts.append(e.summary)
+        if e.impact:
+            source_texts.append(e.impact)
+    for a in req.attendance_anomalies:
+        if a.summary:
+            source_texts.append(a.summary)
+
+    # ① 评级理由也要清洗 ——
+    #    ⚠️ 实测分数泄漏**主要发生在评级理由**里（3/3 例），
+    #    只洗评语会漏掉大头。
+    cleaned_ratings: list[dict[str, Any]] = []
+    all_removed: list[str] = []
+    for item in r_result.data.get("ratings", []):
+        if not isinstance(item, dict):
+            cleaned_ratings.append(item)
+            continue
+        cleaned = dict(item)
+        reason = str(cleaned.get("reason") or "")
+        if reason:
+            sanitized_reason = sanitize_comment(
+                reason, legal_refs=legal_refs, source_texts=source_texts
+            )
+            if sanitized_reason.changed:
+                cleaned["reason"] = sanitized_reason.text
+                all_removed.extend(sanitized_reason.removed)
+        cleaned_ratings.append(cleaned)
+
+    # ② 评语清洗
+    sanitized = sanitize_comment(
+        c_result.data.get("markdown", ""),
+        legal_refs=legal_refs,
+        source_texts=source_texts,
+    )
+    all_removed.extend(sanitized.removed)
+
+    if all_removed:
+        warnings.append(
+            {
+                "type": "output_sanitized",
+                "message": (
+                    f"模型输出中有 {len(all_removed)} 处不符合引用/分数规范的内容已自动移除："
+                    + "、".join(all_removed[:5])
+                ),
+                "severity": "medium",
+                "rule_id": "OUTPUT_SANITIZE",
+            }
+        )
+        # 清洗掉的非法引用不能留在 citations 里
+        cited -= set(all_removed)
+
     # --- 4. 来源锚定（核心升级） ---
     #    把模型的评级建议逐条对照**封闭来源目录**做原文真实性校验。
     #    校验不通过的结论降级为 UNKNOWN，而不是静默接受。
-    grounding = _run_grounding(req, r_result.data.get("ratings", []))
+    #    ⚠️ 传**清洗后**的 ratings —— 锚定校验的是最终要给人看的文本。
+    grounding = _run_grounding(req, cleaned_ratings)
 
     return DraftResponse(
-        ratings=r_result.data.get("ratings", []),
-        comment_draft=c_result.data.get("markdown", ""),
+        ratings=cleaned_ratings,
+        comment_draft=sanitized.text,
         citations=sorted(cited),
         gaps=gaps,
         fairness=grounding,
@@ -570,6 +650,16 @@ def evidence_check(
 @app.post("/v1/agent/qa", response_model=QAResponse)
 def qa(req: QARequest, _auth: None = Depends(require_service_token)) -> QAResponse:
     return answer_question(req, _client)
+
+
+@app.post("/v1/agent/plan", response_model=PlanResponse)
+def plan(req: PlanRequest, _auth: None = Depends(require_service_token)) -> PlanResponse:
+    """计划助手 —— 生成 / 调整 / 检查员工计划。
+
+    ⚠️ 输出**只是草稿建议**，不落库、不否决提交。
+       最终由员工确认后写入业务层。
+    """
+    return run_plan(req, _client)
 
 
 @app.post("/v1/agent/reload")

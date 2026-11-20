@@ -30,7 +30,7 @@ def test_qa_tool_roundtrip_and_secret_isolation(monkeypatch):
     monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
     class Model:
         model = "script"
-        def complete_with_tools(self, messages, tools):
+        def complete_with_tools(self, messages, tools, schema=None):
             seen.append((messages, tools))
             assert "private-tool-token" not in str(messages) + str(tools)
             assert len(tools) == 1
@@ -49,7 +49,7 @@ def test_qa_tool_roundtrip_and_secret_isolation(monkeypatch):
 def test_fabricated_citation_degrades(monkeypatch):
     class Model:
         model = "bad"
-        def complete_with_tools(self, messages, tools):
+        def complete_with_tools(self, messages, tools, schema=None):
             return Completion(content={"answer": "伪造结论", "citations": ["other-employee"]}), None
     monkeypatch.setattr(main, "_client", Model())
     result = TestClient(main.app).post("/v1/agent/qa", json=body(), headers=AUTH_HEADERS)

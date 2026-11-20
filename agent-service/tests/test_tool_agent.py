@@ -17,7 +17,7 @@ class ScriptClient:
         self.messages = []
         self.tools = []
 
-    def complete_with_tools(self, messages, tools):
+    def complete_with_tools(self, messages, tools, schema=None):
         self.messages.append(messages)
         self.tools.append(tools)
         return next(self.responses), None
@@ -76,11 +76,40 @@ def test_duplicate_ids_and_bad_output_degrade():
     assert QAAgent(NullModelClient()).run_with_tools(registry(), question="?", context={}).degraded
 
 
+def test_citation_grading_all_invalid_degrades_partial_keeps_answer():
+    """引用分级：全部无效 → 降级；部分无效 → 剔除无效项、保留正文。
+
+    ⚠️ 为什么必须分级（而不是一律放宽）：
+    全部引用都命中不了 = 模型**没基于工具返回作答**，它在编 → 必须降级。
+    部分命中 = 模型确实看过工具输出，只是某个 id 写错了
+    （典型场景：问超出任务周期的数据，模型如实说「查不到」
+    但顺手编了个引用 id）→ 剔除无效项、保留正文更诚实。
+    """
+    # ① 全部无效 → 降级
+    agent = QAAgent(ScriptClient([Completion(content={
+        "answer": "伪造结论", "citations": ["other-employee"],
+    })]))
+    result = agent.run_with_tools(registry(), question="?", context={})
+    assert result.degraded, "全部引用无效时必须降级"
+
+    # ② 部分有效 → 保留正文，剔除无效引用，并记录剔除数
+    agent = QAAgent(ScriptClient([
+        call(id="call_1"),
+        Completion(content={"answer": "该周期无数据", "citations": ["tool:call_1", "tool:fake"]}),
+    ]))
+    result = agent.run_with_tools(registry(), question="?", context={})
+    assert not result.degraded, "部分引用有效时不应整体降级"
+    assert result.data["answer"] == "该周期无数据"
+    assert result.data["citations"] == ["tool:call_1"], "无效引用必须被剔除"
+    assert result.data["_dropped_citations"] == 1, "剔除数量必须被记录供审计"
+    assert set(result.data["citations"]) <= set(result.sources)
+
+
 def test_model_and_tool_deadlines_return_without_waiting_for_worker():
     gate = threading.Event()
     class SlowClient:
         model = "slow"
-        def complete_with_tools(self, messages, tools):
+        def complete_with_tools(self, messages, tools, schema=None):
             gate.wait(2)
             return Completion(content={"answer": "late"}), None
     try:
