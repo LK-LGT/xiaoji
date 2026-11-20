@@ -78,7 +78,13 @@ ignore = [
 "MAIN_PY_ADDITIONS.py" = ["F821", "F401", "I001", "E402", "E401"]
 
 [tool.pytest.ini_options]
-testpaths = ["backend/app/tests"]
+# ⚠️ 这里**必须同时包含 agent-service/tests**。
+#
+# 此前只写 backend/app/tests —— 从仓库根目录跑 pytest 时，
+# L3 会被**静默跳过**（不报错、不执行），让人误以为"全量已跑"。
+# CI 的 agent-service 作业用 working-directory 单独跑，所以那条路径没漏；
+# 但本地开发者从根目录跑时，L3 长期处于无保护状态。
+testpaths = ["backend/app/tests", "agent-service/tests"]
 python_files = ["test_*.py"]
 addopts = "-ra --strict-markers"
 filterwarnings = [
