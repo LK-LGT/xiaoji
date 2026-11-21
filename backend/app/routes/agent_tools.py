@@ -18,9 +18,10 @@ from ..schemas import (
     DepartmentStatsRequest,
     EvidenceQueryRequest,
     MetricValuesRequest,
+    PeerScoreRequest,
     ScoringBreakdownRequest,
 )
-from ..services import access_control, agent_tool_service, privacy
+from ..services import access_control, agent_tool_service, peer_score_service, privacy
 from ..services.agent_tool_token import (
     AgentToolTokenError,
     AgentToolTokenPayload,
@@ -133,18 +134,59 @@ def _run_business_tool(tool: str, req: Any, ctx: AgentToolContext, db: Session) 
                 raise HTTPException(403, "DEPARTMENT_FORBIDDEN")
             data = agent_tool_service.load_department_stats(db, department_id=department, task_id=task.id)
         else:
-            if not context.can_view_score_of(employee.id):
-                raise HTTPException(403, "EMPLOYEE_FORBIDDEN")
-            record = db.query(AssessmentRecord).filter_by(task_id=task.id, employee_id=employee.id).first()
+            # ⚠️ P0-4b：目标人来自**令牌**（``subj``），不是请求体。
+            #
+            #   令牌里的 ``subj`` 是**后端授权后**写入的（见
+            #   ``qa_authorization.authorize_qa_subject``），且被签名保护 ——
+            #   改了签名就失效。
+            #
+            #   ⚠️ **绝不接受请求体里的 employee_id** ——
+            #   即使模型被诱导传入别人的 id，也必须被忽略。
+            #   这是"后端硬权限"在工具层的物理实现。
+            target_employee_id = ctx.payload.subj or employee.id
+            target = db.get(Employee, target_employee_id)
+            if target is None:
+                raise HTTPException(404, "SUBJECT_NOT_FOUND")
+            # ⚠️ peer 目标必须**在职** —— 离职员工的绩效不通过问答开放。
+            if target.employment_status != "active" or target.account_status != "enabled":
+                raise HTTPException(403, "SUBJECT_INACTIVE")
+            # ★ 区分「查自己」与「查他人」。
+            #
+            # ⚠️ 判定依据是**目标人是不是提问者本人**，不是「令牌有没有 subj」——
+            #    自查询的令牌也可能带 subj（= 本人 id），
+            #    若按「有没有 subj」分支，自查询会被误判成 peer 而遭拒。
+            is_self = target.id == employee.id
+            if is_self:
+                if not context.can_view_score_of(target.id):
+                    raise HTTPException(403, "EMPLOYEE_FORBIDDEN")
+            else:
+                # ★ 查他人 ⇒ 必须走 peer 闸门（三条件判定）。
+                #   上级 / 跨部门 / 跨级 一律 403。
+                if not access_control.is_peer_viewable(db, context, target):
+                    raise HTTPException(403, "PEER_FORBIDDEN")
+            record = db.query(AssessmentRecord).filter_by(task_id=task.id, employee_id=target.id).first()
             if record is None:
                 raise HTTPException(404, "RECORD_NOT_FOUND")
+            # ★ peer 令牌**只能**调 ``get_peer_score``。
+            #
+            # ⚠️ 为什么必须在这里再挡一层（而不是只靠令牌的 allow 白名单）：
+            #   令牌签发方若误把 ``get_evidence`` 写进 allow，
+            #   证据原文就会经由 peer 场景泄露出去 ——
+            #   评语/证据/自评正是 peer 场景**必须裁掉**的字段。
+            #   ⇒ 查他人 + 非 peer 工具 ⇒ 一律拒绝。
+            if not is_self and tool != "get_peer_score":
+                raise HTTPException(403, "PEER_TOOL_FORBIDDEN")
             if tool == "get_metric_values":
-                data = agent_tool_service.load_metric_values(db, employee_id=employee.id, task=task)
+                data = agent_tool_service.load_metric_values(db, employee_id=target.id, task=task)
             elif tool == "get_scoring_breakdown":
-                data = agent_tool_service.load_scoring_breakdown(db, employee_id=employee.id, task=task)
+                data = agent_tool_service.load_scoring_breakdown(db, employee_id=target.id, task=task)
+            elif tool == "get_peer_score":
+                # ⚠️ peer 专用工具：**字段白名单**裁剪在
+                #   ``peer_score_service`` 内完成，不依赖调用点分支。
+                data = peer_score_service.load_peer_score(db, employee_id=target.id, task=task)
             else:
                 data = agent_tool_service.load_evidence(
-                    db, employee_id=employee.id, task=task, usage=req.usage,
+                    db, employee_id=target.id, task=task, usage=req.usage,
                     roles=context.roles,
                 )
         data = privacy.redact_obj({"task_id": task.id, "period": period, **data})
@@ -185,6 +227,23 @@ def get_scoring_breakdown(
     但**内容不同**：这里多给了权重、等级分、贡献分与算式。
     """
     return _run_business_tool("get_scoring_breakdown", req, ctx, db)
+
+
+@router.post("/get_peer_score")
+def get_peer_score(
+    req: PeerScoreRequest, ctx: AgentToolContext = Depends(agent_tool_ctx), db: Session = Depends(get_db),
+):
+    """★ 同部门平级同事的绩效摘要（**只读 + 字段裁剪**）。
+
+    ⚠️ **目标人来自令牌，不是请求体** ——
+       令牌里的 ``subj`` 是后端授权后写入的并被签名保护。
+       请求体里**没有** employee_id 参数（``extra="forbid"``）。
+
+    ⚠️ **字段裁剪在服务端完成** ——
+       只给总分、等级、指标构成与算式；
+       **不给**评语正文、证据原文、自评内容、申诉记录。
+    """
+    return _run_business_tool("get_peer_score", req, ctx, db)
 
 
 @router.post("/get_evidence")

@@ -29,6 +29,18 @@ class EvidenceQueryRequest(BaseModel):
     usage: Literal["scoring", "reference_only"] | None = None
 
 
+class PeerScoreRequest(BaseModel):
+    """★ 同部门平级同事的绩效摘要查询参数。
+
+    ⚠️ **刻意没有 employee_id 字段** —— 目标人来自**令牌**。
+    加上它并接受它，就等于让请求体（可能被模型构造）决定查谁，
+    "后端硬权限"就失效了。``extra="forbid"`` 保证多传会被 422 拒绝。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    period: str = Field(min_length=6, max_length=10)
+
+
 class DepartmentStatsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     period: str | None = Field(default=None, min_length=6, max_length=10)

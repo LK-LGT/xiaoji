@@ -14,13 +14,14 @@ ToolName = Literal[
     "get_evidence",
     "get_department_stats",
     "get_scoring_breakdown",
+    "get_peer_score",
 ]
 
 
 class QAContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
     period: str = Field(pattern=r"^\d{6}$")
-    scope: Literal["self", "department"] = "self"
+    scope: Literal["self", "department", "peer", "report", "delegate", "hr"] = "self"
     task_id: str = Field(min_length=1, max_length=64)
 
 
@@ -29,7 +30,7 @@ class QARequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
     context: QAContext
     tool_token: str = Field(min_length=1, max_length=8192, repr=False)
-    allowed_tools: list[ToolName] = Field(max_length=4)
+    allowed_tools: list[ToolName] = Field(max_length=5)
     trace_id: str = Field(default="", max_length=64, pattern=r"^[A-Za-z0-9-]*$")
 
 
@@ -54,6 +55,13 @@ def build_tool_registry(token: str, trace_id: str = "") -> ToolRegistry:
             "get_scoring_breakdown",
             "读取本人的评分构成明细：每项指标的权重、等级分、贡献分与算式，"
             "以及未参与算分的指标及原因；用于解释分数是怎么算出来的",
+        ),
+        (
+            "get_peer_score",
+            "读取**同部门平级同事**的绩效摘要：总分、等级、各项指标的达成率与贡献分、算式。"
+            "⚠️ 只含分数与指标构成，不含评语、证据原文、自评内容。"
+            "⚠️ **只能传 period**，不要传员工姓名或工号 —— 目标人由后端令牌决定，"
+            "你无法也无法应该指定查谁。",
         ),
     ):
         properties = {"period": {"type": "string", "pattern": r"^\d{6}$"}}

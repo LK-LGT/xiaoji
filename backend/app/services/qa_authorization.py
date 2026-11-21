@@ -247,6 +247,23 @@ def authorize_qa_subject(
     if context is None:
         context = build_access_context(db, asker)
 
+    # ⓪ 目标人**在职性** —— 离职员工的绩效不通过问答开放。
+    #
+    # ⚠️ 为什么放在**这里**（授权层）而不是只在工具网关：
+    #    授权层是**唯一**的决策入口 —— 网页端、飞书端、工具网关
+    #    都会经过它。放在这里才能保证**所有入口**一致。
+    #    工具网关那道检查是**兜底**（防止绕过授权层直接调工具）。
+    if subject.employment_status != "active" or subject.account_status != "enabled":
+        return AuthorizationDecision(
+            decision="deny",
+            subject_type="none",
+            reason="目标人当前不可查询",
+            user_message="该同事当前不可查询。",
+            guidance="如确需查看，请联系 HR。",
+            action="intercept_inactive_subject",
+            audit_level="normal",
+        )
+
     # ① 本人
     if subject.id == asker.id:
         return AuthorizationDecision(

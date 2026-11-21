@@ -259,8 +259,9 @@ class QAAgent(ToolUsingAgent):
         "get_evidence",
         "get_department_stats",
         "get_scoring_breakdown",
+        "get_peer_score",
     }
-    prompt_version = "v5-tools-citations-breakdown-colloquial"
+    prompt_version = "v6-tools-citations-breakdown-colloquial-peer"
     output_model = QAOutput
 
     def build_payload(self, *, question: str, context: dict[str, Any]) -> dict[str, Any]:
@@ -299,6 +300,18 @@ class QAAgent(ToolUsingAgent):
             "- 问「证据 / 材料 / 依据」→ 用 get_evidence。\n"
             "- 问「团队 / 部门平均 / 均分」→ 用 get_department_stats。\n"
             "  问「怎么算的」时**优先用 get_scoring_breakdown**，它比 get_metric_values 更完整。\n"
+            "\n"
+            "【★ 同部门平级同事】\n"
+            "- 问「XXX 这个月考得怎么样 / 多少分」且 XXX 是**同部门平级同事**\n"
+            "  → 用 get_peer_score。\n"
+            "- ⚠️ **你不能指定查谁** —— 目标人由后端令牌决定，你只能传 period。\n"
+            "  如果用户问的人不在可见范围，工具会返回不可用，你要如实说\n"
+            "  「该同事不在你的可见范围内」，**不要编造**他的分数。\n"
+            "- ⚠️ get_peer_score **只有分数与指标构成**，没有评语、证据、自评。\n"
+            "  用户追问「他主管怎么评价的」「他交了什么材料」时，\n"
+            "  如实说明这些不在同事互查范围内，**不要推测、不要编造**。\n"
+            "- ⚠️ 它的 total_score 是**规则得分**，不是人工确认的最终成绩，\n"
+            "  说明时要讲清这一点。\n"
             "\n"
             "【解释分数的规矩】\n"
             "- get_scoring_breakdown 的 items 里每项都有 formula（算式）和 contribution（贡献分），\n"

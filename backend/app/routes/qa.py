@@ -28,6 +28,13 @@ class QAAskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
     task_id: str = Field(min_length=1, max_length=64)
     period: str | None = Field(default=None, max_length=10)
+    #: ★ P0-4b：查询目标人（缺省 = 提问者本人）。
+    #:
+    #: ⚠️ 这**不是**"想查谁就查谁" ——
+    #:    它会走 ``qa_authorization.authorize_qa_subject`` 的**硬闸门**：
+    #:    同部门平级同事放行，跨部门/跨级/上级一律拒绝。
+    #:    拒绝时文案统一为「不在可见范围内」，不泄露目标人信息。
+    subject_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 @router.get("/tasks")
@@ -261,6 +268,8 @@ async def ask(
         question=req.question,
         task_id=req.task_id,
         period=req.period,
+        # ⚠️ 目标人 —— 授权判定在服务层做（后端硬闸门）。
+        subject_id=req.subject_id,
     )
     return {
         "answer": result.answer,

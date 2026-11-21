@@ -46,7 +46,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from ..domain.models import AiTrace, AssessmentTask, Employee
-from . import agent_tool_service, privacy, qa_permission
+from . import agent_tool_service, peer_score_service, privacy, qa_authorization
 from .agent_tool_token import issue_agent_tool_token
 from .review_service import AgentClient
 
@@ -100,11 +100,18 @@ async def ask_question_async(
     question: str,
     task_id: str,
     period: str | None = None,
+    subject_id: str | None = None,
 ) -> QaResult:
     """回答一个问题。
 
     权限收敛、引用校验、降级策略与网页端**完全一致** ——
     因为它们调的是同一个函数。
+
+    ⚠️ ``subject_id``（P0-4b）：本次查询的**目标人**。
+       缺省 = 提问者本人（既有行为不变）。
+       非空时会被**授权判定**（``qa_authorization.authorize_qa_subject``），
+       判定通过后写入**签名令牌**的 ``subj`` ——
+       工具层只认令牌里的目标人，**不接受请求体指定**。
 
     Raises:
         HTTPException: 权限不足 / 任务不存在 / 周期不一致。
@@ -112,20 +119,29 @@ async def ask_question_async(
             所以直接抛 —— 飞书侧会把它转成错误卡片。
     """
     started = time.perf_counter()
-    scope = qa_permission.resolve_scope(db, employee, task_id, period)
+    # ⚠️ 用 ``qa_authorization.resolve_scope``（不是旧的 ``qa_permission``）——
+    #    它多了目标人授权判定与按目标人类型裁剪工具白名单。
+    scope = qa_authorization.resolve_scope(
+        db, employee, task_id, period, subject_id=subject_id
+    )
     task = db.get(AssessmentTask, task_id)
+    # ⚠️ 目标人 —— 授权通过后的那个（可能是同部门平级同事）。
+    target_employee_id = scope.subject_id or employee.id
 
     # ── 预取结构化数据（L2 侧算，AI 只解读）──────────────────
     structured: dict[str, Any] = {}
     for tool in scope.allowed_tools:
         try:
             if tool == "get_metric_values":
-                value = agent_tool_service.load_metric_values(db, employee_id=employee.id, task=task)
+                value = agent_tool_service.load_metric_values(db, employee_id=target_employee_id, task=task)
             elif tool == "get_scoring_breakdown":
-                value = agent_tool_service.load_scoring_breakdown(db, employee_id=employee.id, task=task)
+                value = agent_tool_service.load_scoring_breakdown(db, employee_id=target_employee_id, task=task)
+            elif tool == "get_peer_score":
+                # ⚠️ peer 专用路径：字段白名单裁剪（不含评语/证据/自评）
+                value = peer_score_service.load_peer_score(db, employee_id=target_employee_id, task=task)
             elif tool == "get_evidence":
                 # 不扩大可见性：预取默认使用普通员工视角。
-                value = agent_tool_service.load_evidence(db, employee_id=employee.id, task=task, usage=None)
+                value = agent_tool_service.load_evidence(db, employee_id=target_employee_id, task=task, usage=None)
             else:
                 value = agent_tool_service.load_department_stats(
                     db, department_id=employee.department_id, task_id=task.id,
@@ -156,6 +172,18 @@ async def ask_question_async(
             task_id=task_id,
             allow=scope.allowed_tools,
             scope=scope.scope,
+            # ⚠️ P0-4b：目标人写进**签名令牌** ——
+            #    工具层只认令牌里的 subj，不接受请求体指定。
+            #
+            # ⚠️ **查自己时不带 subj** ——
+            #    「没有 subj」是「目标即本人」的既定约定；
+            #    带上本人的 id 虽无害，但会让下游误判成"查他人"分支。
+            subject_id=(
+                scope.subject_id
+                if scope.subject_id and scope.subject_id != employee_id
+                else None
+            ),
+            reason=scope.authorization_reason,
         )
         response = AgentQAResponse.model_validate(await AgentClient().qa(payload))
         # ⚠️ 引用必须**全部**在 sources 内 —— 否则整份回答丢弃。
