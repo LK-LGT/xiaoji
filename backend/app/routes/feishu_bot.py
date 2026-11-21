@@ -692,11 +692,30 @@ async def _handle_message_event(
         return {"code": 0, "message": "截图已存档"}
 
     if intent == feishu_bot.INTENT_PERFORMANCE_QA:
+        from ..services import conversation as conversation_mod
         from ..services import feishu_qa_ai
 
         try:
-            period = feishu_bot.extract_plan_month(text) or feishu_bot._current_month()
-            outcome = await feishu_qa_ai.answer_ai(db, employee, text, period)
+            # ── P0-5/P0-6：读出会话上下文 ──────────────────────
+            # ⚠️ **先读上下文，再决定周期** ——
+            #    用户说「那扣分原因呢」时，消息里**没有**月份，
+            #    要从上一轮的上下文继承。
+            # ⚠️ ``load_state`` 内部会做**空闲清空** ——
+            #    隔了半小时再问，周期与主体都不继承。
+            state = conversation_mod.load_state(session, asker_id=employee.id)
+
+            period = (
+                feishu_bot.extract_plan_month(text)
+                or state.period
+                or feishu_bot._current_month()
+            )
+            outcome = await feishu_qa_ai.answer_ai(
+                db, employee, text, period, conversation=state,
+            )
+            # ── P0-6：写回上下文（周期 + 任务）──────────────
+            conversation_mod.save_state(
+                session, state, task_id=outcome.task_id, period=outcome.period,
+            )
             if outcome.candidates:
                 # ⚠️ 同月多个任务 → **让用户选**，绝不猜。
                 #    ⚠️ question 要**跟着卡片走** —— 用户点完按钮后，
@@ -773,6 +792,7 @@ async def _handle_qa_select_task(
     点某个按钮 → 用**当初那个问题**继续问。
     所以按钮的 value 里必须带着 question。
     """
+    from ..services import conversation as conversation_mod
     from ..services import feishu_qa_ai
 
     open_id = action["open_id"]
@@ -807,12 +827,23 @@ async def _handle_qa_select_task(
         return {"code": 0, "message": "未绑定员工"}
 
     try:
+        # ⚠️ P0-5：这条路径也要带上下文 ——
+        #    用户选完任务后继续问「那扣分原因呢」，上下文不能丢。
+        bot_session = feishu_bot.get_or_create_session(
+            db, open_id=open_id, app_id=settings.feishu_app_id,
+        )
+        state = conversation_mod.load_state(bot_session, asker_id=employee.id)
         outcome = await feishu_qa_ai.answer_ai(
             db,
             employee,
             question or "我的绩效是多少分？",
             period,
             task_id=task_id,
+            conversation=state,
+        )
+        conversation_mod.save_state(
+            bot_session, state, task_id=outcome.task_id or task_id,
+            period=outcome.period or period,
         )
         card = feishu_card.build_qa_ai_card(
             answer=outcome.text,

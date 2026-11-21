@@ -270,6 +270,11 @@ async def ask(
         period=req.period,
         # ⚠️ 目标人 —— 授权判定在服务层做（后端硬闸门）。
         subject_id=req.subject_id,
+        # ⚠️ P0-5：网页端**不持久化**会话上下文 ——
+        #    网页端每次都是独立请求，没有"会话"这个概念。
+        #    持久化由飞书端（``BotSession.qa_state``）负责。
+        #    ⇒ 这里传 None ⇒ 不继承任何槽位（既有行为不变）。
+        conversation=None,
     )
     return {
         "answer": result.answer,
@@ -281,6 +286,11 @@ async def ask(
         "tool_calls": result.tool_calls,
         "trace_id": result.trace_id,
         "dropped_citations": result.dropped_citations,
+        # ★ P0-5：把解析结果回给前端 —— 前端要显示"沿用上一轮：2026-10"。
+        "resolved_subject_id": result.subject_id,
+        "resolved_subject_name": result.subject_name,
+        "period_inherited": result.period_inherited,
+        "subject_inherited": result.subject_inherited,
         "data_quality": {
             "completeness": result.completeness,
             "as_of": datetime.now(UTC).isoformat(),

@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from ..domain.models import AssessmentRecord, AssessmentTask, Employee
 from . import feishu_qa, qa_chat_service
+from .conversation import ConversationState
 from .period import period_match_keys
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,10 @@ class FeishuQaOutcome:
     candidates: list[dict[str, Any]] = None  # type: ignore[assignment]
     #: 被剔除的无效引用数
     dropped_citations: int = 0
+    #: ★ P0-6：本次实际查询的任务 ID —— 用于写回会话上下文。
+    task_id: str = ""
+    #: ★ P0-6：本次实际查询的周期 —— 用于写回会话上下文。
+    period: str = ""
 
     def __post_init__(self) -> None:
         if self.sources is None:
@@ -128,15 +133,20 @@ async def answer_ai(
     period: str,
     *,
     task_id: str | None = None,
+    conversation: ConversationState | None = None,
 ) -> FeishuQaOutcome:
     """AI 问答（带规则型回落）。
 
     ⚠️ **不抛异常给用户**（除了权限/账号这类无法继续的情况）——
     AI 链路故障对用户来说只是「回答变朴素了」，不该看到红色报错。
 
+    ⚠️ ``conversation``（P0-5）：多轮上下文。
+       显式传入的 ``period`` 优先；没传则从上下文继承。
+
     Args:
         task_id: 指定任务。为空时按月份自动定位；
             若定位到**多个**任务则返回「需选择」的结果（``candidates`` 非空）。
+        conversation: 会话上下文（由调用方从 ``BotSession.qa_state`` 读出）。
 
     Raises:
         HTTPException: 账号不可查（403）、任务不存在（404）。
@@ -144,23 +154,31 @@ async def answer_ai(
     if employee.employment_status != "active" or employee.account_status != "enabled":
         raise HTTPException(403, "账号当前不可查询")
 
+    # ⚠️ P0-5：周期合并 —— 显式 > 上下文继承。
+    # ⚠️ 注意这里**只**用上下文里的周期；上下文里的**主体**不在这里用 ——
+    #    主体需要候选集收窄（P0-8），在此之前继承主体有越权风险。
+    resolved_period = period
+    if conversation is not None and conversation.period:
+        resolved_period = conversation.period
+
     if task_id:
         task = db.get(AssessmentTask, task_id)
         if task is None:
             raise HTTPException(404, "考核任务不存在")
         candidates = [task]
     else:
-        candidates = list_candidate_tasks(db, employee, period)
+        candidates = list_candidate_tasks(db, employee, resolved_period)
         if not candidates:
             raise HTTPException(
-                404, f"未找到你在 {period} 的考核任务，请确认月份，或联系 HR 分配考核任务。"
+                404,
+                f"未找到你在 {resolved_period} 的考核任务，请确认月份，或联系 HR 分配考核任务。",
             )
         if len(candidates) > 1:
             # ⚠️ **不猜** —— 猜错就是答错人的绩效。
             #    返回候选让用户选。
             return FeishuQaOutcome(
                 text=(
-                    f"你在 {period} 有 {len(candidates)} 个考核任务，"
+                    f"你在 {resolved_period} 有 {len(candidates)} 个考核任务，"
                     f"回复序号选择要查询的任务：\n"
                     + "\n".join(
                         f"{index}. {entry['label']}"
@@ -179,7 +197,8 @@ async def answer_ai(
             employee,
             question=question,
             task_id=task.id,
-            period=period,
+            period=resolved_period,
+            conversation=conversation,
         )
     except HTTPException:
         # ⚠️ 权限类错误（无权查该任务等）—— **不能**降级成规则型回答，
@@ -189,7 +208,7 @@ async def answer_ai(
         # ⚠️ AI 链路整体异常 → 降级到规则型回答（不抛给用户）。
         logger.exception("飞书 AI 问答异常，回落到规则型回答")
         try:
-            text = feishu_qa.answer(db, employee, question, period)
+            text = feishu_qa.answer(db, employee, question, resolved_period)
         except Exception:
             logger.exception("规则型回落也失败")
             text = "查询失败，请稍后重试，或到网页后台「绩效问答」查看明细。"
@@ -200,7 +219,7 @@ async def answer_ai(
         #    `result.data` 里已经有预取的结构化数据，
         #    但飞书卡片展示规则型回答更紧凑、更可读。
         try:
-            text = feishu_qa.answer(db, employee, question, period)
+            text = feishu_qa.answer(db, employee, question, resolved_period)
         except Exception:
             logger.exception("规则型回落也失败")
             text = result.answer
@@ -210,14 +229,25 @@ async def answer_ai(
             sources=list(result.sources),
             citation_count=len(result.citations),
             dropped_citations=result.dropped_citations,
+            task_id=task.id,
+            period=result.period or resolved_period,
         )
 
+    # ⚠️ P0-5：周期继承要在回答里**标注** —— 用户得知道查的是哪个月。
+    text = result.answer
+    if result.period_inherited and result.period:
+        inherited_month = f"{result.period[:4]}-{result.period[4:]}"
+        text = f"（沿用上一轮周期：{inherited_month}）\n{text}"
+
     return FeishuQaOutcome(
-        text=result.answer,
+        text=text,
         degraded=False,
         sources=list(result.sources),
         citation_count=len(result.citations),
         dropped_citations=result.dropped_citations,
+        # ★ P0-6：回给调用方，用于写回会话上下文。
+        task_id=task.id,
+        period=result.period or resolved_period,
     )
 
 

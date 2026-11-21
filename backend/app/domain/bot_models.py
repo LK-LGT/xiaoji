@@ -83,6 +83,16 @@ class BotSession(Base):
     plan_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: 收集到的字段（JSON）—— 卡片交互过程中逐步累积
     collected: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    #: ★ P0-6：问答上下文槽位（JSON）—— 周期、主体、话题、最近几轮。
+    #:
+    #: ⚠️ **刻意不复用 ``collected``** —— 两者生命周期不同：
+    #:    ``collected`` 是**填报流程**的收集项（业务态，「取消」时要清）；
+    #:    ``qa_state`` 是**对话态**的槽位（问答上下文）。
+    #:    混用会在「取消填报」时把问答上下文一起清掉。
+    #:
+    #: ⚠️ 用 JSON 而非多列 —— 槽位结构会演进（新增 topic、聚焦指标等），
+    #:    JSON 免去频繁 DDL。
+    qa_state: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     #: 最近一条飞书消息 ID —— 幂等去重用
     last_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 

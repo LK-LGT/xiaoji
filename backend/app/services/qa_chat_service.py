@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session
 from ..domain.models import AiTrace, AssessmentTask, Employee
 from . import agent_tool_service, peer_score_service, privacy, qa_authorization
 from .agent_tool_token import issue_agent_tool_token
+from .conversation import ConversationState, resolve_slots
 from .review_service import AgentClient
 
 
@@ -91,6 +92,14 @@ class QaResult:
     task_name: str = ""
     scope: str = "self"
     completeness: float = 0.0
+    #: ★ P0-5：本次解析出的目标人（授权通过后的那个）。
+    subject_id: str = ""
+    #: ★ P0-5：目标人姓名 —— 跨主体继承时要在回答里显名。
+    subject_name: str = ""
+    #: ★ P0-5：周期是否**继承**自上一轮（回答里要标注"沿用上一轮"）。
+    period_inherited: bool = False
+    #: ★ P0-5：主体是否**继承**自上一轮。
+    subject_inherited: bool = False
 
 
 async def ask_question_async(
@@ -101,6 +110,7 @@ async def ask_question_async(
     task_id: str,
     period: str | None = None,
     subject_id: str | None = None,
+    conversation: ConversationState | None = None,
 ) -> QaResult:
     """回答一个问题。
 
@@ -113,16 +123,36 @@ async def ask_question_async(
        判定通过后写入**签名令牌**的 ``subj`` ——
        工具层只认令牌里的目标人，**不接受请求体指定**。
 
+    ⚠️ ``conversation``（P0-5）：多轮上下文。
+       显式指定的 ``period`` / ``subject_id`` **优先**；
+       没说的从 ``conversation`` 继承。
+
+    ⚠️ **继承 ≠ 授权** ——
+       继承来的主体仍会走 ``authorize_qa_subject`` 判定。
+       ⇒ 会话状态**不能**成为越权通道。
+
     Raises:
         HTTPException: 权限不足 / 任务不存在 / 周期不一致。
             这些是**用户能改正**的错误（换个任务、换个月份），
             所以直接抛 —— 飞书侧会把它转成错误卡片。
     """
     started = time.perf_counter()
+
+    # ── P0-5：槽位合并（显式 > 文本解析 > 继承）────────────
+    # ⚠️ **必须在 resolve_scope 之前** ——
+    #    继承来的周期/主体要参与授权判定与工具白名单裁剪。
+    # ⚠️ **用模块级 `resolve_slots`，不能用参数名 `conversation`** ——
+    #    参数 `conversation` 遮蔽了模块名 ⇒ `conversation.resolve_slots` 会炸。
+    slots = resolve_slots(
+        question,
+        conversation,
+        explicit_period=period,
+        explicit_subject_id=subject_id,
+    )
     # ⚠️ 用 ``qa_authorization.resolve_scope``（不是旧的 ``qa_permission``）——
     #    它多了目标人授权判定与按目标人类型裁剪工具白名单。
     scope = qa_authorization.resolve_scope(
-        db, employee, task_id, period, subject_id=subject_id
+        db, employee, task_id, slots.period, subject_id=slots.subject_id
     )
     task = db.get(AssessmentTask, task_id)
     # ⚠️ 目标人 —— 授权通过后的那个（可能是同部门平级同事）。
@@ -208,6 +238,13 @@ async def ask_question_async(
     agent_status = response.agent_status if response else {}
     dropped_citations = int(agent_status.get("dropped_citations") or 0)
 
+    # ⚠️ 目标人姓名 —— 跨主体继承时要在回答里显名（「他」要变成「张三」）。
+    #    只在**查他人**时取名 —— 查自己不需要显名。
+    subject_name = ""
+    if scope.subject_id and scope.subject_id != employee.id:
+        subject_row = db.get(Employee, scope.subject_id)
+        subject_name = subject_row.name if subject_row else ""
+
     result = QaResult(
         answer=answer,
         citations=response.citations if response else [],
@@ -223,6 +260,10 @@ async def ask_question_async(
         task_name=task.name if task else "",
         scope=scope.scope,
         completeness=(available / total_tools) if total_tools else 0.0,
+        subject_id=scope.subject_id or employee.id,
+        subject_name=subject_name,
+        period_inherited=slots.period_inherited,
+        subject_inherited=slots.subject_inherited,
     )
 
     _record_trace(db, trace_id, result, started)
