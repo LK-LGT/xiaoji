@@ -114,9 +114,16 @@ class PanFile:
     is_dir: bool
     size: int
     ctime: int
-    mtime: int
+    mtime: int = 0
     category: int = 0
     fs_id: int = 0
+    #: 网盘返回的云端哈希（**非文件真实 MD5**），用于内容去重锚点。
+    #: ⚠️ 实测（2026-11-21）：同名文件的 md5 各不相同 ⇒ 是不同内容，
+    #:    正是靠它区分「同一文件重复上传」与「不同版本」。
+    md5: str = ""
+    #: 操作者用户 ID。⚠️ **共享目录下无区分度**（实测 232/232 全是公司账号 uk），
+    #:    不可用于拆人，仅作审计留痕。
+    oper_id: str = ""
 
     @property
     def ext(self) -> str:
@@ -340,6 +347,8 @@ class BaiduPanClient:
                     mtime=int(item.get("server_mtime") or 0),
                     category=int(item.get("category") or 0),
                     fs_id=int(item.get("fs_id") or 0),
+                    md5=str(item.get("md5") or ""),
+                    oper_id=str(item.get("oper_id") or ""),
                 )
             )
         return {
@@ -400,6 +409,8 @@ class BaiduPanClient:
                     mtime=int(item.get("server_mtime") or 0),
                     category=int(item.get("category") or 0),
                     fs_id=int(item.get("fs_id") or 0),
+                    md5=str(item.get("md5") or ""),
+                    oper_id=str(item.get("oper_id") or ""),
                 )
             )
         return files

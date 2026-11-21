@@ -138,7 +138,7 @@ import {
 const props = withDefaults(defineProps<{
   planType: AiPlanType
   periodKey: string
-  conversationId?: number
+  conversationId?: string
   busy?: boolean
   disabled?: boolean
   composerToolsVisible?: boolean
@@ -155,7 +155,7 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{
-  'update:conversationId': [value: number]
+  'update:conversationId': [value: string]
   send: [value: string]
   stop: []
   previewResult: [value: AiConversationMessage]
@@ -172,7 +172,7 @@ const historyLoading = ref(false)
 const historyVisible = ref(false)
 const errorMessage = ref('')
 const hasMore = ref(false)
-const nextBeforeId = ref<number>()
+const nextBeforeId = ref<string>()
 const messageViewport = ref<HTMLElement>()
 let scopeRequest = 0
 
@@ -192,10 +192,22 @@ async function resolveActive() {
   try {
     const conversation = await resolveAiConversation(props.planType, props.periodKey)
     if (request !== scopeRequest) return
-    activeConversation.value = conversation
-    viewingConversation.value = conversation
-    emit('update:conversationId', conversation.id)
-    await loadMessages(conversation.id)
+    // ⚠️⚠️ **没有活跃会话时后端返回 null**（2026-11-21 修复）
+    //
+    // 原来的写法直接 `conversation.id` —— 首次使用（库里没会话）时
+    // `null.id` 抛 TypeError ⇒ 面板弹「对话加载失败」+「重试」，
+    // **输入框永久禁用**，用户完全没法用 AI 助手。
+    //
+    // ⇒ 没有会话就**自动新建一个** —— 首次使用不该要求用户先点「新建对话」。
+    let active = conversation
+    if (!active) {
+      active = await startNewAiConversation(props.planType, props.periodKey)
+      if (request !== scopeRequest) return
+    }
+    activeConversation.value = active
+    viewingConversation.value = active
+    emit('update:conversationId', active.id)
+    await loadMessages(active.id)
   } catch (error) {
     if (request === scopeRequest) errorMessage.value = error instanceof Error ? error.message : '对话加载失败'
   } finally {
@@ -203,11 +215,11 @@ async function resolveActive() {
   }
 }
 
-async function loadMessages(conversationId: number) {
+async function loadMessages(conversationId: string) {
   const page = await listAiConversationMessages(conversationId)
   messages.value = Array.isArray(page?.records) ? page.records : []
   hasMore.value = Boolean(page?.hasMore)
-  nextBeforeId.value = typeof page?.nextBeforeId === 'number' ? page.nextBeforeId : undefined
+  nextBeforeId.value = typeof page?.nextBeforeId === 'string' ? page.nextBeforeId : undefined
   await scrollToBottom()
 }
 
@@ -293,7 +305,7 @@ function sendFromKeyboard(event: KeyboardEvent) {
 function appendOptimisticUserMessage(value: string) {
   if (!activeConversation.value) return
   messages.value = [...messages.value, {
-    id: -Date.now(),
+    id: `optimistic-${Date.now()}`,
     conversationId: activeConversation.value.id,
     role: 'USER',
     messageType: 'TEXT',

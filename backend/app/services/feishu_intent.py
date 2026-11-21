@@ -60,6 +60,9 @@ INTENT_MONTH_PLAN = "month_plan"
 #: 绩效问答（只读）
 INTENT_PERFORMANCE_QA = "performance_qa"
 
+#: 填报表数据（写操作）—— BP-2 / P3
+INTENT_MANUAL_METRIC = "manual_metric"
+
 # ===========================================================================
 # ① 写操作指令 —— 表达固定，关键词可靠
 # ===========================================================================
@@ -81,6 +84,26 @@ MONTH_PLAN_KEYWORDS: tuple[str, ...] = (
     "月度计划",
     "写计划",
     "填表",
+)
+
+#: 填报表数据（完播率 / 留存率等人工指标）—— ★ BP-2 / P3
+#:
+#: ⚠️ **必须排在 ``MONTH_PLAN_KEYWORDS`` 之前判定**
+#: 「填表」在月计划词表里，而「填报表数据」也含「填表」——
+#: 若月计划先判，「填报表数据」会被当成「填月计划」⇒ 员工填了指标却进了月计划表单。
+#: ⇒ 顺序：填报 → 月计划 → 绩效。
+MANUAL_METRIC_KEYWORDS: tuple[str, ...] = (
+    "填报表数据",
+    "填数据",
+    "报数据",
+    "填指标",
+    "填效果",
+    "完播率",
+    "留存率",
+    "完播",
+    "留存",
+    "上报数据",
+    "提交数据",
 )
 
 # ===========================================================================
@@ -173,7 +196,7 @@ def detect_intent(text: str) -> str:
     这是**纯函数**，不碰数据库 —— 好测。
 
     ⚠️ **顺序很重要**：
-    ① 取消 → ② 写操作 → ③ 绩效快捷通道。
+    ① 取消 → ② 写操作（填报 → 月计划）→ ③ 绩效快捷通道。
     取消优先级最高（用户在填表中途说「算了」，
     不该被当成「我要填月计划」）。
     """
@@ -187,6 +210,11 @@ def detect_intent(text: str) -> str:
         return INTENT_CANCEL
 
     # ── ② 写操作指令 ──────────────────────────────────────
+    # ⚠️ **填报必须在月计划之前** —— 「填表」是月计划词表里的词，
+    #    而「填报表数据」也含「填表」；顺序反了会把填报导进月计划表单。
+    if any(keyword in normalized for keyword in MANUAL_METRIC_KEYWORDS):
+        return INTENT_MANUAL_METRIC
+
     # ⚠️ 放在绩效关键词**之前** ——
     #    「填月计划时顺便看看我的绩效」必须走填月计划，不是问答。
     if any(keyword in normalized for keyword in MONTH_PLAN_KEYWORDS):
@@ -221,9 +249,11 @@ def is_performance_related(text: str) -> bool:
 __all__ = [
     "CANCEL_KEYWORDS",
     "INTENT_CANCEL",
+    "INTENT_MANUAL_METRIC",
     "INTENT_MONTH_PLAN",
     "INTENT_NONE",
     "INTENT_PERFORMANCE_QA",
+    "MANUAL_METRIC_KEYWORDS",
     "MONTH_PLAN_KEYWORDS",
     "PERFORMANCE_KEYWORDS",
     "detect_intent",

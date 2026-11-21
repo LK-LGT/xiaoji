@@ -108,11 +108,11 @@ export interface DayPlanAiForm { /** BUG-R6-14：周计划条目主键为字符�
 export interface DayPlanAiDraft extends DayPlanAiForm { suggestionId: string; warnings: string[]; missingContext: string[]; notice: string; draftVersionId: number; draftVersionNo: number }
 
 export const getWeekPlanAiContextApi = (weekStart: string) => http.get<unknown, AiContextResponse>('/employee/ai/week-plans/context', { params: { weekStart }, timeout: AI_OPERATION_TIMEOUT_MS })
-export const generateWeekPlanAiApi = (payload: { requestId: string; weekStart: string; intentText: string; currentForm: { items: WeekPlanAiItem[] }; conversationId?: number; conciseOutput?: boolean; exampleFileName?: string; exampleContent?: string }, options?: AiRequestOptions) => http.post<typeof payload, WeekPlanAiDraft>('/employee/ai/week-plans/generate', payload, aiOperationConfig(payload.requestId, options))
-export const adjustWeekPlanAiApi = (payload: { requestId: string; weekStart: string; draft: { items: WeekPlanAiItem[] }; instruction: string; targetItemIndex?: number; conversationId?: number; conciseOutput?: boolean }, options?: AiRequestOptions) => http.post<typeof payload, WeekPlanAiDraft>('/employee/ai/week-plans/adjust', payload, aiOperationConfig(payload.requestId, options))
+export const generateWeekPlanAiApi = (payload: { requestId: string; weekStart: string; intentText: string; currentForm: { items: WeekPlanAiItem[] }; conversationId?: string; conciseOutput?: boolean; exampleFileName?: string; exampleContent?: string }, options?: AiRequestOptions) => http.post<typeof payload, WeekPlanAiDraft>('/employee/ai/week-plans/generate', payload, aiOperationConfig(payload.requestId, options))
+export const adjustWeekPlanAiApi = (payload: { requestId: string; weekStart: string; draft: { items: WeekPlanAiItem[] }; instruction: string; targetItemIndex?: number; conversationId?: string; conciseOutput?: boolean }, options?: AiRequestOptions) => http.post<typeof payload, WeekPlanAiDraft>('/employee/ai/week-plans/adjust', payload, aiOperationConfig(payload.requestId, options))
 export const getDayPlanAiContextApi = (planDate: string) => http.get<unknown, AiContextResponse>('/employee/ai/day-plans/context', { params: { planDate }, timeout: AI_OPERATION_TIMEOUT_MS })
-export const generateDayPlanAiApi = (payload: { requestId: string; planDate: string; intentText: string; currentForm: DayPlanAiForm; conversationId?: number; exampleFileName?: string; exampleContent?: string }, options?: AiRequestOptions) => http.post<typeof payload, DayPlanAiDraft>('/employee/ai/day-plans/generate', payload, aiOperationConfig(payload.requestId, options))
-export const adjustDayPlanAiApi = (payload: { requestId: string; planDate: string; draft: DayPlanAiForm; instruction: string; conversationId?: number }, options?: AiRequestOptions) => http.post<typeof payload, DayPlanAiDraft>('/employee/ai/day-plans/adjust', payload, aiOperationConfig(payload.requestId, options))
+export const generateDayPlanAiApi = (payload: { requestId: string; planDate: string; intentText: string; currentForm: DayPlanAiForm; conversationId?: string; exampleFileName?: string; exampleContent?: string }, options?: AiRequestOptions) => http.post<typeof payload, DayPlanAiDraft>('/employee/ai/day-plans/generate', payload, aiOperationConfig(payload.requestId, options))
+export const adjustDayPlanAiApi = (payload: { requestId: string; planDate: string; draft: DayPlanAiForm; instruction: string; conversationId?: string }, options?: AiRequestOptions) => http.post<typeof payload, DayPlanAiDraft>('/employee/ai/day-plans/adjust', payload, aiOperationConfig(payload.requestId, options))
 
 export interface AiGenerateResponse {
   suggestionId: string
@@ -172,7 +172,7 @@ export function generateMonthPlanApi(payload: {
   selectedContextTypes?: MonthPlanContextType[]
   selectedHistoryMonths?: string[]
   selectedKnowledgeTypes?: string[]
-  conversationId?: number
+  conversationId?: string
   operationMode?: MonthPlanAiOperationMode
   conciseOutput?: boolean
   exampleFileName?: string
@@ -200,7 +200,7 @@ export function optimizeMonthPlanItemApi(payload: {
   selectedContextTypes?: MonthPlanContextType[]
   selectedHistoryMonths?: string[]
   selectedKnowledgeTypes?: string[]
-  conversationId?: number
+  conversationId?: string
 }, options?: AiRequestOptions) {
   return http.post<typeof payload, AiOptimizeResponse>('/employee/ai/month-plans/items/optimize', payload, aiOperationConfig(payload.requestId, options))
 }
@@ -213,7 +213,7 @@ export function checkMonthPlanApi(payload: {
   selectedContextTypes?: MonthPlanContextType[]
   selectedHistoryMonths?: string[]
   selectedKnowledgeTypes?: string[]
-  conversationId?: number
+  conversationId?: string
 }, options?: AiRequestOptions) {
   return http.post<typeof payload, AiCheckResponse>('/employee/ai/month-plans/check', payload, aiOperationConfig(payload.requestId, options))
 }

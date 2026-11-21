@@ -12,9 +12,10 @@ plan 的工具网关是 ``/v1/plan-tools/*``（计划域，与考核任务解耦
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .base import ModelClient
 from .plan_agent import PlanAgent
@@ -29,13 +30,62 @@ class PlanContext(BaseModel):
     """计划助手上下文。
 
     ⚠️ **没有** ``task_id`` —— 计划助手与考核任务解耦。
+
+    ⚠️⚠️ **``period`` 必须接受业务层真实传的格式**（2026-11-21 修复）
+
+    原来的 pattern 是 ``^$|^\\d{6}$``（只认 ``202611``），
+    但业务层传的是**前端原样的值**：
+
+    ==============  ===================  ==========================
+    场景            前端字段              实际值
+    ==============  ===================  ==========================
+    月计划          ``planMonth``         ``2026-11``（``YYYY-MM``）
+    周计划          ``weekStart``         ``2026-11-17``（``YYYY-MM-DD``）
+    日计划          ``planDate``          ``2026-11-17``
+    ==============  ===================  ==========================
+
+    ⇒ **月/周/日三条链路全部 422** → 后端降级成空草稿 →
+    用户看到「AI 建议暂不可用」，而**前端一点提示都没有**。
+
+    ⚠️ 这个 bug 之所以能活下来，是因为**测试和压测脚本都用了
+    ``202611``**（唯一能通过旧 pattern 的格式）——
+    测试造数和业务调用**用的不是同一个格式**，断言照过。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     scope: Literal["self", "department"] = "self"
     plan_type: Literal["month", "week", "day"] = "month"
-    period: str = Field(default="", pattern=r"^$|^\d{6}$")
+    period: str = Field(default="", pattern=r"^$|^\d{4}-\d{2}$|^\d{4}-\d{2}-\d{2}$")
+
+    @field_validator("period", mode="before")
+    @classmethod
+    def _normalize_period(cls, value: Any) -> Any:
+        """把周期归一化成 ``YYYY-MM-DD``（日/周）或 ``YYYY-MM``（月）。
+
+        ⚠️ 只做**格式归一**，不做业务判断 —— 越界日期交给业务层。
+
+        ⚠️⚠️ **为什么归一化成「带横线」而不是「紧凑 8 位」**（2026-11-21 实测）
+
+        紧凑格式 ``20261117`` 对**模型**是歧义的 ——
+        实测模型把它读成了复数 ``periods=20261117``，
+        并据此**推断出错误的计划起止日期**（把 11-17 推成 11-17~11-20）。
+
+        ⇒ 周期是要**给人读也要给模型读**的字段，
+        必须用模型不会误读的 ``YYYY-MM-DD`` / ``YYYY-MM``。
+        """
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return ""
+        if re.fullmatch(r"\d{8}", text):
+            return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+        if re.fullmatch(r"\d{6}", text):
+            return f"{text[:4]}-{text[4:]}"
+        # 归一化失败就原样返回，让 pattern 去拒 —— 不要在这里静默吞掉
+        return text
+
 
 
 class PlanRequest(BaseModel):

@@ -59,6 +59,8 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
       { label: '验收标准', path: '/department/standard', icon: '◆', permission: 'department:standard:view' },
       { label: '参考分规则', path: '/department/score-rule', icon: '≈', permission: 'department:score-rule:view' },
       { label: '导出任务', path: '/department/export-tasks', icon: '↓', permission: 'department:export-task:view' },
+      // ★ BP-2：部门负责人核对/裁定下属的剪辑工作量
+      { label: '剪辑工作量', path: '/performance/pan-workload', icon: '▦', permission: 'pan:workload:view' },
       { label: '绩效问答', path: '/qa', icon: '?', permission: 'performance:dashboard:view' },
     ],
   },
@@ -78,6 +80,8 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
       { label: '周计划审批', path: '/leader/week-plan-approval', icon: '▤', permission: 'leader:workbench:view' },
       { label: '日计划点评', path: '/leader/daily-review', icon: '✓', permission: 'leader:daily-review:view' },
       { label: '员工成果', path: '/leader/result-suggest', icon: '✓', permission: 'leader:result-suggest:view' },
+      // ★ BP-2：主管核对下属的剪辑工作量 + 裁定异议工单
+      { label: '剪辑工作量', path: '/performance/pan-workload', icon: '▦', permission: 'pan:workload:view' },
       { label: '绩效问答', path: '/qa', icon: '?', permission: 'performance:dashboard:view' },
       { label: '文档入库', path: '/leader/knowledge', icon: '↑', permission: 'leader:workbench:view' },
     ],
@@ -95,6 +99,8 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
       { label: '日计划', path: '/employee/day-plans', icon: '◷', permission: 'planning:day:view' },
       { label: '成果管理', path: '/employee/results', icon: '◇', permission: 'planning:result:view' },
       { label: '绩效依据', path: '/employee/performance-evidence', icon: '◇', permission: 'dashboard:view' },
+      // ★ BP-2：员工填报自己的工作量 + 提出异议
+      { label: '剪辑工作量', path: '/performance/pan-workload', icon: '▦', permission: 'pan:workload:view' },
       { label: '绩效问答', path: '/qa', icon: '?', permission: 'performance:dashboard:view' },
       { label: '申诉记录', path: '/employee/appeals', icon: '!', permission: 'dashboard:view' },
       { label: '复核与校准中心', path: '/employee/review-center', icon: '', permission: 'dashboard:view' },
@@ -123,6 +129,8 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
       { label: '按方案填报与评价', path: '/performance/scheme-filling', icon: '', permission: 'performance:dashboard:view' },
       { label: '员工自评', path: '/performance/self-reviews', icon: '✎', permission: 'performance:self-review:view' },
       { label: '主管评分', path: '/performance/manager-reviews', icon: '✓', permission: 'performance:manager-review:view' },
+      // ★ BP-2：网盘剪辑工作量（员工填报 / 主管核对裁定）
+      { label: '剪辑工作量', path: '/performance/pan-workload', icon: '▦', permission: 'pan:workload:view' },
       { label: '绩效问答', path: '/qa', icon: '?', permission: 'performance:dashboard:view' },
     ],
   },

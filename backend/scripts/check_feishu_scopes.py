@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,16 @@ from app.core.config import settings  # noqa: E402
 from app.services.feishu_client import FeishuClient  # noqa: E402
 
 BASE_URL = "https://open.feishu.cn/open-apis"
+
+# ─────────────────────────────────────────────────────────────
+# 汇报（周报/月报）探针的时间窗
+# ─────────────────────────────────────────────────────────────
+# ⚠️ ``report/v1/tasks/query`` 的 commit_start_time / commit_end_time
+#    是**秒级**时间戳（不是毫秒）。
+#    取最近 14 天 —— 覆盖两个周报周期，避免探针恰好落在没人提交周报的空窗。
+#    ⚠️ 这两个值在**模块导入时**计算 —— 探针脚本是一次性运行的，没问题。
+_RECENT_WINDOW_END = int(time.time())
+_RECENT_WINDOW_START = _RECENT_WINDOW_END - 14 * 24 * 3600
 
 # ─────────────────────────────────────────────────────────────
 # 权限不足类错误码（这些才是真正的「需要申请权限」）
@@ -255,6 +266,45 @@ PROBES: list[dict[str, Any]] = [
         "path": "/application/v6/applications",
         "params": {"app_id": "<APP_ID>"},
         "note": "app_ticket 的 POST 路径实测 404；FS-7 做长连接前需再确认路径",
+    },
+    # ─────────────────────────────────────────────────────────────
+    # 汇报（周报/月报）相关 —— FDE 周报采集路径 A 的前提（2026-11-21）
+    #
+    # ⚠️ 飞书工作台里的「周报」「汇报」是原生**汇报模块**
+    #    （oa.feishu.cn/report），有正式只读 API：
+    #      POST /report/v1/tasks/query   查任务（含 form_contents 字段值）
+    #      GET  /report/v1/rules/query  查规则（rule_id / 模板定义）
+    #      POST /report/v1/rule_views/remove  移除规则看板（管理类，用不到）
+    #
+    # ★ 关键：**没有写入接口** —— 员工仍须在飞书原生界面提交周报，
+    #    系统只读。这正是 FDE 想要的（不重复造填报表）。
+    #
+    # ⚠️ probe 时间窗用**最近 14 天**（周报周期），
+    #    commit_start_time/commit_end_time 是**秒级**时间戳。
+    # ─────────────────────────────────────────────────────────────
+    {
+        "label": "汇报任务读 report:task:readonly",
+        "method": "POST",
+        "path": "/report/v1/tasks/query",
+        "body": {
+            "commit_start_time": _RECENT_WINDOW_START,
+            "commit_end_time": _RECENT_WINDOW_END,
+            "page_token": "",
+            "page_size": 20,
+        },
+        "note": (
+            "★ FDE 周报采集路径 A 前提。"
+            "tenant 态能读到哪些人取决于**应用数据权限范围** —— "
+            "探针输出里若有 items，说明已可读；为空则可能是范围不含目标部门。"
+            "⚠️ user_access_token 只能读「当前用户发起+收到的」且不分页。"
+        ),
+    },
+    {
+        "label": "汇报规则读 report:rule:readonly",
+        "method": "GET",
+        "path": "/report/v1/rules/query",
+        "params": {"rule_name": "周报"},
+        "note": "取 rule_id 与模板定义；rule_name 必填，填实际规则名更准",
     },
 ]
 

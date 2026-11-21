@@ -335,3 +335,150 @@ def test_scope_is_department_when_enabled(setup):
     db, client = setup
     employee = db.get(Employee, "ME")
     assert plan_ai_service._scope_for(employee) == "department"
+
+
+# ---------------------------------------------------------------------------
+# 8. ⚠️⚠️ period 契约（2026-11-21 回归）
+#
+# 这个 bug 让**月/周/日三条链路全部 422** → 后端降级成空草稿 →
+# 用户看到「AI 建议暂不可用」，前端却一点提示都没有。
+#
+# ⚠️ 它能活下来的原因：**测试造数用 `202611`**，
+# 而业务层传的是前端原样的 `2026-11` / `2026-11-17`。
+# 测试造数和业务调用**用的不是同一个格式**，断言照过。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("period,expected", [
+    ("2026-11", "2026-11"),          # 月计划 planMonth（原样）
+    ("2026-11-17", "2026-11-17"),    # 周/日计划（原样）
+    ("202611", "2026-11"),           # 紧凑 → 带横线
+    ("20261117", "2026-11-17"),      # 紧凑 → 带横线
+    ("", ""),
+])
+def test_period_is_normalized_before_leaving_the_business_layer(period, expected):
+    """业务层出口必须归一化 —— 契约不能只靠对端守。"""
+    assert plan_ai_service._normalize_period(period) == expected
+
+
+def test_period_normalization_keeps_dashed_format_for_the_model():
+    """⚠️ 归一化必须是**模型不会误读**的格式。
+
+    实测紧凑 `20261117` 被模型读成复数 `periods=20261117`，
+    并据此推断出错误的计划起止日期（11-17 推成 11-17~11-20）。
+    """
+    assert "-" in plan_ai_service._normalize_period("20261117")
+
+
+@pytest.mark.parametrize("endpoint,payload", [
+    ("/v1/employee/ai/month-plans/generate", {"planMonth": "2026-11"}),
+    ("/v1/employee/ai/week-plans/generate", {"weekStart": "2026-11-17"}),
+    ("/v1/employee/ai/day-plans/generate", {"planDate": "2026-11-17"}),
+])
+def test_endpoints_forward_the_frontend_period_verbatim(setup, monkeypatch, endpoint, payload):
+    """端点必须把前端传的周期**原样**交给智能体层 —— 不能自己转格式。
+
+    ⚠️ 这是「两边用同一个格式」的护栏 ——
+    只要有一边偷偷改了格式，契约就会再次对不上。
+    """
+    db, client = setup
+    seen = {}
+
+    async def capture(db, **kwargs):
+        seen["period"] = kwargs.get("period")
+        seen["plan_type"] = kwargs.get("plan_type")
+        return ok_result()
+
+    monkeypatch.setattr(plan_ai_service, "call_plan_agent", capture)
+    response = client.post(endpoint, json={"requestId": "r1", "intentText": "推进重构", **payload})
+    assert response.status_code == 200, response.text
+    assert seen["period"] == payload.get("planMonth") or payload.get("weekStart") or payload.get("planDate")
+
+
+def test_422_is_not_reported_as_service_unavailable(setup, monkeypatch):
+    """⚠️ **契约不匹配**必须与「服务不可用」区分开。
+
+    原来的写法把所有异常都吞成「AI 服务暂不可用」——
+    结果 422（请求体格式错）被报成「服务挂了」，
+    排查时完全看不出是**格式**问题。
+
+    ⚠️ 这里测的是**真实的** ``call_plan_agent``（只 mock 掉 HTTP 客户端），
+    否则测的是路由层的 mock，碰不到那段异常处理。
+    """
+    import httpx
+
+    from backend.app.services import review_service
+
+    db, client = setup
+
+    class BoomClient:
+        async def plan(self, payload):
+            request = httpx.Request("POST", "http://127.0.0.1:8800/v1/agent/plan")
+            response = httpx.Response(422, request=request)
+            raise httpx.HTTPStatusError("422", request=request, response=response)
+
+    monkeypatch.setattr(review_service, "AgentClient", lambda: BoomClient())
+    response = client.post("/v1/employee/ai/month-plans/generate",
+                           json={"requestId": "r1", "planMonth": "2026-11", "intentText": "x"})
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["items"] == []
+    assert any("契约" in w for w in data["warnings"]), data["warnings"]
+
+
+# ---------------------------------------------------------------------------
+# 9. ⚠️⚠️ conversationId 契约（2026-11-21 真机联调回归）
+#
+# **前端联调时抓到的 422**：
+#     {"type":"int_parsing","loc":["body","conversationId"],
+#      "input":"fdb16108-42db-4ee6-85a2-51cc301ec2e8"}
+#
+# 根因：``AiOperationPayload.conversationId`` 声明成 ``int``，
+# 但 ``AiConversation.id`` 的 ORM 定义是 ``String(64)``（UUID）——
+# **后端自己的主键类型和入参类型对不上**。
+#
+# ⚠️ 为什么这个 bug 能活很久：
+#    后端从没把 ``conversationId`` 传给智能体（它是纯会话元数据），
+#    所以「传 int」在测试里看不出问题；
+#    只有**前端把 UUID 回传**时才炸 —— 也就是只有真机联调才会炸。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("endpoint,payload", [
+    ("/v1/employee/ai/month-plans/generate", {"planMonth": "2026-11"}),
+    ("/v1/employee/ai/week-plans/generate", {"weekStart": "2026-11-17"}),
+    ("/v1/employee/ai/day-plans/generate", {"planDate": "2026-11-21"}),
+])
+def test_uuid_conversation_id_is_accepted(setup, monkeypatch, endpoint, payload):
+    """会话 ID 是 **UUID 字符串** —— 后端不许把它当整数解析。"""
+    db, client = setup
+
+    async def capture(db, **kwargs):
+        return ok_result()
+
+    monkeypatch.setattr(plan_ai_service, "call_plan_agent", capture)
+    response = client.post(
+        endpoint,
+        json={
+            "requestId": "r1",
+            "intentText": "推进重构",
+            "conversationId": "fdb16108-42db-4ee6-85a2-51cc301ec2e8",
+            **payload,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_conversation_id_accepts_legacy_integer(setup, monkeypatch):
+    """历史口径（int）也不能拒 —— 契约只放宽不收紧。"""
+    db, client = setup
+
+    async def capture(db, **kwargs):
+        return ok_result()
+
+    monkeypatch.setattr(plan_ai_service, "call_plan_agent", capture)
+    response = client.post(
+        "/v1/employee/ai/day-plans/generate",
+        json={"requestId": "r1", "planDate": "2026-11-21", "intentText": "x", "conversationId": 42},
+    )
+    assert response.status_code == 200, response.text

@@ -48,6 +48,27 @@ DEFAULT_POLICIES: dict[str, dict[str, Any]] = {
         "allowed_roles": "hr,manager,employee",
         "redacted_fields": "mobile,email",
     },
+    # ⚠️⚠️ **BP-2 短视频剪辑工作量 —— 必须显式登记**（2026-11-21 补）
+    #
+    # 「默认不信任」语义：``get_policy`` 查不到源就返回 ``None``
+    # ⇒ **不可读** ⇒ 算分集拒收该源的数据。
+    # ⇒ 网盘条数与人工填报这两个源**没登记 = 数据进不了算分**。
+    #
+    # ⚠️ **角色范围**
+    # - ``baidu_pan``（网盘条数）：员工可读**自己的**条数 ⇒ 含 employee。
+    # - ``operations_manual``（完播/留存填报）：只填自己 + 主管核 ⇒ 含 employee。
+    "baidu_pan": {
+        "display_name": "百度网盘（剪辑工作量）",
+        "allowed": True,
+        "allowed_roles": "hr,manager,department_leader,employee",
+        "redacted_fields": "",
+    },
+    "operations_manual": {
+        "display_name": "运营人工填报（完播率/留存率）",
+        "allowed": True,
+        "allowed_roles": "hr,manager,department_leader,employee",
+        "redacted_fields": "",
+    },
 }
 
 

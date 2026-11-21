@@ -431,7 +431,7 @@ async function sendQuickGenerate(text: string) {
   if (!text || !active || busy.value || !canSend.value || !plan.value) return
   const requestMode = operationHint.value
   const optimistic: AiConversationMessage = {
-    id: -Date.now(), conversationId: active.id, role: 'USER', messageType: 'TEXT',
+    id: `optimistic-${Date.now()}`, conversationId: active.id, role: 'USER', messageType: 'TEXT',
     operationCode: 'MONTH_PLAN_DRAFT', status: 'PENDING', textContent: text,
     createdAt: new Date().toLocaleString('zh-CN', { hour12: false }),
   }

@@ -12,8 +12,8 @@ export interface PlanDraftVersionSummary {
   sourceType: PlanDraftVersionSource
   snapshotSchemaVersion: number
   baseVersionId?: number
-  conversationId?: number
-  messageId?: number
+  conversationId?: string
+  messageId?: string
   suggestionId?: string
   requestId?: string
   createdAt: string

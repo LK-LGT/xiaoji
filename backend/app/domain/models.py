@@ -1366,6 +1366,7 @@ from . import baidu_pan_models as _baidu_pan_models  # noqa: E402,F401
 from . import bot_models as _bot_models  # noqa: E402,F401
 from . import feishu_scheme_models as _feishu_scheme_models  # noqa: E402,F401
 from . import notification_models as _notification_models  # noqa: E402,F401
+from . import pan_workload_models as _pan_workload_models  # noqa: E402,F401
 from . import plan_models as _plan_models  # noqa: E402,F401
 from . import result_models as _result_models  # noqa: E402,F401
 from . import review_models as _review_models  # noqa: E402,F401

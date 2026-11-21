@@ -86,7 +86,7 @@ def submit_feedback(
     rec = db.get(AssessmentRecord, body.record_id)
     if rec is None:
         raise HTTPException(status_code=404, detail="考核记录不存在")
-    if not ctx.can_view_score_of(rec.employee_id):
+    if not ctx.can_write_score_of(rec.employee_id, db=db):
         raise HTTPException(status_code=403, detail="无权对该记录提交反馈")
     try:
         row = svc.record_feedback(

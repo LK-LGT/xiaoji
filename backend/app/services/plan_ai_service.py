@@ -26,8 +26,10 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
+from httpx import HTTPStatusError
 from sqlalchemy.orm import Session
 
 from ..core.config import settings
@@ -93,6 +95,31 @@ def _scope_for(current_user: Employee) -> str:
     if settings.plan_ai_department_context and current_user.department_id:
         return "department"
     return "self"
+
+
+def _normalize_period(period: str) -> str:
+    """把周期归一化成 ``YYYY-MM`` / ``YYYY-MM-DD``。
+
+    ⚠️ **为什么业务层也要归一**（2026-11-21 修复）
+
+    契约不该只靠对端守：智能体侧把 ``period`` 限制成固定格式，
+    业务侧却把**前端原样的值**（``2026-11`` / ``2026-11-17``）直接传过去
+    ⇒ 422 ⇒ 全部降级成空草稿。
+
+    这里在**出口处**归一，让格式不匹配永远不会离开业务层。
+
+    ⚠️ 归一化成**带横线**格式而不是紧凑格式 ——
+    实测紧凑 ``20261117`` 会被模型读成复数 ``periods=20261117``，
+    并据此推断出错误的计划起止日期。
+    """
+    text = str(period or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"\d{8}", text):
+        return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    if re.fullmatch(r"\d{6}", text):
+        return f"{text[:4]}-{text[4:]}"
+    return text
 
 
 def _clean_item(raw: dict[str, Any]) -> dict[str, Any]:
@@ -188,7 +215,7 @@ async def call_plan_agent(
         "context": {
             "scope": scope,
             "plan_type": plan_type,
-            "period": period or "",
+            "period": _normalize_period(period),
         },
         "tool_token": token,
         "allowed_tools": effective_tools,
@@ -201,7 +228,24 @@ async def call_plan_agent(
         from .review_service import AgentClient
 
         raw = await AgentClient().plan(payload)
-    except Exception:
+    except Exception as exc:
+        # ⚠️⚠️ **契约不匹配必须与「服务不可用」区分开**（2026-11-21 修复）
+        #
+        # 原来的写法把**所有**异常都吞成「AI 服务暂不可用」——
+        # 结果一个 **422（请求体契约不匹配）** 被报成「服务挂了」，
+        # 排查时完全看不出是**格式**问题。
+        #
+        # 真实踩到的坑：``period`` 传 ``2026-11-17`` 而智能体只认 ``202611``，
+        # ⇒ 月/周/日三条链路**全部 422** ⇒ 全部降级成空草稿，
+        # 而日志里只有一行「计划助手智能体调用失败」。
+        #
+        # ⇒ 422 是**我们的 bug**，不是对方挂了 —— 必须打出来、说清楚。
+        if isinstance(exc, HTTPStatusError) and exc.response.status_code == 422:
+            logger.error(
+                "计划助手请求体契约不匹配（422）—— period=%r plan_type=%r",
+                period, plan_type, exc_info=True,
+            )
+            return _degraded_result("AI 服务请求参数不被接受（契约不匹配）")
         logger.warning("计划助手智能体调用失败", exc_info=True)
         return _degraded_result("AI 服务暂不可用")
 

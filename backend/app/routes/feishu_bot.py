@@ -317,6 +317,87 @@ def extract_message_event(body: dict[str, Any]) -> dict[str, Any]:
         "open_id": str(sender_id.get("open_id") or "").strip(),
         "user_id": str(sender_id.get("user_id") or "").strip(),
         "chat_id": str(message.get("chat_id") or "").strip(),
+        **extract_media_refs(message, raw_content),
+    }
+
+
+def extract_media_refs(
+    message: dict[str, Any], raw_content: Any
+) -> dict[str, Any]:
+    """抽出消息里的**媒体引用**（图片 / 文件）。
+
+    ⚠️ **为什么消息里没有字节，只有 key**
+    飞书的 ``im.message.receive_v1`` 事件**不携带文件内容** ——
+    图片/文件只给一个 ``image_key`` / ``file_key``，
+    真正取字节要走 ``GET /im/v1/messages/{message_id}/resources/{type}``。
+
+    ⇒ 这里只负责**把 key 抽出来**，取字节交给
+    ``feishu_docs.fetch_message_resource``。
+
+    ⚠️ **各消息类型的 content 结构不同**
+    ========================== ====================================
+    ``message_type``          ``content`` 里的字段
+    ========================== ====================================
+    ``image``                 ``image_key``
+    ``file``                  ``file_key``
+    ``audio``                 ``file_key``
+    ``media``                 ``file_key`` + ``image_key``（封面图）
+    ``sticker``               ``file_key``
+    ========================== ====================================
+
+    ⚠️ **post（富文本）里的图片**
+    富文本 ``post`` 的 content 是嵌套结构，图片藏在
+    ``content.post.zh_cn.content[].tag == "img"`` 的 ``img_key``。
+    ⇒ 一并抽出来，否则员工在富文本里贴的截图收不到。
+    """
+    image_keys: list[str] = []
+    file_keys: list[str] = []
+
+    def _add_image(key: Any) -> None:
+        text = str(key or "").strip()
+        if text and text not in image_keys:
+            image_keys.append(text)
+
+    def _add_file(key: Any) -> None:
+        text = str(key or "").strip()
+        if text and text not in file_keys:
+            file_keys.append(text)
+
+    parsed: Any = None
+    if isinstance(raw_content, str) and raw_content.strip():
+        try:
+            parsed = json.loads(raw_content)
+        except (TypeError, ValueError):
+            parsed = None
+    elif isinstance(raw_content, dict):
+        parsed = raw_content
+
+    if isinstance(parsed, dict):
+        _add_image(parsed.get("image_key"))
+        _add_file(parsed.get("file_key"))
+
+        # ⚠️ 富文本里的图片（post / zh_cn）
+        post = parsed.get("post")
+        if isinstance(post, dict):
+            for lang_body in post.values():
+                if not isinstance(lang_body, dict):
+                    continue
+                blocks = lang_body.get("content")
+                if not isinstance(blocks, list):
+                    continue
+                for block in blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("tag") == "img":
+                        _add_image(block.get("img_key"))
+                    elif block.get("tag") == "media":
+                        _add_file(block.get("file_key"))
+                        _add_image(block.get("image_key"))
+
+    return {
+        "image_keys": image_keys,
+        "file_keys": file_keys,
+        "media_type": "image" if image_keys else ("file" if file_keys else ""),
     }
 
 
@@ -473,6 +554,7 @@ async def _handle_message_event(
         intent = feishu_bot.INTENT_PERFORMANCE_QA
     elif intent not in (
         feishu_bot.INTENT_MONTH_PLAN,
+        feishu_bot.INTENT_MANUAL_METRIC,
         feishu_scheme.INTENT,
         feishu_bot.INTENT_PERFORMANCE_QA,
     ):
@@ -510,6 +592,104 @@ async def _handle_message_event(
             ),
         )
         return {"code": 0, "message": "未绑定员工"}
+
+    # ── ★ BP-2 / P3：飞书端人工填报 ──────────────────────────
+    # ⚠️ **放在 QA 之前** —— 填报是**写操作**，优先级高于只读问答。
+    if intent == feishu_bot.INTENT_MANUAL_METRIC:
+        from ..services import feishu_manual_metric as fmm
+
+        try:
+            outcome = fmm.submit_from_text(
+                db,
+                employee_id=employee.id,
+                text=text,
+                open_id=open_id,
+                chat_id=message["chat_id"],
+                message_id=message["message_id"],
+            )
+            db.commit()
+        except fmm.FeishuManualMetricError as exc:
+            feishu_bot.send_card(
+                client,
+                receive_id=open_id,
+                card=feishu_card.build_error_card(exc.message),
+            )
+            return {"code": 0, "message": "填报失败，已给出提示"}
+
+        names = {
+            "video_completion_rate": "完播率",
+            "video_retention_rate": "视频留存率",
+        }
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_card(
+                title="数据已记录",
+                elements=[
+                    feishu_card.build_manual_metric_saved_card(
+                        metric_name=names.get(outcome["metric_code"], outcome["metric_code"]),
+                        value=outcome["value"],
+                        metric_date=outcome["date"],
+                    )
+                ],
+            ),
+        )
+        return {"code": 0, "message": "已记录"}
+
+    # ── ★ BP-2 / P3：直接发截图（最自然的通路）────────────────
+    # ⚠️ **截图本身不构成指标** —— 只作证据。
+    #    截图里的数字**不自动识别**（识别错就是错误绩效数据）。
+    #    ⇒ 存下截图，提示员工补文字说明数值。
+    if message.get("image_keys") or message.get("file_keys"):
+        from ..services import feishu_manual_metric as fmm
+        from ..services.feishu_docs import FeishuDocsClient
+
+        image_key = (message.get("image_keys") or [""])[0]
+        file_key = (message.get("file_keys") or [""])[0]
+        resource_type = "image" if image_key else "file"
+        key = image_key or file_key
+        try:
+            docs = FeishuDocsClient(client)
+            content, filename = docs.fetch_message_resource(
+                message["message_id"], key, resource_type=resource_type
+            )
+            outcome = fmm.store_evidence(
+                db,
+                employee_id=employee.id,
+                message_id=message["message_id"],
+                image_key=image_key,
+                file_key=file_key,
+                content=content,
+                filename=filename,
+                open_id=open_id,
+                chat_id=message["chat_id"],
+            )
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("飞书截图存档失败：%s", exc)
+            feishu_bot.send_card(
+                client,
+                receive_id=open_id,
+                card=feishu_card.build_error_card(
+                    "截图收到了，但保存失败，请稍后重试或改用网页端上传。"
+                ),
+            )
+            return {"code": 0, "message": "截图存档失败"}
+
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_card(
+                title="截图已收到",
+                elements=[
+                    feishu_card.build_evidence_saved_card(
+                        has_metric=not outcome.get("pending"),
+                        metric_date="",
+                    )
+                ],
+            ),
+        )
+        return {"code": 0, "message": "截图已存档"}
 
     if intent == feishu_bot.INTENT_PERFORMANCE_QA:
         from ..services import feishu_qa_ai

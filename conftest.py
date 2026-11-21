@@ -88,6 +88,8 @@ _TEST_SCHEDULER_OFF = {
     "FEISHU_SCHEME_SYNC_ENABLED": "false",
     # 百度网盘绩效校验（后台线程 + 首轮 OAuth 取数）
     "BAIDU_PAN_ENABLED": "false",
+    # 网盘剪辑工作量统计（后台线程 + 首轮真实取数）
+    "PAN_WORKLOAD_ENABLED": "false",
     # 飞书事件消费调度器
     "FEISHU_EVENT_CONSUME_ENABLED": "false",
     # 考核周期调度

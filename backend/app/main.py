@@ -165,6 +165,16 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    # BP-2：网盘剪辑工作量（采集 → 日汇总 → 复核工单 → 人工填报）
+    from .routes import pan_workload as pan_workload_routes
+    app.include_router(pan_workload_routes.router)
+    print("[APP] Pan workload router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register pan workload router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     from .routes import import_data as import_data_routes
     app.include_router(import_data_routes.router)
     print("[APP] Import data router registered successfully")
@@ -498,6 +508,11 @@ def _startup() -> None:
         start_baidu_pan_scheduler()
     except Exception:
         logging.getLogger(__name__).exception("启动百度网盘绩效校验失败")
+    try:
+        from .services.pan_workload_scheduler import start as start_pan_workload_scheduler
+        start_pan_workload_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("启动网盘剪辑工作量统计失败")
 
 
 @app.on_event("shutdown")
@@ -541,6 +556,11 @@ def _shutdown() -> None:
         stop_baidu_pan_scheduler()
     except Exception:
         logging.getLogger(__name__).exception("停止百度网盘绩效校验失败")
+    try:
+        from .services.pan_workload_scheduler import stop as stop_pan_workload_scheduler
+        stop_pan_workload_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("停止网盘剪辑工作量统计失败")
 
 
 # ---------------------------------------------------------------------------
@@ -1092,8 +1112,16 @@ def add_metric_value(
 ) -> dict[str, Any]:
     """写入指标实测值（算分集唯一入口）。考勤来源会被拒绝。"""
     # 算分集是绩效的核心，只有 HR / 管理员可以写入他人指标值。
+    #
+    # ⚠️ P0-4a：这里用 ``can_write_score_of``（**写**权限），
+    #    不是 ``can_view_score_of``（读权限）。
+    #
+    #    指标实测值是**算分的唯一入口** ——
+    #    若这里用读权限，同部门平级同事一旦获得 peer 读权限，
+    #    就能给对方写实测值 ⇒ **等于可以改别人的绩效分数**。
+    #    需求明确禁止"通过问答修改绩效分数"，这条闸门必须独立于读权限。
     access = access_control.build_access_context(db, current_user)
-    if not access.can_view_score_of(req.employee_id):
+    if not access.can_write_score_of(req.employee_id, db=db):
         raise HTTPException(
             status_code=403,
             detail="无权为该员工写入指标值",
@@ -1125,8 +1153,9 @@ def add_anomaly(
     """写入考勤异常。全部 reference_only，不进算分集。"""
     from .domain.enums import AttendanceAnomalyType
 
+    # ⚠️ P0-4a：写权限，不是读权限 —— 见 `POST /api/metric-values` 的说明。
     access = access_control.build_access_context(db, current_user)
-    if not access.can_view_score_of(req.employee_id):
+    if not access.can_write_score_of(req.employee_id, db=db):
         raise HTTPException(
             status_code=403,
             detail="无权为该员工写入考勤异常",
@@ -1175,8 +1204,10 @@ def create_draft(
     rec = db.get(AssessmentRecord, record_id)
     if rec is None:
         raise HTTPException(status_code=404, detail="考核记录不存在")
+    # ⚠️ P0-4a：生成草稿 = **写**（会落 RatingDraft / CommentDraft）。
+    #    用写权限，避免 peer 读权限顺带获得"给同事写评语"的能力。
     access = access_control.build_access_context(db, current_user)
-    if not access.can_view_score_of(rec.employee_id):
+    if not access.can_write_score_of(rec.employee_id, db=db):
         raise HTTPException(status_code=403, detail="无权为该员工生成草稿")
     try:
         bundle = review_service.generate_draft(db, record_id=record_id)
@@ -1208,8 +1239,9 @@ def recompute_score(
     rec = db.get(AssessmentRecord, record_id)
     if rec is None:
         raise HTTPException(status_code=404, detail="考核记录不存在")
+    # ⚠️ P0-4a：复算会**落库**（persist_score）⇒ 写权限。
     access = access_control.build_access_context(db, current_user)
-    if not access.can_view_score_of(rec.employee_id):
+    if not access.can_write_score_of(rec.employee_id, db=db):
         raise HTTPException(status_code=403, detail="无权复算该员工的分数")
     try:
         result = review_service.compute_score(db, record_id=record_id)

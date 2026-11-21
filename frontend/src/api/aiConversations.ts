@@ -5,7 +5,9 @@ export type AiConversationStatus = 'ACTIVE' | 'ENDED'
 export type AiConversationMessageStatus = 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED'
 
 export interface AiConversation {
-  id: number
+  // ⚠️ 会话主键是 UUID 字符串（后端 `AiConversation.id: String(64)`），
+  // 历史类型声明为 number 会导致把 UUID 发回后端时 422。
+  id: string
   planType: AiPlanType
   periodKey: string
   title: string
@@ -16,8 +18,8 @@ export interface AiConversation {
 }
 
 export interface AiConversationMessage {
-  id: number
-  conversationId: number
+  id: string
+  conversationId: string
   role: 'USER' | 'ASSISTANT' | 'EVENT'
   messageType: 'TEXT' | 'BUSINESS_RESULT' | 'ACTION'
   operationCode: string
@@ -32,7 +34,7 @@ export interface AiConversationMessage {
 
 export interface AiConversationMessagePage {
   records: AiConversationMessage[]
-  nextBeforeId?: number
+  nextBeforeId?: string
   hasMore: boolean
 }
 
@@ -50,7 +52,7 @@ export function listAiConversations(planType: AiPlanType, periodKey: string) {
   })
 }
 
-export function listAiConversationMessages(conversationId: number, beforeId?: number) {
+export function listAiConversationMessages(conversationId: string, beforeId?: string) {
   return http.get<unknown, AiConversationMessagePage>(`/employee/ai/conversations/${conversationId}/messages`, {
     params: { beforeId, size: 30 },
     timeout: AI_OPERATION_TIMEOUT_MS,

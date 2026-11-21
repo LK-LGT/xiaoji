@@ -19,7 +19,7 @@ export function usePlanAiConversation(planType: AiPlanType, periodKey: MaybeRefO
   const historyLoading = ref(false)
   const errorMessage = ref('')
   const hasMore = ref(false)
-  const nextBeforeId = ref<number>()
+  const nextBeforeId = ref<string>()
   let scopeRequest = 0
 
   const readonlyView = computed(() => viewingConversation.value?.status === 'ENDED')
@@ -31,8 +31,20 @@ export function usePlanAiConversation(planType: AiPlanType, periodKey: MaybeRefO
     loading.value = true
     errorMessage.value = ''
     try {
-      const conversation = await resolveAiConversation(planType, period)
+      const existing = await resolveAiConversation(planType, period)
       if (request !== scopeRequest) return
+      // ⚠️⚠️ **没有活跃会话时后端返回 null**（2026-11-21 修复）
+      //
+      // 原来的写法直接 `conversation.id` —— 首次使用（库里没会话）时
+      // `null.id` 抛 TypeError ⇒ 面板弹「对话加载失败」+「重试」，
+      // **输入框永久禁用**，用户完全没法用 AI 助手。
+      //
+      // ⇒ 没有会话就**自动新建一个** —— 首次使用不该要求用户先点「新建对话」。
+      let conversation = existing
+      if (!conversation) {
+        conversation = await startNewAiConversation(planType, period)
+        if (request !== scopeRequest) return
+      }
       activeConversation.value = conversation
       viewingConversation.value = conversation
       await refreshMessages(conversation.id)

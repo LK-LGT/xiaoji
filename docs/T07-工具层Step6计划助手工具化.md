@@ -189,6 +189,7 @@ agent-service 侧不需要新增配置 —— 复用现有的 `AGENT_TOOL_BASE_U
 | `test_plan_tools.py` | 18 | 越权不可能 / 部门脱敏 / 只读保证 / 审计留痕 |
 | `test_plan_ai_endpoints.py` | 17 | 开关默认关 / 契约完整 / 字段收敛 / 降级 / GBK 解码 |
 | `test_plan_agent.py` | 18 | 输出契约无考核数字 / 降级 / 工具白名单 / 分数泄漏清洗 |
+| `test_plan_hallucination_detector.py` | 12 | 计划场景 8 类幻觉 / 非空测试（坏检测器必须被抓住）/ prompt 禁考核数字 |
 | agent-service 全量 | 149 | 原有 6 个智能体未受影响 |
 
 ---
@@ -212,9 +213,12 @@ agent-service 侧不需要新增配置 —— 复用现有的 `AGENT_TOOL_BASE_U
 ### 7.3 上线前必须做
 
 1. ~~**真模型压测** —— 和 P3-2 一样，用真实 DB 数据跑多轮检测六类缺陷。~~
-   ✅ **2026-11-20 已做单轮真机验证**（见 §八）——
-   但**计划场景的多轮压测**仍未做，且判定口径需为计划场景单独定义。
-2. **前端联调** —— `PlanAiAssistant.vue` 的草稿展示、采纳流程。⚠️ **未做**
+   ✅ **2026-11-20 已做单轮真机验证**（见 §八）
+   ✅ **2026-11-21 已做计划场景专属的多轮压测**（见 §8.5）——
+   8 类判定口径 + 55 例自检 + 12 例 pytest 门禁 + 9/9 干净轮次。
+2. ~~**前端联调** —— `PlanAiAssistant.vue` 的草稿展示、采纳流程。~~
+   ✅ **2026-11-21 已做**（见 §8.6）—— 生成 / 预览 / 采纳到草稿 / 保存全链路真机打通；
+   过程中抓到 P0 契约错位（`conversationId` 被当 int 解析）。
 3. **开关灰度** —— 先开 `PLAN_AI_ENABLED=true` + `MODEL_MODE=echo` 验证链路，
    再切真模型小范围灰度。⚠️ **当前配置已是真模型 + 全量开启**，
    上生产前需要先做小范围灰度。
@@ -266,14 +270,105 @@ backend /v1/employee/ai/*  →  签发工具令牌
 | 编造历史计划（工具没返回却说有）| ✅ 无 —— 如实说「我的历史计划仅返回 1 条草稿记录且无任何条目」|
 | 编造引用 ID | ✅ 无 |
 
-### 8.5 ⚠️ 尚未验证的
+### 8.5 计划场景幻觉压测（2026-11-21，Backlog #14）
 
-- **前端联调** —— `PlanAiAssistant.vue` 的草稿展示、采纳流程**未做**
-- **计划场景的幻觉压测** —— 计划助手与总结助手输出形状不同
-  （`items`/`findings` vs `answer`），P3-2 那套六类缺陷检测器**不能直接套用**，
-  需要为计划场景单独定义判定口径
-- **多轮非确定性** —— 本次只跑了单轮；模型非确定性问题在总结场景已验证过，
-  计划场景未做多轮
+> 与 P3-2（总结场景）**分开做** —— 计划助手的输出形状是
+> `items` / `findings`，不是 `answer`，六类缺陷口径**不能直接套用**。
+
+#### 8.5.1 计划场景专属的 8 类判定口径
+
+| # | 类别 | 判据 | 级别 |
+|---|---|---|---|
+| 1 | `assessment_number_leak` | 条目字典或文本里出现 `performanceWeight` / `estimatedValue` / `score` / `completionRate` | 🔴 红线 |
+| 2 | `score_leak` | 出现「绩效分 95」这类分数表述 | 🔴 红线 |
+| 3 | `fabricated_history` | 声称本人做过 `get_my_plan_history` 里没有的任务 | 🔴 红线 |
+| 4 | `fabricated_quotes` | 逐字引文不在历史源、也不在本次自拟 `task_name` 中 | 🟡 |
+| 5 | `fabricated_facts` | 编造荣誉 / 福利 / 奖励 | 🟡 |
+| 6 | `fabricated_numbers` | 编造业务指标（「87 笔订单」） | 🟡 |
+| 7 | `illegal_references` | 引用不存在的 UUID / 记录 ID | 🟡 |
+| 8 | `fabricated_person_names` | 出现真实人名（部门历史已脱敏） | 🔴 红线 |
+
+⚠️ **`fabricated_history` 只查「我的历史」，不查部门历史** ——
+否则部门里别人的计划会被误判成「我做过」。
+
+#### 8.5.2 允许的「看起来像数字」的东西
+
+判定 `fabricated_numbers` 时必须放行：
+
+- 日期（`2026-11`）
+- **自计数**（「生成 5 条计划」）
+- **条目次号**（「序号 1、2」）
+- **时间承诺**（「会后 1 个工作日内」）
+
+#### 8.5.3 交付物
+
+| 文件 | 作用 |
+|---|---|
+| `backend/scripts/plan_hallucination_detector.py` | 计划场景检测器（8 类） |
+| `backend/scripts/check_plan_hallucination_detector.py` | 自检用例集（55 例） |
+| `backend/app/tests/test_plan_hallucination_detector.py` | pytest 门禁（12 例，含「坏检测器必须被抓住」的非空测试） |
+| `backend/scripts/pressure_test_plan_hallucination.py` | 真机多轮压测脚本 |
+
+#### 8.5.4 ⚠️ 压测过程中发现的**误报陷阱**
+
+和 P3-2 一样，**第一版检测器的结论全是错的**：
+
+| 误报 | 现象 | 修法 |
+|---|---|---|
+| **合规免责被当成编造** | 模型如实说「未检索到可对照的条目」「没有查到历史计划」，被 7/7 全判成编造历史 | `warnings`/`findings` 里的**免责披露不算断言**；句子含否定标记则跳过；断言必须带**明确的过去动作动词** |
+| **子串误命中** | 「设计**过渡**方案」被当成「设计**过**」 | 动作动词加否定前瞻 `(?!渡\|程\|后\|往\|条\|关\|滤\|线\|过)` |
+| **自拟任务名被当成编造引文** | 模型在 `findings` 里引用自己刚起草的 `task_name` | 本次 `items` 的 `task_name` 计入合法引文源，且要求有**转录/引用语境** |
+| **自计数被当成编造数字** | 「5 条计划」「1 个工作日」 | 新增 `_is_self_count` / `_is_time_commitment` / `_is_item_index` / `_is_time_range` |
+| **工具调用 403** | 脚本硬编码 `scope="self"`，而 `get_department_plan_history` 要 `scope="department"` | 脚本按 `settings.plan_ai_department_context` + 员工 `department_id` 决定 scope（对齐 `plan_ai_service._scope_for`） |
+
+#### 8.5.5 压测结果
+
+真实库 4 名员工 × 3 轮 = **12 轮**（其中 3 轮模型降级无产出，**不计入样本**）：
+
+| 指标 | 结果 |
+|---|---|
+| 有效样本 | **9** |
+| 干净轮次 | **9 / 9** |
+| 🔴 红线（4 类） | **全部 0** |
+| 🟡 其他幻觉（4 类） | **全部 0** |
+
+> ⚠️ **「0 检出」不能读成「模型很可靠」** —— 和 P3-2 同理：
+> 样本量小、且真实库的历史计划本身内容单薄，
+> 检出率 0% 只说明**在当前口径下没踩到红线**，不代表模型不会编。
+
+### 8.6 ✅ 前端联调（2026-11-21，Backlog #13）
+
+日计划**生成 → 预览 → 采纳到草稿 → 保存草稿**全链路真机打通。
+
+#### 8.6.1 抓到的 P0：`conversationId` 类型契约错位
+
+| 项 | 内容 |
+|---|---|
+| 现象 | 点「生成日计划」→ `Request failed with status code 422`，抽屉空 |
+| 抓法 | 浏览器 hook `window.fetch` + `XMLHttpRequest`，**连请求体和响应体一起截** |
+| 报错原文 | `{"type":"int_parsing","loc":["body","conversationId"],"input":"fdb16108-42db-4ee6-85a2-51cc301ec2e8"}` |
+| 根因 | `AiOperationPayload.conversationId: int \| None`，而 `AiConversation.id` 是 `String(64)`（UUID）—— **后端主键类型与入参类型对不上** |
+| 修复 | 后端 → `str \| int \| None`（只放宽不收紧，历史 int 口径也收）；前端 6 处类型 `number` → `string` |
+
+⚠️ **这个 bug 能活很久的原因**：后端**从不把 `conversationId` 传给智能体**（纯会话元数据），
+所以「传 int」在单测里完全看不出问题；只有**前端把 UUID 回传**时才炸。
+⇒ **只有真机联调才能发现这一类契约错位** —— 这就是 P3-2「单测全绿也发现不了」的又一例。
+
+#### 8.6.2 顺带修掉的环境问题
+
+- `agent-service` 进程没在跑（8800 无人监听）⇒ 后端降级成「AI 服务暂不可用」；重启即恢复。
+- ⚠️ **PowerShell `Invoke-WebRequest` 传中文会乱码** ⇒ 验中文链路必须用 Python `httpx`（UTF-8），
+  否则会误判成「意图文本乱码」的模型问题。
+
+#### 8.6.3 验证记录（真机 + DeepSeek-flash 实模型）
+
+| 环节 | 结果 |
+|---|---|
+| 日计划生成 | ✅ 3–4 条 items，`degraded=false`，工具调用 2 次全 `ok` |
+| 预览抽屉 | ✅ 渲染「工作内容」全文 + 忽略 / 让 AI 调整 / 采纳到草稿 |
+| 采纳到草稿 | ✅ 表单 textarea 填成 3 段换行文本 |
+| 保存草稿 | ✅ 「当前内容已保存」 |
+| 回归 | 后端 `test_plan_ai_endpoints.py` **31 passed**（新增 4 例锁契约）；前端 `vue-tsc` **0 error** |
 
 ---
 

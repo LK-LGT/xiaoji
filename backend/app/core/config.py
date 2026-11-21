@@ -338,6 +338,15 @@ class Settings(BaseSettings):
     #    刷新后必须换成响应里的新值。换错会导致下次刷新失败。
     baidu_pan_auto_refresh_token: bool = True
 
+    # ─────────────────────────────────────────────────────────────
+    # 网盘剪辑工作量统计（BP-2）
+    # ─────────────────────────────────────────────────────────────
+    # ⚠️ **与 BP-1 分开开关** —— BP-1 是「部门总量校验」，
+    #    BP-2 是「按人拆的工作量统计」，业务上可以各自独立启停。
+    pan_workload_enabled: bool = False
+    # 采集频率（秒）。百度接口有频控（未审核应用 10 次/小时）⇒ 下限 1 小时。
+    pan_workload_sync_interval_seconds: int = 21600
+
     @model_validator(mode="after")
     def _validate_auth_secret(self):
         """启动即校验认证密钥，避免弱密钥静默上线。"""

@@ -90,6 +90,9 @@ import SchemeManagement from '@/views/performance/SchemeManagement.vue'
 import PerformanceDashboard from '@/views/performance/PerformanceDashboard.vue'
 import EmployeeSelfReview from '@/views/performance/EmployeeSelfReview.vue'
 import ManagerReview from '@/views/performance/ManagerReview.vue'
+import PanWorkloadPanel from '@/views/performance/PanWorkloadPanel.vue'
+import PanWorkloadEntry from '@/views/performance/PanWorkloadEntry.vue'
+import PanWorkloadPage from '@/views/performance/PanWorkloadPage.vue'
 import QaPanel from '@/views/qa/QaPanel.vue'
 
 import ReviewCenter from '@/views/dispute/ReviewCenter.vue'
@@ -220,6 +223,13 @@ const router = createRouter({
     withAppShell('/performance', PerformanceDashboard, { permission: 'performance:dashboard:view' }, '/performance/dashboard'),
     withAppShell('/performance/self-reviews', EmployeeSelfReview, { permission: 'performance:self-review:view' }),
     withAppShell('/performance/manager-reviews', ManagerReview, { permission: 'performance:manager-review:view' }),
+
+    // --- ★ BP-2：网盘剪辑工作量 ---
+    // ⚠️ **员工页与主管页是同一个路由**，靠权限位区分内容 ——
+    //    员工进来看到「我的工作量 + 填报 + 提异议」，
+    //    主管进来看到「按人汇总 + 待裁定工单」。
+    //    ⇒ 页面内部按权限切换组件，避免两套路由两套菜单。
+    withAppShell('/performance/pan-workload', PanWorkloadPage, { permission: 'pan:workload:view' }, '/performance/dashboard'),
 
     // --- 问答 ---
     // ⚠️ 全角色可见：问答的数据范围由**后端**按权限收敛

@@ -141,6 +141,9 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "planning:result:view",
         "performance:dashboard:view",
         "performance:self-review:view",
+        # ★ BP-2：员工填报工作�� / 发起异议
+        "pan:workload:view",
+        "pan:workload:submit",
     ],
     "manager": [
         "department:dashboard:view",
@@ -153,6 +156,9 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "leader:workbench:view",
         # 主管评分页：待评下属列表 + 评分提交
         "performance:manager-review:view",
+        # ★ BP-2：主管核对下属的剪辑工作量 + 裁定异议工单
+        "pan:workload:view",
+        "pan:workload:resolve",
     ],
     "department_leader": [
         "performance:schemes:view",
@@ -173,6 +179,9 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "leader:team-ledger:view",
         # 部门负责人同样承担下属评分职责
         "performance:manager-review:view",
+        # ★ BP-2：部门负责人同样要核对/裁定下属的剪辑工作量
+        "pan:workload:view",
+        "pan:workload:resolve",
     ],
     "hr": [
         "performance:schemes:manage",
@@ -193,6 +202,10 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "dispute:case:view",
         # HR 可查看全部考核记录
         "performance:manager-review:view",
+        # ★ BP-2：HR 可看全部、裁定、维护绑定、跑聚合
+        "pan:workload:view",
+        "pan:workload:resolve",
+        "pan:workload:manage",
     ],
     "admin": [
         "system:dashboard:view",
@@ -207,6 +220,10 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "system:knowledge:view",
         # 飞书组织同步管理（触发同步 / 查看批次、失败、对账）
         "system:feishu-sync:manage",
+        # ★ BP-2：管理员同 HR
+        "pan:workload:view",
+        "pan:workload:resolve",
+        "pan:workload:manage",
     ],
 }
 

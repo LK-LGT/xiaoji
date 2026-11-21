@@ -184,7 +184,10 @@ def prepare_remind(
         target = db.get(Employee, target_id)
         if target is None:
             raise ExecToolError(f"催办对象不存在：{target_id}")
-        if not context.can_view_score_of(target_id):
+        # ⚠️ P0-4a：催办是**写操作 + 发通知** ⇒ 用写权限。
+        #    用读权限的话，同部门平级一旦获得 peer 读权限，
+        #    就能互相催办绩效待办 —— 骚扰且越权。
+        if not context.can_write_score_of(target_id, db=db):
             raise ExecToolError(f"无权催办该员工：{target_id}", 403)
         record = db.query(AssessmentRecord).filter_by(
             task_id=task_id, employee_id=target_id

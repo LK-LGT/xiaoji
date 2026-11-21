@@ -24,7 +24,7 @@ import { ref } from 'vue'
 import { checkMonthPlanApi, recordAiSuggestionActionApi, type AiCheckIssue, type AiPlanForm, type MonthPlanContextType } from '@/api/employeeAi'
 import { useCancelableAiRequest } from '@/composables/useCancelableAiRequest'
 import { ElMessage } from 'element-plus'
-const props = defineProps<{ planMonth: string; form: AiPlanForm; disabled: boolean; jobDescription?: string; selectedContextTypes: MonthPlanContextType[]; selectedHistoryMonths?: string[]; selectedKnowledgeTypes?: string[]; conversationId?: number }>()
+const props = defineProps<{ planMonth: string; form: AiPlanForm; disabled: boolean; jobDescription?: string; selectedContextTypes: MonthPlanContextType[]; selectedHistoryMonths?: string[]; selectedKnowledgeTypes?: string[]; conversationId?: string }>()
 const emit = defineEmits<{ locate: [path: string] }>()
 const { running: checking, run: runAiRequest, stop: stopAiRequest } = useCancelableAiRequest()
 const checked = ref(false)

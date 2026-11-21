@@ -76,9 +76,11 @@ STATE_COMPLETED = "completed"
 from .feishu_intent import (  # noqa: E402,F401
     CANCEL_KEYWORDS,
     INTENT_CANCEL,
+    INTENT_MANUAL_METRIC,
     INTENT_MONTH_PLAN,
     INTENT_NONE,
     INTENT_PERFORMANCE_QA,
+    MANUAL_METRIC_KEYWORDS,
     MONTH_PLAN_KEYWORDS,
     PERFORMANCE_KEYWORDS,
     detect_intent,
@@ -442,8 +444,10 @@ def build_month_plan_card_for_session(
 __all__ = [
     "CANCEL_KEYWORDS",
     "FeishuBotError",
+    "INTENT_MANUAL_METRIC",
     "INTENT_MONTH_PLAN",
     "INTENT_NONE",
+    "MANUAL_METRIC_KEYWORDS",
     "MONTH_PLAN_KEYWORDS",
     "STATE_COLLECTING",
     "STATE_COMPLETED",

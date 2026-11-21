@@ -574,6 +574,68 @@ def build_error_card(message: str) -> dict[str, Any]:
     )
 
 
+def build_manual_metric_saved_card(
+    *,
+    metric_name: str,
+    value: float,
+    metric_date: str,
+) -> dict[str, Any]:
+    """构造「数据已记录」回执卡片。
+
+    ⚠️ **为什么用 ``plain_text`` 而不是 ``markdown``**
+    指标名与日期来自用户输入，可能是模型/OCR 产物 ——
+    用 markdown 会被解析成「@某人」或外链。
+
+    ⚠️ **措辞要说清「还没进考核」**
+    填了不等于已确认 ⇒ 回执里点明「可修改」。
+    """
+    percent = f"{value * 100:.1f}%" if 0 <= value <= 1 else f"{value}"
+    return build_card(
+        title="数据已记录",
+        elements=[
+            _text(
+                f"{metric_date}  {metric_name}：{percent}\n\n"
+                "已记录。若数据有误，可再次发送同样的内容覆盖。"
+            ),
+        ],
+        header_template="green",
+    )
+
+
+def build_evidence_saved_card(
+    *,
+    has_metric: bool,
+    metric_date: str = "",
+) -> dict[str, Any]:
+    """构造「截图已收到」回执卡片。
+
+    ⚠️ **为什么要单独一张卡**
+    截图只作**证据**，不构成指标 ⇒ 必须明确告诉员工
+    「还需要你填数值」，否则员工以为已经填完了。
+
+    ⚠️ **不要自动 OCR 数值**
+    截图里的数字识别错了就是**错误绩效数据**。
+    ⇒ 数值必须由员工自己填。
+    """
+    if has_metric:
+        body = (
+            "截图已存为证据。\n\n"
+            "若数值有变动，请再发一条文字（例如「完播率 38%」）覆盖。"
+        )
+    else:
+        body = (
+            "截图已收到，但还缺数值。\n\n"
+            "请再发一条文字，例如：\n"
+            "完播率 35%\n"
+            "留存率 20%"
+        )
+    return build_card(
+        title="截图已收到",
+        elements=[_text(body)],
+        header_template="blue",
+    )
+
+
 def build_qa_task_picker_card(
     *,
     candidates: list[dict[str, Any]],

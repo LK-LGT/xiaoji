@@ -87,7 +87,7 @@ const visible = ref(false)
 const weekDraft = ref<WeekPlanAiDraft>()
 const dayDraft = ref<DayPlanAiDraft>()
 const selected = ref<boolean[]>([])
-const conversationId = ref<number>()
+const conversationId = ref<string>()
 const generationExample = ref<AiGenerationExample>()
 const conciseOutput = ref(false)
 const hasDraft = computed(() => props.mode === 'week' ? Boolean(weekDraft.value) : Boolean(dayDraft.value))
@@ -219,7 +219,7 @@ function normalizeWeekItem(raw: unknown): WeekPlanAiItem | null {
 function stringArray(value: unknown) {
   return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : []
 }
-function updateConversationId(value: number) {
+function updateConversationId(value: string) {
   if (conversationId.value !== value) {
     void stopAiRequest()
     weekDraft.value = undefined

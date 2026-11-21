@@ -10,7 +10,7 @@ import json
 
 import pytest
 from app.base import Completion, EchoModelClient, NullModelClient
-from app.plan import PlanRequest, build_plan_tool_registry, run_plan
+from app.plan import PlanContext, PlanRequest, build_plan_tool_registry, run_plan
 from app.plan_agent import PlanAgent, PlanFindingOutput, PlanItemOutput, PlanOutput
 from app.tools import ToolRegistry, ToolSpec
 
@@ -25,6 +25,75 @@ def make_request(**overrides):
     }
     payload.update(overrides)
     return PlanRequest(**payload)
+
+
+# ---------------------------------------------------------------------------
+# ⚠️⚠️ period 契约回归（2026-11-21）
+#
+# 这个 bug 让**月/周/日三条链路全部 422** → 后端降级成空草稿 →
+# 用户看到「AI 建议暂不可用」，前端却一点提示都没有。
+#
+# ⚠️ 它能活下来的原因：**测试造数用 `202611`**（唯一能通过旧 pattern 的格式），
+# 而业务层传的是前端原样的 `2026-11` / `2026-11-17`。
+# 测试造数和业务调用**用的不是同一个格式**，断言照过。
+#
+# 所以这里必须**显式**把业务层真实传的三个格式钉住。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("period", [
+    "2026-11",      # 月计划 planMonth
+    "2026-11-17",   # 周计划 weekStart / 日计划 planDate
+    "202611",       # 紧凑格式（历史用法）
+    "20261117",     # 紧凑格式
+])
+def test_period_accepts_every_format_the_business_layer_sends(period):
+    """业务层真实传的每个 period 格式都必须被接受 —— 不能 422。"""
+    context = PlanContext(scope="self", plan_type="month", period=period)
+    assert context.period
+
+
+def test_period_accepts_empty():
+    """空周期是合法值（默认）—— 不能被拒。"""
+    assert PlanContext(period="").period == ""
+
+
+@pytest.mark.parametrize("plan_type,period", [
+    ("month", "2026-11"),
+    ("week", "2026-11-17"),
+    ("day", "2026-11-17"),
+])
+def test_request_accepts_business_layer_period_formats(plan_type, period):
+    """整请求必须能构造成功 —— 端点层的 422 就是这么来的。"""
+    request = PlanRequest(
+        mode="generate",
+        intent_text="推进订单中心重构",
+        context={"scope": "self", "plan_type": plan_type, "period": period},
+        tool_token="test-token",
+        allowed_tools=["get_my_plan_history"],
+    )
+    assert request.context.period
+
+
+def test_period_is_normalized_to_dashed_format_for_the_model():
+    """⚠️ 归一化必须产出**模型不会误读**的格式。
+
+    实测：紧凑格式 `20261117` 被模型读成复数 `periods=20261117`，
+    并据此**推断出错误的计划起止日期**（11-17 推成 11-17~11-20）。
+    ⇒ 周期是要给人读也要给模型读的字段，必须用带横线的格式。
+    """
+    assert PlanContext(period="202611").period == "2026-11"
+    assert PlanContext(period="20261117").period == "2026-11-17"
+    assert PlanContext(period="2026-11").period == "2026-11"
+    assert PlanContext(period="2026-11-17").period == "2026-11-17"
+
+
+def test_period_rejects_garbage():
+    """格式不对的周期必须被拒 —— 不能静默吞掉变成空串。"""
+    with pytest.raises(Exception):
+        PlanContext(period="not-a-period")
+    with pytest.raises(Exception):
+        PlanContext(period="2026-1-1-1")
 
 
 # ---------------------------------------------------------------------------

@@ -66,7 +66,16 @@ class AiOperationPayload(BaseModel):
     planDate: str = ""
     intentText: str = ""
     instruction: str = ""
-    conversationId: int | None = None
+    # ⚠️⚠️ **会话 ID 是 UUID 字符串，不是 int**（2026-11-21 修复）
+    #
+    # ``AiConversation.id`` 的 ORM 定义是 ``String(64)``（默认 UUID），
+    # 而这里原来写的是 ``int | None`` ⇒ 前端把 UUID 传回来直接 422：
+    #     {"type":"int_parsing","loc":["body","conversationId"]}
+    #
+    # ⇒ 改成 ``str | None``；同时保留 int 兼容（``int`` 也能被 Pydantic 转成 str 吗？
+    # 不能 —— Pydantic v2 严格模式下 int→str 会报错），
+    # 所以这里显式用 ``str`` + ``Union`` 兼容两种历史口径。
+    conversationId: str | int | None = None
     conciseOutput: bool = False
     exampleFileName: str = ""
     exampleContent: str = ""
@@ -92,6 +101,23 @@ class AiConversationPayload(BaseModel):
     bizType: str = ""
     bizId: int | None = None
     title: str = ""
+    # ⚠️⚠️ **前端传的是 ``planType`` / ``periodKey``**（2026-11-21 修复）
+    #
+    # 前端 ``startNewAiConversation(planType, periodKey)`` 发的是：
+    #     { planType: 'DAY', periodKey: '2026-11-21' }
+    #
+    # 而 ``bizType`` 是**考核任务**域的字段（跟 ``sceneCode`` 配套），
+    # 计划助手场景压根不用它。
+    #
+    # 原来的代码 ``_scene_code(None, payload.bizType, None)`` 拿 ``bizType``
+    # 当 ``plan_type`` 传 ⇒ 拿到 ``"DAY"`` 再拼不出 periodKey
+    # ⇒ sceneCode 变成 ``"DAY"``；
+    # 而 ``active`` 端点算的是 ``"DAY:2026-11-21"`` ——
+    # **两边对不上 ⇒ 新建的会话永远查不到**。
+    #
+    # ⇒ 场景标识必须**用同一套规则**算出来，否则「新建」和「查询」永远错位。
+    planType: str = ""
+    periodKey: str = ""
 
 
 def _ok(data: Any) -> dict:
@@ -588,8 +614,12 @@ async def create_ai_conversation(
     """新建 AI 会话。
 
     响应结构：AiConversation
+
+    ⚠️ **场景标识必须与 ``conversations/active`` 用同一套规则** ——
+    否则「新建」和「查询」会算出两个不同的 sceneCode，
+    新建的会话**永远查不到**（前端表现：点「新建对话」后输入框一直是禁用）。
     """
-    scene = payload.sceneCode or _scene_code(None, payload.bizType, None)
+    scene = _scene_code(payload.sceneCode, payload.planType or payload.bizType, payload.periodKey)
     conversation = ai_service.create_conversation(
         db,
         owner=current_user,
