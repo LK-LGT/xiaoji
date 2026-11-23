@@ -69,6 +69,10 @@ class FeishuQaOutcome:
     task_id: str = ""
     #: ★ P0-6：本次实际查询的周期 —— 用于写回会话上下文。
     period: str = ""
+    #: ★ P0-8：本次实际查询的**目标人**（同事）—— 用于写回会话上下文。
+    subject_id: str = ""
+    #: ★ P0-8：目标人姓名（展示用）。
+    subject_name: str = ""
 
     def __post_init__(self) -> None:
         if self.sources is None:
@@ -81,18 +85,28 @@ def list_candidate_tasks(
     db: Session,
     employee: Employee,
     period: str,
+    *,
+    subject_id: str | None = None,
 ) -> list[AssessmentTask]:
     """列出该员工在指定月份的全部考核任务。
 
     ⚠️ **只看自己的记录** —— 绝不按「消息里指定了谁」去找任务，
     否则能查到别人的绩效。
+
+    ⚠️ **P0-8：``subject_id`` 非空时按目标人找任务** ——
+       查同事时，要找的是**同事名下**的任务记录，
+       而不是提问者自己的任务。
+       ⚠️ **这里找得到 ≠ 有权查** ——
+          真正的判定在 ``qa_authorization.authorize_qa_subject``（硬闸门）。
+          本函数只负责「找到这个人在这个月参与了哪些任务」。
     """
+    owner_id = subject_id or employee.id
     return list(
         db.scalars(
             select(AssessmentTask)
             .join(AssessmentRecord, AssessmentRecord.task_id == AssessmentTask.id)
             .where(
-                AssessmentRecord.employee_id == employee.id,
+                AssessmentRecord.employee_id == owner_id,
                 AssessmentTask.period.in_(period_match_keys(period)),
             )
             .order_by(AssessmentTask.created_at.desc())
@@ -133,6 +147,7 @@ async def answer_ai(
     period: str,
     *,
     task_id: str | None = None,
+    subject_id: str | None = None,
     conversation: ConversationState | None = None,
 ) -> FeishuQaOutcome:
     """AI 问答（带规则型回落）。
@@ -143,9 +158,18 @@ async def answer_ai(
     ⚠️ ``conversation``（P0-5）：多轮上下文。
        显式传入的 ``period`` 优先；没传则从上下文继承。
 
+    ⚠️ ``subject_id``（P0-8）：本次查询的**目标人**（同事）。
+       缺省 = 提问者本人（既有行为不变）。
+       ⚠️ **这里不做权限判定** —— 判定在
+          ``qa_authorization.authorize_qa_subject``（服务层硬闸门），
+          本函数只是把目标人**透传**下去。
+       ⚠️ 调用方**必须**先经过 ``qa_subject_matcher`` 收窄候选集，
+          否则会把「想查谁就查谁」的能力暴露给飞书用户。
+
     Args:
         task_id: 指定任务。为空时按月份自动定位；
             若定位到**多个**任务则返回「需选择」的结果（``candidates`` 非空）。
+        subject_id: 目标人 ID（同事）。为空 = 查自己。
         conversation: 会话上下文（由调用方从 ``BotSession.qa_state`` 读出）。
 
     Raises:
@@ -161,24 +185,36 @@ async def answer_ai(
     if conversation is not None and conversation.period:
         resolved_period = conversation.period
 
+    # ⚠️ P0-8：目标人 —— 显式传入的优先。
+    # ⚠️ **这里刻意不从 ``conversation`` 继承主体** ——
+    #    继承的语义在 P0-9 统一处理（P0-5 已明确排除）。
+    resolved_subject_id = subject_id
+
+    # ⚠️ P0-8：查同事时，报错文案要换成「TA」而不是「你」——
+    #    否则会出现"未找到**你**在 11 月的任务"这种怪异提示。
+    subject_label = "该同事" if resolved_subject_id else "你"
+
     if task_id:
         task = db.get(AssessmentTask, task_id)
         if task is None:
             raise HTTPException(404, "考核任务不存在")
         candidates = [task]
     else:
-        candidates = list_candidate_tasks(db, employee, resolved_period)
+        candidates = list_candidate_tasks(
+            db, employee, resolved_period, subject_id=resolved_subject_id,
+        )
         if not candidates:
             raise HTTPException(
                 404,
-                f"未找到你在 {resolved_period} 的考核任务，请确认月份，或联系 HR 分配考核任务。",
+                f"未找到{subject_label}在 {resolved_period} 的考核任务，"
+                f"请确认月份，或联系 HR 分配考核任务。",
             )
         if len(candidates) > 1:
             # ⚠️ **不猜** —— 猜错就是答错人的绩效。
             #    返回候选让用户选。
             return FeishuQaOutcome(
                 text=(
-                    f"你在 {resolved_period} 有 {len(candidates)} 个考核任务，"
+                    f"{subject_label}在 {resolved_period} 有 {len(candidates)} 个考核任务，"
                     f"回复序号选择要查询的任务：\n"
                     + "\n".join(
                         f"{index}. {entry['label']}"
@@ -188,6 +224,7 @@ async def answer_ai(
                     )
                 ),
                 candidates=_candidate_entries(candidates),
+                subject_id=resolved_subject_id or "",
             )
         task = candidates[0]
 
@@ -198,6 +235,7 @@ async def answer_ai(
             question=question,
             task_id=task.id,
             period=resolved_period,
+            subject_id=resolved_subject_id,
             conversation=conversation,
         )
     except HTTPException:
@@ -212,7 +250,13 @@ async def answer_ai(
         except Exception:
             logger.exception("规则型回落也失败")
             text = "查询失败，请稍后重试，或到网页后台「绩效问答」查看明细。"
-        return FeishuQaOutcome(text=text, degraded=True)
+        return FeishuQaOutcome(
+            text=text,
+            degraded=True,
+            task_id=task.id,
+            period=resolved_period,
+            subject_id=resolved_subject_id or "",
+        )
 
     if result.degraded:
         # ⚠️ AI 不可用 → 规则型回落。
@@ -231,6 +275,8 @@ async def answer_ai(
             dropped_citations=result.dropped_citations,
             task_id=task.id,
             period=result.period or resolved_period,
+            subject_id=result.subject_id or (resolved_subject_id or ""),
+            subject_name=result.subject_name or "",
         )
 
     # ⚠️ P0-5：周期继承要在回答里**标注** —— 用户得知道查的是哪个月。
@@ -238,6 +284,11 @@ async def answer_ai(
     if result.period_inherited and result.period:
         inherited_month = f"{result.period[:4]}-{result.period[4:]}"
         text = f"（沿用上一轮周期：{inherited_month}）\n{text}"
+
+    # ⚠️ P0-8：查同事时，回答里要**标明问的是谁** ——
+    #    否则用户看到自己的名字出现在回答里，会以为系统在答自己。
+    if result.subject_name and result.subject_id and result.subject_id != employee.id:
+        text = f"（查询对象：{result.subject_name}）\n{text}"
 
     return FeishuQaOutcome(
         text=text,
@@ -248,6 +299,9 @@ async def answer_ai(
         # ★ P0-6：回给调用方，用于写回会话上下文。
         task_id=task.id,
         period=result.period or resolved_period,
+        # ★ P0-8：目标人 —— 用于写回会话上下文。
+        subject_id=result.subject_id or (resolved_subject_id or ""),
+        subject_name=result.subject_name or "",
     )
 
 

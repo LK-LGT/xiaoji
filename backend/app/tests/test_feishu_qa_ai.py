@@ -243,7 +243,7 @@ def test_single_task_is_answered_directly(db, org, monkeypatch):
 
     captured = {}
 
-    async def fake_ask(db, employee, *, question, task_id, period=None):
+    async def fake_ask(db, employee, *, question, task_id, period=None, **kwargs):
         captured["task_id"] = task_id
         captured["question"] = question
 
@@ -260,6 +260,12 @@ def test_single_task_is_answered_directly(db, org, monkeypatch):
             task_name = "唯一任务"
             scope = "self"
             data = {}
+            # ⚠️ P0-5：多轮上下文字段（继承标记）—— 假对象也必须带上，
+            #    否则 ``feishu_qa_ai`` 读 ``result.period_inherited`` 会炸。
+            period_inherited = False
+            subject_inherited = False
+            subject_id = ""
+            subject_name = ""
 
         return R()
 
@@ -326,7 +332,7 @@ def test_permission_error_is_not_downgraded(db, org, monkeypatch):
     db.add(AssessmentRecord(task_id="solo3", employee_id=org["a"].id))
     db.flush()
 
-    async def forbidden(db, employee, *, question, task_id, period=None):
+    async def forbidden(db, employee, *, question, task_id, period=None, **kwargs):
         raise HTTPException(403, "无权查询该任务指标")
 
     monkeypatch.setattr(
@@ -412,7 +418,7 @@ def test_select_task_button_continues_the_question(db, org, monkeypatch):
 
     asked: dict = {}
 
-    async def fake_ask(db, employee, *, question, task_id, period=None):
+    async def fake_ask(db, employee, *, question, task_id, period=None, **kwargs):
         asked["question"] = question
         asked["task_id"] = task_id
 
@@ -429,6 +435,11 @@ def test_select_task_button_continues_the_question(db, org, monkeypatch):
             task_name = "任务"
             scope = "self"
             data = {}
+            # ⚠️ P0-5：多轮上下文字段（继承标记）
+            period_inherited = False
+            subject_inherited = False
+            subject_id = ""
+            subject_name = ""
 
         return R()
 
