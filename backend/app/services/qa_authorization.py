@@ -43,7 +43,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ..domain.models import AssessmentRecord, AssessmentTask, Employee
-from . import access_control
+from . import access_control, qa_audit
 from .access_control import PermissionAction, build_access_context
 from .period import normalize_period
 
@@ -372,7 +372,39 @@ def resolve_scope(
             "问答越权尝试：提问者=%s 目标=%s 任务=%s 周期=%s 级别=%s",
             employee.id, subject.id, task.id, canonical, decision.audit_level,
         )
+        # ⚠️ P0-10：**落库**审计 —— logger.warning 进程重启就没了，
+        #    而「谁越权了」恰恰是安全看板最需要长期留痕的事。
+        #
+        # ⚠️ **reason 用粗粒度**，不写「跨部门」「上一级」——
+        #    审计表本身也是敏感资产：
+        #    留着细粒度原因，一旦审计表可被越权者读到，就是新的泄露面。
+        qa_audit.write_qa_denial_audit(
+            db,
+            actor_id=employee.id,
+            subject_id=subject.id,
+            # ⚠️ **不传 decision.reason** —— 它可能是细粒度的
+            #    （如「超出可见范围」里含组织范围语义）。
+            #    统一归为 out_of_scope。
+            reason="out_of_scope",
+            period=canonical,
+        )
         raise HTTPException(403, decision.user_message or "无权查询该数据")
+
+    # ⚠️ P0-10：**成功**查他人也要留痕 ——
+    #    安全看板不仅要能回答"谁越权了"，也要能回答
+    #    "谁查了谁"（正常范围内的互查同样是敏感信息）。
+    #
+    # ⚠️ **只记查他人** —— 查自己不需要留痕（噪音会淹没看板）。
+    if decision.subject_type != "self" and subject.id != employee.id:
+        qa_audit.write_qa_subject_audit(
+            db,
+            actor_id=employee.id,
+            subject_id=subject.id,
+            result=qa_audit.RESULT_ALLOWED,
+            reason=decision.subject_type,
+            period=canonical,
+            metadata={"scope": decision.subject_type, "task_id": task.id},
+        )
 
     tools: list[str] = []
     # ★ 工具白名单取决于**目标人**是谁：

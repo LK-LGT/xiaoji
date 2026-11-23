@@ -485,6 +485,55 @@ async def _read_verified_body(request: Request) -> dict[str, Any]:
 # ===========================================================================
 
 
+#: ⚠️ P0-9：写操作被拦截时的**统一文案**。
+#:
+#: ⚠️ **值必须与 ``qa_chat_service.QA_WRITE_DENIED_MESSAGE`` 一致**
+#:    这里的比对是**文案嗅探** —— 服务层抛的是 403 + 这句话，
+#:    路由层靠它区分「写操作被拦」与「范围不可见」两类 403。
+#:
+#: ⚠️ **为什么用文案嗅探而不是自定义异常**
+#:    抛自定义异常要多改一处（服务层 + 路由层 + 中间层），
+#:    而 403 的 detail 已经是**稳定契约**（网页端也在用）。
+#:    ⇒ 复用 detail 更简单，也更容易保持两端一致。
+QA_WRITE_DENIED_MESSAGE = "AI 问答不提供绩效修改功能。"
+
+
+def _qa_error_card(exc: HTTPException) -> dict[str, Any]:
+    """把问答链路的异常变成**合适的卡片**（P0-9）。
+
+    ⚠️ **为什么不能一律用「操作未完成」**
+    ------------------------------------
+    403（无权查看）与 500（系统故障）对用户的意义完全不同：
+    - 403 —— 是**范围问题**，换个问法也没用 ⇒ 必须说清"为什么"和"下一步"；
+    - 404 —— 是**参数问题**（月份/任务不对）⇒ 说清怎么改；
+    - 其他 —— 确实是故障 ⇒ 「操作未完成」就够。
+
+    ⚠️ **403 的文案不能泄露目标人信息**
+    ------------------------------
+    服务层抛出的 403 detail 已经是**统一口径**的文案
+    （``qa_authorization`` 保证不区分跨部门/跨级）⇒ 直接用。
+
+    ⚠️ **写操作拦截要单独一张卡**
+    ----------------------------
+    「AI 问答不提供绩效修改功能」和「不在可见范围内」是**两回事**：
+    前者是**能力边界**（去后台就能做），后者是**权限范围**（谁都做不了）。
+    ⇒ 前者给红色 + 后台引导，后者给橙色 + 组织范围说明。
+    """
+    detail = str(exc.detail or "")
+    if exc.status_code == 403:
+        # ⚠️ **写操作拦截** —— 靠文案嗅探区分。
+        if QA_WRITE_DENIED_MESSAGE in detail:
+            return feishu_card.build_qa_write_denied_card(message=detail)
+        return feishu_card.build_qa_denied_card(
+            message=detail or "该数据不在可见范围内。",
+            guidance=(
+                "绩效数据按组织范围隔离：同部门同级别同事可互查，"
+                "跨部门、跨级或上级不在此范围内。"
+            ),
+        )
+    return feishu_card.build_error_card(detail or "操作未完成。")
+
+
 async def _handle_message_event(
     db: Session,
     client: FeishuClient,
@@ -883,7 +932,7 @@ async def _handle_qa_select_task(
             period=period,
         )
     except HTTPException as exc:
-        card = feishu_card.build_error_card(str(exc.detail))
+        card = _qa_error_card(exc)
 
     feishu_bot.send_card(client, receive_id=open_id, card=card)
     return {"code": 0, "message": "已发送绩效查询结果"}
@@ -968,10 +1017,18 @@ async def _handle_qa_select_subject(
 
         subject = db.get(_Employee, subject_id)
         if subject is None:
+            # ⚠️ **「查无此人」与「无权查看」给同一张卡** ——
+            #    分开会让用户通过文案差异推断出「此人存在但我不能看」。
             feishu_bot.send_card(
                 client,
                 receive_id=open_id,
-                card=feishu_card.build_error_card("该查询对象不在可见范围内。"),
+                card=feishu_card.build_qa_denied_card(
+                    message="该查询对象不在可见范围内。",
+                    guidance=(
+                        "绩效数据按组织范围隔离：同部门同级别同事可互查，"
+                        "跨部门、跨级或上级不在此范围内。"
+                    ),
+                ),
             )
             return {"code": 0, "message": "查询对象不可见"}
 
@@ -983,10 +1040,26 @@ async def _handle_qa_select_subject(
                 "飞书问答选同事被拒：点击者=%s 目标=%s 级别=%s",
                 employee.id, subject.id, decision.audit_level,
             )
+            # ⚠️ P0-10：**越权尝试落库审计** ——
+            #    这条路径在问答链路**之前**就拦下了，
+            #    ⇒ ``qa_authorization.resolve_scope`` 里的审计**不会**触发。
+            #    ⇒ 必须在这里单独记一条，否则这条路径是审计盲区。
+            from ..services import qa_audit
+
+            qa_audit.write_qa_denial_audit(
+                db,
+                actor_id=employee.id,
+                subject_id=subject.id,
+                reason="out_of_scope",
+                period=period,
+            )
             feishu_bot.send_card(
                 client,
                 receive_id=open_id,
-                card=feishu_card.build_error_card("该查询对象不在可见范围内。"),
+                card=feishu_card.build_qa_denied_card(
+                    message=decision.user_message or "该查询对象不在可见范围内。",
+                    guidance=decision.guidance,
+                ),
             )
             return {"code": 0, "message": "查询对象不可见"}
 
@@ -1028,7 +1101,7 @@ async def _handle_qa_select_subject(
                 period=period,
             )
     except HTTPException as exc:
-        card = feishu_card.build_error_card(str(exc.detail))
+        card = _qa_error_card(exc)
 
     feishu_bot.send_card(client, receive_id=open_id, card=card)
     return {"code": 0, "message": "已发送绩效查询结果"}

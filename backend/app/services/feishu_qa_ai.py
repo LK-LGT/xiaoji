@@ -178,6 +178,13 @@ async def answer_ai(
     if employee.employment_status != "active" or employee.account_status != "enabled":
         raise HTTPException(403, "账号当前不可查询")
 
+    # ⚠️ P0-9：写操作意图拦截**不在这里** ——
+    #    它在共享内核 ``qa_chat_service.ask_question_async`` 里，
+    #    网页端与飞书端调的是同一个函数 ⇒ 两端行为必然一致。
+    #    ⚠️ **不要**在这里再加一道 ——
+    #    两处拦截会让「拦截点在哪」变得不确定，
+    #    且文案可能漂移（飞书一份、网页一份）。
+
     # ⚠️ P0-5：周期合并 —— 显式 > 上下文继承。
     # ⚠️ 注意这里**只**用上下文里的周期；上下文里的**主体**不在这里用 ——
     #    主体需要候选集收窄（P0-8），在此之前继承主体有越权风险。

@@ -1231,6 +1231,22 @@ class AiToolCall(Base):
     step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     employee_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: ★ P0-10：本次查询的**目标人**（"谁查了谁"）。
+    #:
+    #: ⚠️ **为什么必须是独立字段**
+    #:    「谁查了谁」是安全看板的**核心维度** ——
+    #:    跨部门越权尝试、异常查询频次都要靠它聚合。
+    #:    ⇒ 如果只塞进 ``args``，会被 ``args_hash`` 哈希掉，无法查询；
+    #:    如果塞进 ``args_keys``，那只是参数**名**，不含值。
+    #:
+    #: ⚠️ **不存姓名**
+    #:    只存员工 id —— 姓名是可变的（改名、跨部门），
+    #:    id 才是稳定的主键；且避免在审计表里复制 PII。
+    #:
+    #: ⚠️ **查自己时为空**
+    #:    ``None`` = 目标即提问者本人（默认值，绝大多数调用）。
+    #:    ⇒ 看板里 ``subject_id IS NULL`` 就是"查自己"。
+    subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     args_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     args_keys: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     ok: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

@@ -37,11 +37,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -50,6 +52,17 @@ from . import agent_tool_service, peer_score_service, privacy, qa_authorization
 from .agent_tool_token import issue_agent_tool_token
 from .conversation import ConversationState, resolve_slots
 from .review_service import AgentClient
+
+logger = logging.getLogger(__name__)
+
+#: ⚠️ P0-9：写操作被拦截时的**统一文案**。
+#:
+#: ⚠️ 为什么放在**共享内核**里
+#:    网页端与飞书端调的是**同一个函数** ——
+#:    拦截点与文案都在这里，才能保证**两端一致**。
+#:    否则用户在飞书看到"请去后台"、在网页看到"未知错误"，
+#:    会以为系统坏了而反复重试。
+QA_WRITE_DENIED_MESSAGE = "AI 问答不提供绩效修改功能。"
 
 
 class AgentQAResponse(BaseModel):
@@ -137,6 +150,25 @@ async def ask_question_async(
             所以直接抛 —— 飞书侧会把它转成错误卡片。
     """
     started = time.perf_counter()
+
+    # ── P0-9：写操作意图拦截（**共享内核**）──────────────────
+    # ⚠️ **为什么放在这里而不是各入口**
+    #    网页端（``routes/qa.py``）与飞书端（``feishu_qa_ai``）都调**这个函数**
+    #    ⇒ 放这里才能保证**两端行为一致**。
+    #    否则用户在飞书被拦、在网页不被拦（或者反过来）⇒ 用户会以为系统坏了。
+    #
+    # ⚠️ **这是快速路径，不是安全边界**
+    #    真正的边界是「工具层不提供写工具」——
+    #    即使用户说「帮我把分数往上抬一点」绕过了关键词，
+    #    模型也调不到任何写工具。
+    #
+    # ⚠️ **为什么要在这一层拦**
+    #    否则用户问「帮我把分数改成95分」会得到一个**答非所问**的读数回答，
+    #    他会以为系统不支持改分 → 换个说法再试 → 白费好几轮。
+    write_hit = qa_authorization.detect_write_action(question)
+    if write_hit is not None:
+        logger.info("问答拦截写操作意图：命中=%s", write_hit)
+        raise HTTPException(403, QA_WRITE_DENIED_MESSAGE)
 
     # ── P0-5：槽位合并（显式 > 文本解析 > 继承）────────────
     # ⚠️ **必须在 resolve_scope 之前** ——

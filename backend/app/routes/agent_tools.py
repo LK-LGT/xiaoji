@@ -76,6 +76,16 @@ def write_tool_audit(
             db.add(AiToolCall(
                 trace_id=trace_id or ctx.trace_id, agent=agent, tool=tool,
                 employee_id=ctx.employee_id, task_id=ctx.task_id,
+                # ⚠️ P0-10：**目标人入审计**（"谁查了谁"）。
+                #
+                # ⚠️ **来源是签名令牌里的 ``subj``，不是请求体**
+                #    —— 工具层**只认令牌**的目标人（后端硬权限的最后一环）。
+                #    ⇒ 审计记录的目标人与**实际执行查询的目标人**必然一致。
+                #
+                # ⚠️ **查自己时为空**
+                #    签发令牌时「目标即本人」不带 ``subj`` ⇒ 这里也是 NULL。
+                #    ⇒ 看板里 ``subject_id IS NULL`` 就是"查自己"。
+                subject_id=ctx.payload.subj,
                 args_hash=hashlib.sha256(json.dumps(
                     args, ensure_ascii=False, sort_keys=True, separators=(",", ":")
                 ).encode()).hexdigest(),
