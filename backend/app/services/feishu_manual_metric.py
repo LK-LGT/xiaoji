@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -36,7 +36,6 @@ from .pan_manual_metric_service import (
     METRIC_COMPLETION_RATE,
     METRIC_RETENTION_RATE,
     SOURCE_FEISHU,
-    PanManualMetricError,
     PanManualMetricService,
 )
 
@@ -50,6 +49,13 @@ RESOURCE_FILE = "file"
 #: 员工可能写「35%」「0.35」「35」「35.5%」
 #: ⇒ 统一归一到 0~1。
 _RATE_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*%?\s*$")
+
+#: ★ **条数解析**（2026-11-23）—— 只认**整数**，可选带「条」字。
+#:
+#: ⚠️ **绝不能复用 ``_RATE_RE``** ——
+#: ``parse_rate("8")`` → 0.08（裸数字按百分数理解）⇒
+#: 「我剪了 8 条」会变成 0.08 条 ⇒ **数据静默错掉**。
+_COUNT_RE = re.compile(r"^\s*([0-9]+)\s*条?\s*$")
 
 #: 指标别名 → 指标码
 METRIC_ALIASES: dict[str, str] = {
@@ -93,6 +99,29 @@ def parse_rate(text: str) -> float | None:
     if raw > 1.0:
         return round(raw / 100.0, 6)
     return round(raw, 6)
+
+
+def parse_count(text: str) -> float | None:
+    """从文本里解析出一个**条数**（非负整数）。
+
+    ⚠️ **为什么不能复用 ``parse_rate``**（2026-11-23）
+    ------------------------------------------------------
+    ``parse_rate("8")`` 返回 **0.08**（裸数字按百分数理解）⇒
+    「我剪了 8 条」会变成「0.08 条」⇒ **数据静默错掉**。
+
+    ⇒ 条数有**自己的解析口径**：只认整数，不认百分号。
+
+    支持：
+        ``8``    → 8.0
+        ``8条``  → 8.0
+        `` 12 `` → 12.0
+
+    ⚠️ **认不出返回 ``None``** —— 绝不猜。
+    """
+    match = _COUNT_RE.match(text or "")
+    if not match:
+        return None
+    return float(int(match.group(1)))
 
 
 def detect_metric_code(text: str) -> str:

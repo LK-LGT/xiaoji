@@ -161,7 +161,7 @@ def build_qa_ai_card(
             elements.append(_markdown(body))
 
     if not blocks:
-        elements.append(_text("（无内容）"))
+        elements.append(_div("（无内容）"))
 
     # ── 来源徽章 ──────────────────────────────────────────────
     cleaned = _clean_sources(sources)
@@ -708,7 +708,7 @@ def build_manual_metric_saved_card(
     return build_card(
         title="数据已记录",
         elements=[
-            _text(
+            _div(
                 f"{metric_date}  {metric_name}：{percent}\n\n"
                 "已记录。若数据有误，可再次发送同样的内容覆盖。"
             ),
@@ -746,7 +746,7 @@ def build_evidence_saved_card(
         )
     return build_card(
         title="截图已收到",
-        elements=[_text(body)],
+        elements=[_div(body)],
         header_template="blue",
     )
 
@@ -885,17 +885,407 @@ def build_qa_subject_picker_card(
     return build_card(title="选择查询对象", elements=elements, header_template="orange")
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# ★ 每日填报提醒（2026-11-23）
+# ═════════════════════════════════════════════════════════════════════════
+
+#: 每日填报的表单动作名 —— 卡片回调按它路由。
+ACTION_SUBMIT_DAILY_METRIC = "submit_daily_metric"
+#: ★ **主管提交效果指标**（2026-11-23 角色倒转）
+#:
+#: ⚠️ **为什么要有独立的动作名**
+#: 剪辑提交的是「数量」，主管提交的是「比率」⇒
+#: ⇒ 两者必须**分开处理** —— 归属校验规则不同
+#: （剪辑只能填自己；主管可以填**管理范围内**的剪辑）。
+#: ⇒ 共用一个动作名会把这两种语义搅在一起。
+ACTION_SUBMIT_LEADER_METRIC = "submit_leader_metric"
+
+
+def _percent_text(value: float) -> str:
+    """把 0~1 的比率格式化成百分数文本。"""
+    if 0 <= value <= 1:
+        return f"{value * 100:.1f}%"
+    return f"{value}"
+
+
+def _daily_table_element(
+    headers: list[str], rows: list[list[str]]
+) -> dict[str, Any]:
+    """构造 ``table`` 元素（**纯展示**）。
+
+    ⚠️ **结构不能错** —— 飞书对非法表格**不报错**，
+    只显示成空白卡片（极难排查）。这套结构已真机验证过。
+
+    ⚠️ **列数上限 10、行数上限** —— 官方 ``page_size`` 范围 [1,10]。
+    """
+    columns = [
+        {
+            "name": f"col_{index}",
+            "display_name": header,
+            "data_type": "text",
+            "width": "auto",
+            "horizontal_align": "left",
+            "vertical_align": "center",
+        }
+        for index, header in enumerate(headers)
+    ]
+    return {
+        "tag": "table",
+        "page_size": min(max(len(rows), 1), 10),
+        "row_height": "low",
+        "header_style": {
+            "text_align": "left",
+            "text_size": "normal",
+            "background_style": "grey",
+            "text_color": "grey",
+            "bold": True,
+            "lines": 1,
+        },
+        "columns": columns,
+        # ⚠️ **rows 是「对象数组」** —— 键是 columns[].name
+        "rows": [
+            {f"col_{index}": cell for index, cell in enumerate(row)}
+            for row in rows
+        ],
+    }
+
+
+def build_daily_metric_card(
+    *,
+    day: str,
+    day_text: str,
+    status_rows: list[list[str]],
+    pending: list[tuple[str, str]],
+    employee_id: str,
+    session_id: str = "",
+    generation: str = "",
+    sheet_url: str = "",
+    remark: str = "",
+    screenshot_hint: bool = False,
+    title_suffix: str = "",
+) -> dict[str, Any]:
+    """构造给**填报人**的「每日填报」卡片。
+
+    ⚠️ **形态 = 表格（看状态）+ 表单（直接填）**
+    ------------------------------------------
+    这是 2026-11-23 **真机实测**确认的可行形态：
+    ``table`` 与 ``form`` 作为**兄弟元素并列**是飞书允许的。
+
+    ⚠️ **全「—」的表格不显示**（2026-11-23 实机结论后调整）
+    ------------------------------------------------------
+    一天都没填时，表格三行全是「— / 待填」，
+    跟下面表单的三个输入框**说的是同一句话** ⇒ 重复且占高。
+    ⇒ 这种情况下改成**一行文字**（"今天还没填：普通视频、OOTD、智能体"）。
+    ⇒ 填过之后表格才有信息量，照常显示。
+
+    ⚠️ **表格里放不了输入框**（2026-11-23 真机实测）
+    ------------------------------------------------
+    「表格即表单」试过，行不通：
+    - 表格单元格里放 ``input`` → 接口接受，但**渲染成**
+      ``map[element_id:... input_type:text…]``（Go 模板把字典当字符串打印）
+    - ``form`` 里放 ``table`` → ``type of element is not supported tag: table``
+    - 表格列 ``data_type: "input"`` → ``column idx:2``
+
+    ⇒ 输入框**只能**在 ``form`` 里 ⇒ 「表格即表单」在飞书卡片上做不到。
+
+    ⚠️ **待填指标为空时不给表单**
+    ⇒ 都填完了还发一个空表单 = 骚扰。
+    ⇒ 这种情况只给表格 + 一句「今天已填完」。
+
+    ⚠️ **2026-11-23 角色倒转 —— 这张卡给「剪辑本人」**
+    -------------------------------------------------
+    剪辑填**数量**：普通视频 / OOTD / 智能体 各多少条，
+    外加**备注框（选填）**。完播率 / 视频留存率**由主管填**。
+
+    ⚠️ **截图不在表单里 —— 飞书不支持**（2026-11-23 真机实测）
+    ------------------------------------------------------
+    ``input_type="file"`` → ``invalid input type``；
+    ``file_input`` / ``file_upload`` tag → ``not support tag``。
+    ⇒ 截图只能**另外发到聊天里** ⇒ 卡片里给出明确指引。
+    """
+    elements: list[dict[str, Any]] = [
+        _markdown(f"**{day_text} 剪辑数据填报**\n请填下面的条数。"),
+    ]
+
+    # ⚠️⚠️ **全「—」的表格不显示**（2026-11-23 实机结论后调整）
+    # ------------------------------------------------------
+    # ⚠️ **为什么** —— 一天都没填时，表格三行全是「— / 待填」，
+    #    跟下面表单里的三个输入框**说的是同一句话**
+    #    ⇒ 等于同一件事说两遍，卡片白白高了一截。
+    #
+    # ⚠️ **只隐藏「一个都没填」的情况** —— 填过之后表格才有信息量
+    #    （「普通视频 8 条 已填」是剪辑要看的状态）。
+    #
+    # ⚠️ **不是「删掉表格列」** —— 已填的情况照常显示完整表格。
+    has_any_filled = any(
+        len(row) > 1 and row[1] not in ("", "—", "-", "待填")
+        for row in status_rows
+    )
+    if status_rows and has_any_filled:
+        elements.append(
+            _daily_table_element(["指标", "当前值", "状态"], status_rows)
+        )
+    elif status_rows:
+        # ⚠️ **没填过就用一行文字说清楚要填什么** —— 比一张空表紧凑
+        pending_labels = "、".join(label for _, label in pending) if pending else ""
+        if pending_labels:
+            elements.append(_markdown(f"今天还没填：{pending_labels}"))
+
+    if not pending:
+        elements.append(_markdown("✅ **今天已填完**，不用再填了。"))
+        return build_card(
+            title="每日填报 · 已完成",
+            elements=elements,
+            header_template="green",
+        )
+
+    # ⚠️ **表单里只放「还没填」的指标** —— 已填的不该再问一遍。
+    form_elements: list[dict[str, Any]] = []
+    for code, label in pending:
+        form_elements.append(
+            {
+                "tag": "input",
+                "element_id": f"metric_{code}",
+                "name": code,
+                # ⚠️ **数字也用 ``text``** —— 飞书只有 text/multiline_text/password
+                "input_type": "text",
+                "label": _text(f"{label} · 必填"),
+                "label_position": "top",
+                "placeholder": _text(_metric_placeholder(code)),
+                "default_value": "",
+                "required": True,
+                "max_length": 32,
+            }
+        )
+
+    # ⚠️ **备注框**（2026-11-23）—— **选填**。
+    #    ⚠️ 用 ``multiline_text`` —— 飞书只有 text/multiline_text/password 三种。
+    #    ⚠️ **不填也能提交** —— 备注是补充说明，不是必填项。
+    form_elements.append(
+        {
+            "tag": "input",
+            "element_id": "remark",
+            "name": "remark",
+            "input_type": "multiline_text",
+            "label": _text("备注（选填）"),
+            "label_position": "top",
+            "placeholder": _text("有什么要说明的？可不填"),
+            "default_value": remark,
+            "required": False,
+            "max_length": 500,
+        }
+    )
+
+    form_elements.append(
+        _button(
+            "提交今日数据",
+            ACTION_SUBMIT_DAILY_METRIC,
+            {
+                "employee_id": employee_id,
+                "metric_date": day,
+                "session_id": session_id,
+                "generation": generation,
+            },
+            name="daily_metric_submit_btn",
+            form_action_type="submit",
+        )
+    )
+    form_elements[-1]["width"] = "fill"
+
+    elements.append({"tag": "form", "name": "daily_metric_form", "elements": form_elements})
+
+    if screenshot_hint:
+        # ⚠️ **截图必须走「另外发到聊天」这条通路** ——
+        #    飞书卡片里放不了文件上传控件（2026-11-23 真机实测）。
+        elements.append(
+            _markdown(
+                "📎 **截图 / 图片请另外发到本对话** —— "
+                "卡片里不支持上传文件，发过来会自动存成当天的证据。"
+            )
+        )
+
+    if sheet_url:
+        elements.append(
+            _markdown(f"也可以在[飞书表格]({sheet_url})里填 —— 系统会自动读取。")
+        )
+
+    return build_card(
+        title=f"每日填报 · {day}{title_suffix}",
+        elements=elements,
+        header_template="orange",
+    )
+
+
+def _metric_placeholder(code: str) -> str:
+    """指标码 → 输入框提示。
+
+    ⚠️ **数量类与比率类提示不同** —— 数量填「8」，比率填「35%」。
+    """
+    from .daily_metric_specs import ALL_METRICS
+
+    spec = ALL_METRICS.get(code)
+    if spec is not None:
+        return spec.placeholder
+    return "例如：35%"
+
+
+def build_daily_metric_saved_card(
+    *,
+    day_text: str,
+    saved: list[tuple[str, float]],
+    remark: str = "",
+    kind: str = "count",
+) -> dict[str, Any]:
+    """构造「今日数据已提交」回执卡片。
+
+    ⚠️ **数量与比率的显示不同** —— 数量是「8 条」，比率是「35.0%」。
+    """
+    if kind == "count":
+        lines = "\n".join(f"· {label}：{value:.0f} 条" for label, value in saved)
+    else:
+        lines = "\n".join(f"· {label}：{_percent_text(value)}" for label, value in saved)
+    remark_line = f"\n备注：{remark}" if remark else ""
+    return build_card(
+        title="今日数据已提交",
+        elements=[_div(f"{day_text}\n{lines}{remark_line}\n\n已记录，主管可随时核对。")],
+        header_template="green",
+    )
+
+
+def build_daily_metric_pending_card(
+    *,
+    day_text: str,
+    pending: list[tuple[str, str]],
+) -> dict[str, Any]:
+    """构造「还差哪些指标」的提示卡（提交不完整时用）。"""
+    lines = "\n".join(f"· {label}" for _, label in pending)
+    return build_card(
+        title="还没填完",
+        elements=[_div(f"{day_text} 还差这些：\n{lines}")],
+        header_template="orange",
+    )
+
+
+def build_leader_daily_status_card(
+    *,
+    day: str,
+    day_text: str,
+    rows: list[list[str]],
+    all_done: bool,
+    pending: list[tuple[str, str]] | None = None,
+    targets: list[tuple[str, str]] | None = None,
+    employee_id: str = "",
+    session_id: str = "",
+    generation: str = "",
+) -> dict[str, Any]:
+    """构造给**主管**的卡片。
+
+    ⚠️⚠️ **2026-11-23 角色倒转 —— 主管卡现在「有表单」**
+    -------------------------------------------------------
+    之前主管卡是**纯只读**的（只有表格），因为当时是剪辑自己填比率。
+
+    **现在业务确认**：剪辑只填**数量**（普通视频 / OOTD / 智能体），
+    **完播率 / 视频留存率由主管填** ⇒
+    ⇒ 主管卡必须有表单，否则比率这一栏**永远没人填**。
+
+    ⚠️ **但主管填的是「比率」，不是替下属填数量」
+    ---------------------------------------------------
+    表格里展示的是**每个剪辑当天填了多少条**（只读）；
+    表单里主管填的是**效果指标**（完播率 / 留存率）——
+    ⚠️ **一条比率对所有剪辑生效吗？** 否 ⇒ 主管要**先选是哪位剪辑**。
+
+    ⇒ 因此表单第一个控件是**「填给谁」的选择**（下拉）。
+    ⚠️ 飞书表单里**没有下拉控件**（只有 text / multiline_text / password）⇒
+    ⇒ 用一个文本框填**工号/姓名**，后端解析并校验。
+
+    ⚠️ **没有 targets 时不给表单** —— 不知道填给谁就不该填。
+    """
+    elements: list[dict[str, Any]] = [
+        _markdown(
+            f"**{day_text} 剪辑数据填报情况**\n"
+            "剪辑填的是**条数**；下面的**完播率 / 视频留存率由你来填**。"
+        ),
+    ]
+    if rows:
+        elements.append(_daily_table_element(["剪辑", "已填", "待填"], rows))
+
+    if all_done and not pending:
+        elements.append(_markdown("✅ **条数全部已填**。"))
+        header = "green"
+    else:
+        elements.append(_markdown("⚠️ 尚未填完的，日报里会标出来。"))
+        header = "orange"
+
+    # ⚠️ **主管的表单** —— 填效果指标（比率）。
+    if pending and targets:
+        form_elements: list[dict[str, Any]] = [
+            {
+                "tag": "input",
+                "element_id": "target_employee",
+                "name": "target_employee",
+                "input_type": "text",
+                "label": _text("填给哪位剪辑 · 必填"),
+                "label_position": "top",
+                "placeholder": _text("填姓名或工号，例如：李婵雨"),
+                "default_value": "",
+                "required": True,
+                "max_length": 64,
+            },
+        ]
+        for code, label in pending:
+            form_elements.append(
+                {
+                    "tag": "input",
+                    "element_id": f"metric_{code}",
+                    "name": code,
+                    "input_type": "text",
+                    "label": _text(f"{label} · 必填"),
+                    "label_position": "top",
+                    "placeholder": _text(_metric_placeholder(code)),
+                    "default_value": "",
+                    "required": True,
+                    "max_length": 32,
+                }
+            )
+        form_elements.append(
+            _button(
+                "提交效果指标",
+                ACTION_SUBMIT_LEADER_METRIC,
+                {
+                    "employee_id": employee_id,
+                    "metric_date": day,
+                    "session_id": session_id,
+                    "generation": generation,
+                },
+                name="leader_metric_submit_btn",
+                form_action_type="submit",
+            )
+        )
+        form_elements[-1]["width"] = "fill"
+        elements.append(
+            {"tag": "form", "name": "leader_metric_form", "elements": form_elements}
+        )
+
+    return build_card(title=f"剪辑填报汇总 · {day}", elements=elements, header_template=header)
+
+
 __all__ = [
     "ACTION_CANCEL",
     "ACTION_CONFIRM",
     "ACTION_FILL_MONTH_PLAN",
     "ACTION_SELECT_SUBJECT",
     "ACTION_SELECT_TASK",
+    "ACTION_SUBMIT_DAILY_METRIC",
+    "ACTION_SUBMIT_LEADER_METRIC",
     "ACTION_SUBMIT_DRAFT",
     "CARD_SCHEMA_VERSION",
     "build_card",
+    "build_daily_metric_card",
+    "build_daily_metric_pending_card",
+    "build_daily_metric_saved_card",
     "build_draft_saved_card",
     "build_error_card",
+    "build_leader_daily_status_card",
     "build_month_plan_form_card",
     "build_prompt_card",
     "build_qa_ai_card",

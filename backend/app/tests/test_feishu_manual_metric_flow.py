@@ -118,8 +118,15 @@ def http(db, monkeypatch):
 
 @pytest.fixture()
 def org(db):
-    """员工甲（已绑定飞书身份）与员工乙（未绑定）。"""
+    """员工甲（已绑定飞书身份）与员工乙（未绑定）。
+
+    ⚠️ **「业务部」要开通「剪辑工作量」板块**（2026-11-21）
+    飞书端填报现在**也受部门板块守卫**约束
+    ⇒ 测试用的部门不开通板块 ⇒ 填报会被拒（测试会挂）。
+    ⇒ 这里显式开通，与真实配置一致。
+    """
     from backend.app.domain.models import Department, Employee, FeishuIdentity
+    from backend.app.domain.pan_workload_models import DepartmentModule
 
     d1 = Department(id="D_1", name="业务部", active=True)
     db.add(d1)
@@ -132,6 +139,10 @@ def org(db):
     db.add(FeishuIdentity(
         id="FI_A", employee_id="E_A",
         identity_type="open_id", identity_value="ou_emp_a", active=True,
+    ))
+    db.add(DepartmentModule(
+        id="dm_test_1", department_id="D_1",
+        module_code="pan_workload", active=True,
     ))
     db.commit()
     return emp_a

@@ -175,6 +175,28 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    # ★ 飞书表格填报（2026-11-21）——「剪辑以表格形式填写」
+    # ⚠️ **挂在 ``/v1/baidu/workload`` 前缀下** ⇒ 自动继承该板块的守卫
+    # （部门没开通「剪辑工作量」⇒ 这个 API 也 403）
+    from .routes import pan_workload_feishu_table as pan_feishu_table_routes
+    app.include_router(pan_feishu_table_routes.router)
+    print("[APP] Pan workload feishu table router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register pan feishu table router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
+    # 部门功能板块隔离（2026-11-21）—— 管理「哪个部门有哪些板块」
+    from .routes import department_modules as department_modules_routes
+    app.include_router(department_modules_routes.router)
+    print("[APP] Department modules router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register department modules router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     from .routes import import_data as import_data_routes
     app.include_router(import_data_routes.router)
     print("[APP] Import data router registered successfully")
@@ -513,6 +535,24 @@ def _startup() -> None:
         start_pan_workload_scheduler()
     except Exception:
         logging.getLogger(__name__).exception("启动网盘剪辑工作量统计失败")
+    try:
+        # ★ 飞书表格填报的定时同步（2026-11-21）
+        # ⚠️ **默认启动** —— 只要绑定了表格就该自动同步；
+        #    没绑定时内部会静默跳过（预期状态，不是错误）。
+        from .services.feishu_metric_scheduler import start as start_feishu_metric_scheduler
+        start_feishu_metric_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("启动飞书表格同步失败")
+    try:
+        # ★ 每日填报提醒推送（2026-11-23）
+        # ⚠️ **默认关闭**（配置项 ``feishu_daily_push_enabled``）——
+        #    主动推送会打扰用户，必须业务显式开启。
+        from .services.feishu_daily_push_scheduler import (
+            start as start_feishu_daily_push_scheduler,
+        )
+        start_feishu_daily_push_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("启动每日填报推送失败")
 
 
 @app.on_event("shutdown")
@@ -561,6 +601,20 @@ def _shutdown() -> None:
         stop_pan_workload_scheduler()
     except Exception:
         logging.getLogger(__name__).exception("停止网盘剪辑工作量统计失败")
+    try:
+        # ★ 飞书表格填报的定时同步（2026-11-21）
+        from .services.feishu_metric_scheduler import stop as stop_feishu_metric_scheduler
+        stop_feishu_metric_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("停止飞书表格同步失败")
+    try:
+        # ★ 每日填报提醒推送（2026-11-23）
+        from .services.feishu_daily_push_scheduler import (
+            stop as stop_feishu_daily_push_scheduler,
+        )
+        stop_feishu_daily_push_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("停止每日填报推送失败")
 
 
 # ---------------------------------------------------------------------------

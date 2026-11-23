@@ -96,6 +96,8 @@ _TEST_SCHEDULER_OFF = {
     "PERIOD_SCHEDULER_ENABLED": "false",
     # IM 通知投递
     "NOTIFICATION_ENABLED": "false",
+    # ★ 每日填报提醒推送（后台线程 + 首轮真实取数）
+    "FEISHU_DAILY_PUSH_ENABLED": "false",
 }
 for _key, _value in _TEST_SCHEDULER_OFF.items():
     # ⚠️ 用直接赋值，不用 setdefault ——

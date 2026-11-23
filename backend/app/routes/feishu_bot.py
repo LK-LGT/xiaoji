@@ -56,15 +56,19 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.config import settings
 from ..core.db import get_db
 from ..domain.bot_models import BotSession
+from ..domain.models import Employee
 from ..services import feishu_bot, feishu_card, feishu_event, feishu_intent
+from ..services.access_control import PermissionAction
 from ..services.feishu_client import FeishuClient
 from ..services.feishu_identity_service import FeishuIdentityService
 
@@ -646,6 +650,27 @@ async def _handle_message_event(
     # ⚠️ **放在 QA 之前** —— 填报是**写操作**，优先级高于只读问答。
     if intent == feishu_bot.INTENT_MANUAL_METRIC:
         from ..services import feishu_manual_metric as fmm
+        from ..services.department_modules import (
+            PAN_WORKLOAD_MODULE,
+            has_module,
+            module_guard_message,
+        )
+
+        # ⚠️⚠️ **板块隔离（2026-11-21 补）**
+        # 之前**只在前端菜单**做了部门隔离，后端 HTTP 端点有守卫
+        # （``pan_workload`` router 级依赖），但**飞书端完全没有**。
+        # ⇒ 后果：仓储部 / 客服部的人在飞书发一句「完播率 35%」，
+        #   照样能写进 ``pan_manual_metric`` ⇒ **隔离形同虚设**。
+        # ⇒ 「看不见入口但照样能写数据」比「完全没做隔离」更危险。
+        if not has_module(db, employee, PAN_WORKLOAD_MODULE):
+            feishu_bot.send_card(
+                client,
+                receive_id=open_id,
+                card=feishu_card.build_error_card(
+                    module_guard_message(PAN_WORKLOAD_MODULE)
+                ),
+            )
+            return {"code": 0, "message": "当前部门未开通该板块"}
 
         try:
             outcome = fmm.submit_from_text(
@@ -691,7 +716,26 @@ async def _handle_message_event(
     #    ⇒ 存下截图，提示员工补文字说明数值。
     if message.get("image_keys") or message.get("file_keys"):
         from ..services import feishu_manual_metric as fmm
+        from ..services.department_modules import (
+            PAN_WORKLOAD_MODULE,
+            has_module,
+            module_guard_message,
+        )
         from ..services.feishu_docs import FeishuDocsClient
+
+        # ⚠️ **截图存档同样要过板块守卫** ——
+        # 它会写 ``pan_manual_metric_artifact``（挂在人工指标上）
+        # ⇒ 同样是「剪辑工作量」板块的数据。
+        # ⇒ 不能只在文字填报那一处拦，否则截图这条路是漏的。
+        if not has_module(db, employee, PAN_WORKLOAD_MODULE):
+            feishu_bot.send_card(
+                client,
+                receive_id=open_id,
+                card=feishu_card.build_error_card(
+                    module_guard_message(PAN_WORKLOAD_MODULE)
+                ),
+            )
+            return {"code": 0, "message": "当前部门未开通该板块"}
 
         image_key = (message.get("image_keys") or [""])[0]
         file_key = (message.get("file_keys") or [""])[0]
@@ -1107,6 +1151,637 @@ async def _handle_qa_select_subject(
     return {"code": 0, "message": "已发送绩效查询结果"}
 
 
+async def _handle_qa_select_subject(
+    db: Session,
+    client: FeishuClient,
+    action: dict[str, Any],
+) -> dict[str, Any]:
+    """处理「选择要查询的同事」按钮（P0-8）。
+
+    ⚠️ **归属校验换成「目标人授权校验」**
+    ----------------------------------
+    卡片可以转发 —— 必须用**点击者自己的员工身份**去校验目标人：
+
+    ① 解析点击者 → 员工；
+    ② 用该员工去判定「他能不能查这个人」
+       （``qa_authorization.authorize_qa_subject`` 硬闸门）；
+    ③ 不通过 → 403 卡片（统一文案，不泄露目标人信息）。
+
+    ⇒ 卡片被转发给 B，B 点下去查到的也是 **B 有权查的人**，
+    不会泄露 A 能查但 B 不能查的同事绩效。
+
+    ⚠️ **question 从卡片载荷里带过来**
+    --------------------------------
+    用户先问了问题 → 系统发现多个候选 → 给选择卡 →
+    点某个按钮 → 用**当初那个问题**继续问。
+    所以按钮的 value 里必须带着 question。
+    """
+    from ..services import conversation as conversation_mod
+    from ..services import feishu_qa_ai
+
+    open_id = action["open_id"]
+    subject_id = str(action["value"].get("subject_id") or "").strip()
+    subject_name = str(action["value"].get("subject_name") or "").strip()
+    period = str(action["value"].get("period") or "").strip()
+    question = str(action["value"].get("question") or "").strip()
+
+    if not open_id:
+        logger.warning("飞书绩效问答选择同事回调缺少 open_id，已忽略")
+        return {"code": 0, "message": "回调参数不完整，已忽略"}
+
+    if not subject_id:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card("未指定查询对象，请重新提问。"),
+        )
+        return {"code": 0, "message": "未指定查询对象"}
+
+    employee = FeishuIdentityService(db).resolve_employee(
+        open_id=open_id,
+        user_id=action.get("user_id") or "",
+    )
+    if employee is None:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                "找不到你的账号。\n\n请先让 HR 在系统里完成飞书账号绑定。"
+            ),
+        )
+        return {"code": 0, "message": "未绑定员工"}
+
+    try:
+        # ⚠️ ★ P0-8：**先判定点击者能不能查这个人**，再进问答。
+        #
+        # ⚠️ **为什么要在这一层就拦**
+        # --------------------------
+        # 卡片可以转发 —— 员工甲的候选卡被转发给员工丁，
+        # 员工丁点「员工丙」按钮时，载荷里的 subject_id 依然是员工丙。
+        #
+        # 真正的硬闸门在 ``qa_authorization.authorize_qa_subject``（服务层），
+        # 它一定会拒绝越权 —— **但**那已经在问答链路里了。
+        # ⇒ 在这里**提前**拦一道，是**纵深防御**：
+        #   ① 越权请求**不进**问答链路（不生成任何 AI 调用）；
+        #   ② 错误文案统一，**不泄露**目标人存在与否；
+        #   ③ 万一下游判定被改坏，这里仍是最后一道闸。
+        from ..domain.models import Employee as _Employee
+        from ..services import qa_authorization
+
+        subject = db.get(_Employee, subject_id)
+        if subject is None:
+            feishu_bot.send_card(
+                client,
+                receive_id=open_id,
+                card=feishu_card.build_error_card("该查询对象不在可见范围内。"),
+            )
+            return {"code": 0, "message": "查询对象不可见"}
+
+        decision = qa_authorization.authorize_qa_subject(db, employee, subject)
+        if not decision.allowed:
+            # ⚠️ 文案**统一**为「不在可见范围内」——
+            #    不能说"你无权查他"（泄露存在）或"他不存在"（也泄露）。
+            logger.warning(
+                "飞书问答选同事被拒：点击者=%s 目标=%s 级别=%s",
+                employee.id, subject.id, decision.audit_level,
+            )
+            feishu_bot.send_card(
+                client,
+                receive_id=open_id,
+                card=feishu_card.build_error_card("该查询对象不在可见范围内。"),
+            )
+            return {"code": 0, "message": "查询对象不可见"}
+
+        # ⚠️ P0-8：这条路径也要带上下文 ——
+        #    用户选完同事后继续问「他的扣分原因呢」，上下文不能丢。
+        bot_session = feishu_bot.get_or_create_session(
+            db, open_id=open_id, app_id=settings.feishu_app_id,
+        )
+        state = conversation_mod.load_state(bot_session, asker_id=employee.id)
+        outcome = await feishu_qa_ai.answer_ai(
+            db,
+            employee,
+            question or "他的绩效是多少分？",
+            period,
+            subject_id=subject_id,
+            conversation=state,
+        )
+        conversation_mod.save_state(
+            bot_session, state, task_id=outcome.task_id,
+            period=outcome.period or period,
+            # ⚠️ 主体写回 —— 下一轮「他的扣分原因呢」能接着查同一个人。
+            subject_id=outcome.subject_id or subject_id,
+            subject_name=outcome.subject_name or subject_name,
+        )
+        if outcome.candidates:
+            # ⚠️ 目标人同月多个任务 → 仍然让用户选任务，绝不猜。
+            card = feishu_card.build_qa_task_picker_card(
+                candidates=outcome.candidates,
+                period=period,
+                question=question,
+            )
+        else:
+            card = feishu_card.build_qa_ai_card(
+                answer=outcome.text,
+                sources=outcome.sources,
+                citation_count=outcome.citation_count,
+                degraded=outcome.degraded,
+                dropped_citations=outcome.dropped_citations,
+                period=period,
+            )
+    except HTTPException as exc:
+        card = feishu_card.build_error_card(str(exc.detail))
+
+    feishu_bot.send_card(client, receive_id=open_id, card=card)
+    return {"code": 0, "message": "已发送绩效查询结果"}
+
+
+async def _handle_daily_metric_submit(
+    db: Session,
+    client: FeishuClient,
+    action: dict[str, Any],
+) -> dict[str, Any]:
+    """处理「每日填报表单」的提交（2026-11-23）。
+
+    ⚠️ **归属校验是本函数的核心**
+    --------------------------
+    这张卡是**系统主动推送**的，可以被转发。必须确认：
+
+    1. **点击者能解析出员工** —— 解析不出就是没绑账号；
+    2. **点击者 == 卡片上的目标人** —— 否则「B 替 A 填」；
+    3. **点击者的部门开通了「剪辑工作量」板块** —— 否则是外部人乱填；
+    4. **数值能解析** —— 解析不出**绝不猜**（猜错就是错误绩效数据）。
+
+    ⚠️ **部分填报也接受**
+    ------------------
+    员工可能只填了完播率、没填留存率 ⇒ 已填的照存，
+    没填的下次提醒再问。**不因为「不完整」而丢弃已填的数据**。
+    """
+    from ..services.department_modules import (
+        PAN_WORKLOAD_MODULE,
+        has_module,
+        module_guard_message,
+    )
+    from ..services.feishu_daily_metric_push import METRIC_LABELS
+    from ..services.feishu_manual_metric import parse_count, parse_rate
+    from ..services.pan_manual_metric_service import (
+        COUNT_METRIC_CODES,
+        SOURCE_FEISHU,
+        PanManualMetricError,
+        PanManualMetricService,
+    )
+
+    open_id = action["open_id"]
+    value = action["value"]
+    form_value = action["form_value"]
+
+    target_employee_id = str(value.get("employee_id") or "").strip()
+    metric_date = str(value.get("metric_date") or "").strip()
+
+    if not open_id:
+        return {"code": 0, "message": "回调参数不完整，已忽略"}
+
+    employee = FeishuIdentityService(db).resolve_employee(
+        open_id=open_id,
+        user_id=action.get("user_id") or "",
+    )
+    if employee is None:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                "找不到你的账号。\n\n请先让 HR 在系统里完成飞书账号绑定。"
+            ),
+        )
+        return {"code": 0, "message": "未绑定员工"}
+
+    # ⚠️ **归属校验** —— 卡片可以被转发，点的人必须就是被填的人。
+    #
+    # ⚠️ **为什么排在板块校验之前**
+    #   仓储部的人点了剪辑的卡，**真正的原因是「这张卡不是你的」**，
+    #   而不是「你的部门没开通板块」。
+    #   ⇒ 先报更精确的那个，用户才知道该怎么做（用自己账号填）。
+    if target_employee_id and target_employee_id != employee.id:
+        logger.warning(
+            "飞书每日填报回调归属不匹配：target=%s clicker=%s",
+            target_employee_id, employee.id,
+        )
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                "这张填报卡不能替别人提交。\n\n请在系统里用**自己的**账号填报。"
+            ),
+        )
+        return {"code": 0, "message": "归属不匹配，已忽略"}
+
+    # ⚠️ **板块隔离** —— 别的部门的人不能填剪辑的数据。
+    #
+    # ⚠️ **为什么排在归属校验之后**
+    #   归属对了但板块没开 ⇒ 是「你所在的部门没这个业务」，
+    #   与「卡不是你的」是两回事 ⇒ 提示语必须分开。
+    if not has_module(db, employee, PAN_WORKLOAD_MODULE):
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                module_guard_message(PAN_WORKLOAD_MODULE)
+            ),
+        )
+        return {"code": 0, "message": "当前部门未开通该板块"}
+
+    if not metric_date:
+        metric_date = date.today().isoformat()
+
+    # ⚠️⚠️ **该填哪些指标由岗位口径决定**（2026-11-23 角色倒转）
+    # ------------------------------------------------------
+    # 剪辑填**数量**：普通视频 / OOTD / 智能体。
+    # ⇒ **不能写死指标列表** —— 口径表配什么就填什么。
+    from ..services.pan_workload_policy import reporter_metric_codes
+
+    allowed_codes = reporter_metric_codes(db, employee)
+    if not allowed_codes:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                "你的岗位在这块业务里没有填报项。\n\n"
+                "如果这不对，请让 HR 检查岗位口径配置。"
+            ),
+        )
+        return {"code": 0, "message": "该岗位无填报项"}
+
+    # ⚠️ **逐个指标解析** —— 认不出就跳过该指标，不猜。
+    svc = PanManualMetricService(db)
+    #: ⚠️ **带上指标码** —— 回执要按类型格式化（条数 vs 比率）
+    saved: list[tuple[str, float, str]] = []
+    errors: list[str] = []
+
+    # ⚠️ **备注**（2026-11-23）—— **选填**，存在**第一条**指标上。
+    #
+    # ⚠️ **为什么不单独建表**
+    # 备注是「这次填报的补充说明」，与指标同生共死 ⇒
+    # 挂在指标行的 ``remark`` 字段上（该字段已存在）。
+    # ⇒ 只挂在**第一条**上，避免重复存 N 遍。
+    #
+    # ⚠️ **先 strip 再判空** —— 只打空格 = 没填 ⇒ 留着占位文案没意义。
+    remark_text = str(form_value.get("remark") or "").strip()[:255]
+
+    for code in allowed_codes:
+        label = METRIC_LABELS.get(code, code)
+        raw = form_value.get(code)
+        if raw is None or str(raw).strip() == "":
+            continue
+        if code in COUNT_METRIC_CODES:
+            parsed = parse_count(str(raw))
+            if parsed is None:
+                errors.append(f"{label}：没认出条数（填整数，例如 8）")
+                continue
+        else:
+            parsed = parse_rate(str(raw))
+            if parsed is None:
+                errors.append(f"{label}：没认出数值（写成 35% 或 0.35）")
+                continue
+        try:
+            svc.submit(
+                employee_id=employee.id,
+                metric_date=metric_date,
+                metric_code=code,
+                metric_value=parsed,
+                scope="day",
+                source=SOURCE_FEISHU,
+                created_by=employee.id,
+                # ⚠️ **备注挂在第一条上** —— 后面几行只记「来自飞书表单」
+                remark=remark_text if not saved else "",
+                feishu_open_id=open_id,
+            )
+        except PanManualMetricError as exc:
+            errors.append(f"{label}：{exc.message}")
+            continue
+        saved.append((label, parsed, code))
+
+    db.flush()
+
+    # ⚠️ **一个都没存进去** ⇒ 报错，不发「已提交」回执。
+    if not saved:
+        detail = "\n".join(f"· {item}" for item in errors) or "表单里没有可识别的数值。"
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(f"没保存成功：\n{detail}"),
+        )
+        return {"code": 0, "message": "填报失败"}
+
+    # ⚠️ **部分失败** ⇒ 已存的照存，但要说清哪些没存。
+    if errors:
+        from ..services.feishu_daily_metric_push import day_label, format_metric
+
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                "部分已保存：\n"
+                + "\n".join(
+                    f"· {label}：{format_metric(code, value)}"
+                    for label, value, code in saved
+                )
+                + "\n\n没存成功：\n"
+                + "\n".join(f"· {item}" for item in errors)
+            ),
+        )
+        return {"code": 0, "message": "部分已保存"}
+
+    from ..services.feishu_daily_metric_push import day_label
+
+    # ⚠️⚠️⚠️ **先提交，再发回执**（2026-11-23 真机踩坑后修正）
+    # ---------------------------------------------------------
+    # ⚠️ **原来的顺序会丢数据**
+    #    ``send_card`` 在 ``db.commit()`` **之前**调用
+    #    ⇒ 回执卡一旦发送失败（结构错 / 网络问题）就抛异常
+    #    ⇒ 外层 ``db.rollback()`` ⇒ **已经存进去的数据全没了**
+    #    ⇒ 用户看到「显示出错了重试」，重试又失败 ⇒ 永远填不进去。
+    #
+    # ⚠️ **实测**：回执卡用了非法的 ``plain_text`` body 元素
+    #    ⇒ 数据存了但回执发不出去 ⇒ 异常 ⇒ 回滚 ⇒ 库里空空如也。
+    #
+    # ⇒ **数据是主，回执是次** —— 先把数据落库，再尽力发回执。
+    # ⇒ 回执失败只**记日志**，不能让它推翻已完成的业务动作。
+    db.commit()
+
+    try:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_daily_metric_saved_card(
+                day_text=day_label(metric_date),
+                saved=[(label, value) for label, value, _ in saved],
+                remark=remark_text,
+                # ⚠️ **数量类指标显示「8 条」**，不是「8.0%」
+                kind="count" if all(code in COUNT_METRIC_CODES for _, _, code in saved) else "rate",
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        # ⚠️ **回执发不出去 ≠ 填报失败** —— 数据已经落库了。
+        logger.warning("每日填报回执卡发送失败（数据已保存）", exc_info=True)
+
+    return {"code": 0, "message": "今日数据已提交"}
+
+
+async def _handle_leader_metric_submit(
+    db: Session,
+    client: FeishuClient,
+    action: dict[str, Any],
+) -> dict[str, Any]:
+    """处理「主管提交效果指标」（2026-11-23 角色倒转）。
+
+    ⚠️ **为什么主管也要能提交**
+    --------------------------
+    业务确认：**剪辑只填数量**（普通视频 / OOTD / 智能体），
+    **完播率 / 视频留存率由主管填** ⇒
+    ⇒ 这一栏如果没人填，整条效果指标链路是空的。
+
+    ⚠️ **主管填的是「效果指标」，不是替下属填数量**
+    --------------------------------------------
+    ⚠️ **主管不能替剪辑填条数** —— 那正是「A 的产出记到 B 头上」
+    ⇒ ⇒ 这里**只接受比率类指标**（按主管岗位口径取）。
+
+    ⚠️ **归属校验（三重）**
+    --------------------
+    1. **点击者能解析出员工**；
+    2. **点击者的岗位口径是「审阅人」** —— 否则不该收到这张卡；
+    3. **目标剪辑在点击者的管理范围内** —— 否则就是越权填别人的绩效。
+
+    ⚠️ **目标人靠姓名/工号识别**（飞书表单没有下拉控件）
+    ⚠️ **认不出就拒绝** —— 绝不瞎猜一个目标人。
+    """
+    from ..services.department_modules import (
+        PAN_WORKLOAD_MODULE,
+        has_module,
+        module_guard_message,
+    )
+    from ..services.feishu_daily_metric_push import METRIC_LABELS
+    from ..services.feishu_manual_metric import parse_rate
+    from ..services.pan_manual_metric_service import (
+        SOURCE_FEISHU,
+        PanManualMetricError,
+        PanManualMetricService,
+    )
+    from ..services.pan_workload_policy import reviewer_metric_codes
+
+    open_id = action["open_id"]
+    value = action["value"]
+    form_value = action["form_value"]
+
+    metric_date = str(value.get("metric_date") or "").strip() or date.today().isoformat()
+
+    # ── ① 点击者身份 ────────────────────────────────────
+    employee = FeishuIdentityService(db).resolve_employee(
+        open_id=open_id,
+        user_id=action.get("user_id") or "",
+    )
+    if employee is None:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                "找不到你的账号。\n\n请先让 HR 在系统里完成飞书账号绑定。"
+            ),
+        )
+        return {"code": 0, "message": "未绑定员工"}
+
+    # ── ② 板块隔离 ──────────────────────────────────────
+    if not has_module(db, employee, PAN_WORKLOAD_MODULE):
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                module_guard_message(PAN_WORKLOAD_MODULE)
+            ),
+        )
+        return {"code": 0, "message": "当前部门未开通该板块"}
+
+    # ── ③ 岗位口径必须是「审阅人」 ──────────────────────
+    allowed_codes = reviewer_metric_codes(db, employee)
+    if not allowed_codes:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                "你的岗位在这块业务里没有审核填报项。\n\n"
+                "如果这不对，请让 HR 检查岗位口径配置。"
+            ),
+        )
+        return {"code": 0, "message": "该岗位无审核填报项"}
+
+    # ── ④ 目标剪辑：靠姓名/工号识别 ────────────────────
+    target_key = str(form_value.get("target_employee") or "").strip()
+    if not target_key:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card("请填「填给哪位剪辑」。"),
+        )
+        return {"code": 0, "message": "缺少目标人"}
+
+    target = _find_employee_by_name_or_id(db, target_key)
+    if target is None:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                f"没找到「{target_key}」。\n\n请填管理范围内的剪辑姓名或工号。"
+            ),
+        )
+        return {"code": 0, "message": "目标人认不出"}
+
+    # ── ⑤ ★ 目标人必须在管理范围内 ─────────────────────
+    scope = _leader_scope_employee_ids(db, employee)
+    if scope is not None and target.id not in scope:
+        logger.warning(
+            "飞书主管效果指标回调越权：leader=%s target=%s",
+            employee.id, target.id,
+        )
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                "这张卡只能给你管理范围内的剪辑填指标。\n\n"
+                f"「{target.name}」不在你的管理范围内。"
+            ),
+        )
+        return {"code": 0, "message": "目标人超出管理范围"}
+
+    # ── ⑥ 逐个指标解析 ─────────────────────────────────
+    svc = PanManualMetricService(db)
+    saved: list[tuple[str, float]] = []
+    errors: list[str] = []
+
+    for code in allowed_codes:
+        label = METRIC_LABELS.get(code, code)
+        raw = form_value.get(code)
+        if raw is None or str(raw).strip() == "":
+            continue
+        parsed = parse_rate(str(raw))
+        if parsed is None:
+            errors.append(f"{label}：没认出数值（写成 35% 或 0.35）")
+            continue
+        try:
+            svc.submit(
+                employee_id=target.id,
+                metric_date=metric_date,
+                metric_code=code,
+                metric_value=parsed,
+                scope="day",
+                source=SOURCE_FEISHU,
+                created_by=employee.id,
+                remark=f"主管 {employee.name or employee.id} 填写效果指标",
+                feishu_open_id=open_id,
+            )
+        except PanManualMetricError as exc:
+            errors.append(f"{label}：{exc.message}")
+            continue
+        saved.append((label, parsed))
+
+    db.flush()
+
+    if not saved:
+        detail = "\n".join(f"· {item}" for item in errors) or "表单里没有可识别的数值。"
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(f"没保存成功：\n{detail}"),
+        )
+        return {"code": 0, "message": "填报失败"}
+
+    if errors:
+        from ..services.feishu_daily_metric_push import day_label, format_metric
+
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                "部分已保存：\n"
+                + "\n".join(
+                    f"· {label}：{format_metric(code, value)}"
+                    for label, value in saved
+                )
+                + "\n\n没存成功：\n"
+                + "\n".join(f"· {item}" for item in errors)
+            ),
+        )
+        return {"code": 0, "message": "部分已保存"}
+
+    from ..services.feishu_daily_metric_push import day_label
+
+    # ⚠️⚠️⚠️ **先提交，再发回执** —— 与每日填报同一处坑。
+    #    回执失败不能让已落库的数据被外层 ``db.rollback()`` 推翻。
+    db.commit()
+
+    try:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_daily_metric_saved_card(
+                day_text=f"{day_label(metric_date)} · {target.name or target.id}",
+                saved=saved,
+                kind="rate",
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        # ⚠️ **回执发不出去 ≠ 填报失败** —— 数据已经落库了。
+        logger.warning("主管效果指标回执卡发送失败（数据已保存）", exc_info=True)
+
+    return {"code": 0, "message": "效果指标已提交"}
+
+
+def _find_employee_by_name_or_id(db: Session, key: str) -> Employee | None:
+    """按姓名或工号找员工。
+
+    ⚠️ **认不出返回 ``None``** —— 绝不瞎猜一个目标人
+    （猜错 = 把 A 的绩效写到 B 头上）。
+
+    ⚠️ **重名怎么办** —— 返回 ``None``，让调用方回错误卡让主管写清楚。
+    """
+    from sqlalchemy import or_
+
+    rows = db.scalars(
+        select(Employee).where(
+            or_(Employee.name == key, Employee.login_account == key, Employee.id == key)
+        )
+    ).all()
+    if len(rows) != 1:
+        # ⚠️ **0 个 = 认不出；多个 = 重名 ⇒ 都不猜**
+        return None
+    return rows[0]
+
+
+def _leader_scope_employee_ids(db: Session, leader: Employee) -> list[str] | None:
+    """算出主管**能填指标**的对象范围。
+
+    ⚠️ **返回 ``None`` = 不限**（HR / 管理员）。
+    ⚠️ **范围 = 直属下属 + 汇报线全链下属 + 代理授权 + 所管部门成员**。
+    """
+    from ..services import access_control
+
+    ctx = access_control.build_access_context(db, leader)
+    if ctx.has_permission(PermissionAction.VIEW_ALL_SCORES):
+        return None
+
+    allowed: set[str] = {leader.id}
+    allowed.update(getattr(ctx, "direct_report_ids", None) or set())
+    allowed.update(getattr(ctx, "reporting_line_ids", None) or set())
+    allowed.update(getattr(ctx, "delegated_employee_ids", None) or set())
+
+    managed = set(getattr(ctx, "managed_department_ids", None) or [])
+    if managed:
+        rows = db.scalars(
+            select(Employee.id).where(Employee.department_id.in_(managed))
+        ).all()
+        allowed.update(rows)
+
+    return sorted(allowed)
+
+
 async def _handle_card_action(
     db: Session,
     client: FeishuClient,
@@ -1142,6 +1817,28 @@ async def _handle_card_action(
     #    「他能不能查这个人」。
     if action_name == feishu_card.ACTION_SELECT_SUBJECT:
         return await _handle_qa_select_subject(db, client, action)
+
+    # ── ★ 每日填报表单（2026-11-23）─────────────────────────────
+    # ⚠️ **必须在会话校验之前处理** ——
+    #    这张卡是**系统主动推送**的，它的 ``session_id`` 是推送时建/复用的会话，
+    #    而点击者**未必**是那个会话的主人（卡片可以被转发）。
+    #
+    # ⚠️ **归属校验在这里换成了「点击者 == 目标人」**：
+    #    卡片里的 ``employee_id`` 是**被填的人**；
+    #    点击者解析出的员工必须**就是他本人** ——
+    #    否则「B 替 A 填」就直接把数据写歪了。
+    if action_name == feishu_card.ACTION_SUBMIT_DAILY_METRIC:
+        return await _handle_daily_metric_submit(db, client, action)
+
+    # ── ★ 主管提交效果指标（2026-11-23 角色倒转）─────────────
+    # ⚠️ **同样必须在会话校验之前处理** —— 系统主动推送的卡，
+    #    点击者未必是那个会话的主人（卡片可以被转发）。
+    #
+    # ⚠️ **归属校验换成「点击者是审阅人 + 目标人在其管理范围内」**
+    #    —— 主管**可以**给管理范围内的剪辑填效果指标，
+    #    但**不能**替不相关的人填。
+    if action_name == feishu_card.ACTION_SUBMIT_LEADER_METRIC:
+        return await _handle_leader_metric_submit(db, client, action)
 
     if not open_id or not session_id:
         event = body.get("event") or {}
