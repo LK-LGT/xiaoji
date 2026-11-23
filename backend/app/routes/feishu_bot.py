@@ -693,7 +693,7 @@ async def _handle_message_event(
 
     if intent == feishu_bot.INTENT_PERFORMANCE_QA:
         from ..services import conversation as conversation_mod
-        from ..services import feishu_qa_ai
+        from ..services import feishu_qa_ai, qa_subject_matcher
 
         try:
             # ── P0-5/P0-6：读出会话上下文 ──────────────────────
@@ -709,12 +709,41 @@ async def _handle_message_event(
                 or state.period
                 or feishu_bot._current_month()
             )
+
+            # ── ★ P0-8：同事名候选匹配 ─────────────────────────
+            # ⚠️ **候选集先按权限收窄，再匹配名字** ——
+            #    越权的人**根本不在候选集里**，
+            #    所以「没找到」与「无权查看」在用户看来完全一样，
+            #    不泄露任何越权信息。
+            match = qa_subject_matcher.match_subject(db, employee, text)
+
+            if match.ambiguous:
+                # ⚠️ **多个候选 → 让用户选**，绝不猜。
+                #    猜错就是答错人的绩效。
+                # ⚠️ question 要**跟着卡片走** —— 用户点完按钮后，
+                #    我们要用当初那个问题继续问。
+                card = feishu_card.build_qa_subject_picker_card(
+                    candidates=[c.to_dict() for c in match.candidates],
+                    question=text,
+                    period=period,
+                )
+                feishu_bot.send_card(client, receive_id=open_id, card=card)
+                return {"code": 0, "message": "已发送查询对象选择卡片"}
+
+            # ⚠️ 单个候选 ⇒ 直接用它；无候选 ⇒ 查自己。
+            subject_id = match.single.employee_id if match.single else None
             outcome = await feishu_qa_ai.answer_ai(
-                db, employee, text, period, conversation=state,
+                db, employee, text, period,
+                subject_id=subject_id,
+                conversation=state,
             )
             # ── P0-6：写回上下文（周期 + 任务）──────────────
+            # ⚠️ P0-8：主体也写回 —— 用户下一轮说「他的扣分原因呢」
+            #    时，能接着查同一个人。
             conversation_mod.save_state(
                 session, state, task_id=outcome.task_id, period=outcome.period,
+                subject_id=outcome.subject_id,
+                subject_name=outcome.subject_name,
             )
             if outcome.candidates:
                 # ⚠️ 同月多个任务 → **让用户选**，绝不猜。
@@ -860,6 +889,151 @@ async def _handle_qa_select_task(
     return {"code": 0, "message": "已发送绩效查询结果"}
 
 
+async def _handle_qa_select_subject(
+    db: Session,
+    client: FeishuClient,
+    action: dict[str, Any],
+) -> dict[str, Any]:
+    """处理「选择要查询的同事」按钮（P0-8）。
+
+    ⚠️ **归属校验换成「目标人授权校验」**
+    ----------------------------------
+    卡片可以转发 —— 必须用**点击者自己的员工身份**去校验目标人：
+
+    ① 解析点击者 → 员工；
+    ② 用该员工去判定「他能不能查这个人」
+       （``qa_authorization.authorize_qa_subject`` 硬闸门）；
+    ③ 不通过 → 403 卡片（统一文案，不泄露目标人信息）。
+
+    ⇒ 卡片被转发给 B，B 点下去查到的也是 **B 有权查的人**，
+    不会泄露 A 能查但 B 不能查的同事绩效。
+
+    ⚠️ **question 从卡片载荷里带过来**
+    --------------------------------
+    用户先问了问题 → 系统发现多个候选 → 给选择卡 →
+    点某个按钮 → 用**当初那个问题**继续问。
+    所以按钮的 value 里必须带着 question。
+    """
+    from ..services import conversation as conversation_mod
+    from ..services import feishu_qa_ai
+
+    open_id = action["open_id"]
+    subject_id = str(action["value"].get("subject_id") or "").strip()
+    subject_name = str(action["value"].get("subject_name") or "").strip()
+    period = str(action["value"].get("period") or "").strip()
+    question = str(action["value"].get("question") or "").strip()
+
+    if not open_id:
+        logger.warning("飞书绩效问答选择同事回调缺少 open_id，已忽略")
+        return {"code": 0, "message": "回调参数不完整，已忽略"}
+
+    if not subject_id:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card("未指定查询对象，请重新提问。"),
+        )
+        return {"code": 0, "message": "未指定查询对象"}
+
+    employee = FeishuIdentityService(db).resolve_employee(
+        open_id=open_id,
+        user_id=action.get("user_id") or "",
+    )
+    if employee is None:
+        feishu_bot.send_card(
+            client,
+            receive_id=open_id,
+            card=feishu_card.build_error_card(
+                "找不到你的账号。\n\n请先让 HR 在系统里完成飞书账号绑定。"
+            ),
+        )
+        return {"code": 0, "message": "未绑定员工"}
+
+    try:
+        # ⚠️ ★ P0-8：**先判定点击者能不能查这个人**，再进问答。
+        #
+        # ⚠️ **为什么要在这一层就拦**
+        # --------------------------
+        # 卡片可以转发 —— 员工甲的候选卡被转发给员工丁，
+        # 员工丁点「员工丙」按钮时，载荷里的 subject_id 依然是员工丙。
+        #
+        # 真正的硬闸门在 ``qa_authorization.authorize_qa_subject``（服务层），
+        # 它一定会拒绝越权 —— **但**那已经在问答链路里了。
+        # ⇒ 在这里**提前**拦一道，是**纵深防御**：
+        #   ① 越权请求**不进**问答链路（不生成任何 AI 调用）；
+        #   ② 错误文案统一，**不泄露**目标人存在与否；
+        #   ③ 万一下游判定被改坏，这里仍是最后一道闸。
+        from ..domain.models import Employee as _Employee
+        from ..services import qa_authorization
+
+        subject = db.get(_Employee, subject_id)
+        if subject is None:
+            feishu_bot.send_card(
+                client,
+                receive_id=open_id,
+                card=feishu_card.build_error_card("该查询对象不在可见范围内。"),
+            )
+            return {"code": 0, "message": "查询对象不可见"}
+
+        decision = qa_authorization.authorize_qa_subject(db, employee, subject)
+        if not decision.allowed:
+            # ⚠️ 文案**统一**为「不在可见范围内」——
+            #    不能说"你无权查他"（泄露存在）或"他不存在"（也泄露）。
+            logger.warning(
+                "飞书问答选同事被拒：点击者=%s 目标=%s 级别=%s",
+                employee.id, subject.id, decision.audit_level,
+            )
+            feishu_bot.send_card(
+                client,
+                receive_id=open_id,
+                card=feishu_card.build_error_card("该查询对象不在可见范围内。"),
+            )
+            return {"code": 0, "message": "查询对象不可见"}
+
+        # ⚠️ P0-8：这条路径也要带上下文 ——
+        #    用户选完同事后继续问「他的扣分原因呢」，上下文不能丢。
+        bot_session = feishu_bot.get_or_create_session(
+            db, open_id=open_id, app_id=settings.feishu_app_id,
+        )
+        state = conversation_mod.load_state(bot_session, asker_id=employee.id)
+        outcome = await feishu_qa_ai.answer_ai(
+            db,
+            employee,
+            question or "他的绩效是多少分？",
+            period,
+            subject_id=subject_id,
+            conversation=state,
+        )
+        conversation_mod.save_state(
+            bot_session, state, task_id=outcome.task_id,
+            period=outcome.period or period,
+            # ⚠️ 主体写回 —— 下一轮「他的扣分原因呢」能接着查同一个人。
+            subject_id=outcome.subject_id or subject_id,
+            subject_name=outcome.subject_name or subject_name,
+        )
+        if outcome.candidates:
+            # ⚠️ 目标人同月多个任务 → 仍然让用户选任务，绝不猜。
+            card = feishu_card.build_qa_task_picker_card(
+                candidates=outcome.candidates,
+                period=period,
+                question=question,
+            )
+        else:
+            card = feishu_card.build_qa_ai_card(
+                answer=outcome.text,
+                sources=outcome.sources,
+                citation_count=outcome.citation_count,
+                degraded=outcome.degraded,
+                dropped_citations=outcome.dropped_citations,
+                period=period,
+            )
+    except HTTPException as exc:
+        card = feishu_card.build_error_card(str(exc.detail))
+
+    feishu_bot.send_card(client, receive_id=open_id, card=card)
+    return {"code": 0, "message": "已发送绩效查询结果"}
+
+
 async def _handle_card_action(
     db: Session,
     client: FeishuClient,
@@ -887,6 +1061,14 @@ async def _handle_card_action(
     #    否则就是「B 点了卡片，查到了 A 的绩效」。
     if action_name == feishu_card.ACTION_SELECT_TASK:
         return await _handle_qa_select_task(db, client, action)
+
+    # ── 绩效问答「选择同事」（P0-8）──────────────────────────
+    # ⚠️ 同样**不走会话** —— 选择卡没有 session_id。
+    # ⚠️ **归属校验换成「目标人授权校验」** ——
+    #    卡片可以转发，必须用点击者自己的身份重新判定
+    #    「他能不能查这个人」。
+    if action_name == feishu_card.ACTION_SELECT_SUBJECT:
+        return await _handle_qa_select_subject(db, client, action)
 
     if not open_id or not session_id:
         event = body.get("event") or {}

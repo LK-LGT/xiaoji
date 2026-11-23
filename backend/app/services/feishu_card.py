@@ -63,6 +63,8 @@ ACTION_CANCEL = "cancel"
 ACTION_CONFIRM = "confirm"
 #: 绩效问答 —— 选择考核任务（多任务时让用户明确选）
 ACTION_SELECT_TASK = "qa_select_task"
+#: 绩效问答 —— 选择查询对象（P0-8：同名/多候选同事时让用户明确选）
+ACTION_SELECT_SUBJECT = "qa_select_subject"
 
 
 def build_qa_card(content: str) -> dict[str, Any]:
@@ -696,10 +698,85 @@ def build_qa_task_picker_card(
     return build_card(title="选择考核任务", elements=elements, header_template="orange")
 
 
+def build_qa_subject_picker_card(
+    *,
+    candidates: list[dict[str, Any]],
+    question: str = "",
+    period: str = "",
+) -> dict[str, Any]:
+    """构造「请选择要查询的同事」卡片（P0-8）。
+
+    ⚠️ **什么时候弹这张卡**
+    ----------------------
+    问题里提到的名字在**可见范围内**匹配到**多个**同事时。
+
+    ⚠️ **候选集已经过权限收窄**
+    --------------------------
+    卡片里的候选人**只可能是同部门同级别的同事** ——
+    跨部门/跨级/上级**根本不会出现在候选集里**。
+
+    ⚠️ **这既是权限设计，也是防泄露**
+    --------------------------------
+    如果候选集里包含越权的人，用户看到"有这个人但你不能选"就泄露了
+    **此人存在**。收窄后的候选集里只可能出现"允许查的人"，
+    所以这张卡本身**不会泄露任何越权信息**。
+
+    ⚠️ **question 跟着卡片走**
+    ----------------------
+    用户点完按钮后要用**当初那个问题**继续问，
+    所以必须把 question 放进按钮的回调载荷。
+
+    ⚠️ **用 `plain_text` 而非 `markdown`**
+    ------------------------------
+    人名来自数据库，可能含 ``<at>`` 之类的飞书语法 ——
+    用 markdown 会被解析成「@某人」。纯文本最安全。
+    """
+    lines: list[str] = []
+    buttons: list[dict[str, Any]] = []
+    for index, item in enumerate(candidates, start=1):
+        label = str(
+            item.get("label")
+            or item.get("name")
+            or item.get("employee_id")
+            or ""
+        )
+        lines.append(f"{index}. {label}")
+        buttons.append(
+            _button(
+                f"{index}",
+                ACTION_SELECT_SUBJECT,
+                {
+                    "subject_id": str(item.get("employee_id") or ""),
+                    "subject_name": str(item.get("name") or ""),
+                    "question": question,
+                    "period": period,
+                },
+                type="default",
+            )
+        )
+
+    if period:
+        header = f"匹配到多个同事（{period}），请选择要查询的对象："
+    else:
+        header = "匹配到多个同事，请选择要查询的对象："
+
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": _text(header + "\n" + "\n".join(lines)),
+        },
+    ]
+    if buttons:
+        elements.append({"tag": "action", "actions": buttons})
+
+    return build_card(title="选择查询对象", elements=elements, header_template="orange")
+
+
 __all__ = [
     "ACTION_CANCEL",
     "ACTION_CONFIRM",
     "ACTION_FILL_MONTH_PLAN",
+    "ACTION_SELECT_SUBJECT",
     "ACTION_SELECT_TASK",
     "ACTION_SUBMIT_DRAFT",
     "CARD_SCHEMA_VERSION",
@@ -709,5 +786,6 @@ __all__ = [
     "build_month_plan_form_card",
     "build_prompt_card",
     "build_qa_ai_card",
+    "build_qa_subject_picker_card",
     "build_qa_task_picker_card",
 ]

@@ -65,6 +65,12 @@ def test_qa_message_routes_without_changing_active_form(db, org, monkeypatch):
         degraded = False
         dropped_citations = 0
         candidates = []
+        # ⚠️ P0-6：会话上下文写回需要这两个字段
+        task_id = ""
+        period = ""
+        # ⚠️ P0-8：主体写回需要这两个字段
+        subject_id = ""
+        subject_name = ""
 
     async def fake_answer_ai(db, employee, question, period, **kwargs):
         calls.append((employee.id, period))
@@ -85,6 +91,302 @@ def test_qa_message_routes_without_changing_active_form(db, org, monkeypatch):
     assert calls[1][0] == "ou_emp_a"  # 即使从群聊发问，也只私发本人。
     assert session.state == feishu_bot.STATE_COLLECTING
     assert session.collected == {"task_name": "保留草稿"}
+
+
+# ===========================================================================
+# ★ P0-8：同事名候选匹配 + 多候选选择卡片
+# ===========================================================================
+
+
+@pytest.fixture()
+def peer_org(db):
+    """带一个同部门同级的同事「员工丙」。
+
+    ⚠️ 员工甲（提问者）与员工丙**同部门 + 同一直属上级** ⇒ 可互查。
+    """
+    d1 = Department(id="D_1", name="业务部", active=True)
+    db.add(d1)
+    db.flush()
+
+    mgr = Employee(
+        id="E_MGR", name="经理", department_id="D_1",
+        employment_status="active", account_status="enabled",
+    )
+    emp_a = Employee(
+        id="E_A", name="员工甲", department_id="D_1", manager_id="E_MGR",
+        employment_status="active", account_status="enabled",
+        feishu_open_id="ou_emp_a", feishu_user_id="u_emp_a",
+    )
+    emp_c = Employee(
+        id="E_C", name="员工丙", department_id="D_1", manager_id="E_MGR",
+        position="专员", employment_status="active", account_status="enabled",
+    )
+    db.add_all([mgr, emp_a, emp_c])
+    db.flush()
+
+    from backend.app.domain.models import FeishuIdentity
+
+    db.add(
+        FeishuIdentity(
+            id="FI_A", employee_id="E_A",
+            identity_type="open_id", identity_value="ou_emp_a", active=True,
+        )
+    )
+    db.flush()
+    return {"a": emp_a, "c": emp_c, "mgr": mgr}
+
+
+def _qa_message_body(text: str) -> dict:
+    from copy import deepcopy
+
+    body = deepcopy(OFFICIAL_MESSAGE_EVENT)
+    body["event"]["sender"]["sender_id"] = {"open_id": "ou_emp_a", "user_id": "u_emp_a"}
+    body["event"]["message"]["content"] = json.dumps({"text": text})
+    return body
+
+
+def _card_actions(card: dict) -> list[dict]:
+    """取出卡片里所有按钮的回调载荷。"""
+    out: list[dict] = []
+    for element in card.get("body", {}).get("elements", []):
+        if element.get("tag") == "action":
+            for button in element.get("actions", []):
+                out.append(button.get("value", {}))
+    return out
+
+
+def test_qa_peer_name_single_match_answers_peer(db, peer_org, monkeypatch):
+    """⚠️ **指名道姓查同事** —— 单个候选 ⇒ 直接查他，不弹卡。"""
+    import asyncio
+
+    from backend.app.services import feishu_qa_ai
+
+    calls: list[dict] = []
+
+    async def fake_answer_ai(db, employee, question, period, **kwargs):
+        calls.append({"employee": employee.id, "subject_id": kwargs.get("subject_id")})
+        return feishu_qa_ai.FeishuQaOutcome(text="回答", period=period)
+
+    monkeypatch.setattr(feishu_qa_ai, "answer_ai", fake_answer_ai)
+
+    class Client:
+        def __init__(self):
+            self.cards = []
+
+        def send_card_message(self, receive_id, card, **kwargs):
+            self.cards.append(card)
+
+    client = Client()
+    result = asyncio.run(
+        feishu_bot_routes._handle_message_event(
+            db, client, _qa_message_body("员工丙这个月多少分"),
+        )
+    )
+    assert result["message"] == "已发送绩效查询结果"
+    assert len(calls) == 1
+    assert calls[0]["employee"] == "E_A"
+    assert calls[0]["subject_id"] == "E_C"
+
+
+def test_qa_peer_name_multi_match_shows_picker_card(db, peer_org, monkeypatch):
+    """⚠️ **多候选 ⇒ 弹选择卡**，绝不猜。
+
+    这里造两个同名同级的同事 ⇒ 必须让用户选。
+    """
+    import asyncio
+
+    from backend.app.domain.models import Employee
+    from backend.app.services import feishu_qa_ai
+
+    db.add(
+        Employee(
+            id="E_C2", name="员工丙", department_id="D_1", manager_id="E_MGR",
+            position="专员", employment_status="active", account_status="enabled",
+        )
+    )
+    db.flush()
+
+    async def fake_answer_ai(*args, **kwargs):
+        raise AssertionError("⚠️ 多候选时不该进入问答 —— 必须先让用户选")
+
+    monkeypatch.setattr(feishu_qa_ai, "answer_ai", fake_answer_ai)
+
+    class Client:
+        def __init__(self):
+            self.cards = []
+
+        def send_card_message(self, receive_id, card, **kwargs):
+            self.cards.append(card)
+
+    client = Client()
+    result = asyncio.run(
+        feishu_bot_routes._handle_message_event(
+            db, client, _qa_message_body("员工丙这个月多少分"),
+        )
+    )
+    assert result["message"] == "已发送查询对象选择卡片"
+    assert len(client.cards) == 1
+    card = client.cards[0]
+    assert card["header"]["title"]["content"] == "选择查询对象"
+
+    values = _card_actions(card)
+    assert len(values) == 2
+    assert {v["action"] for v in values} == {"qa_select_subject"}
+    assert {v["subject_id"] for v in values} == {"E_C", "E_C2"}
+    # ⚠️ question 要跟着卡片走 —— 用户点完按钮后用当初的问题继续问。
+    assert all(v["question"] == "员工丙这个月多少分" for v in values)
+
+
+def test_qa_peer_name_manager_not_selectable(db, peer_org, monkeypatch):
+    """⚠️ **上级不进入候选集** —— 问上级等于"没找到"，不弹卡。
+
+    ⇒ 用户既不会看到上级，也不会收到"你无权查看"这种泄露性提示。
+    """
+    import asyncio
+
+    from backend.app.services import feishu_qa_ai
+
+    calls: list[dict] = []
+
+    async def fake_answer_ai(db, employee, question, period, **kwargs):
+        calls.append({"subject_id": kwargs.get("subject_id")})
+        return feishu_qa_ai.FeishuQaOutcome(text="回答", period=period)
+
+    monkeypatch.setattr(feishu_qa_ai, "answer_ai", fake_answer_ai)
+
+    class Client:
+        def __init__(self):
+            self.cards = []
+
+        def send_card_message(self, receive_id, card, **kwargs):
+            self.cards.append(card)
+
+    client = Client()
+    asyncio.run(
+        feishu_bot_routes._handle_message_event(
+            db, client, _qa_message_body("经理这个月多少分"),
+        )
+    )
+    assert len(calls) == 1
+    assert calls[0]["subject_id"] is None, "上级不能成为查询对象"
+
+
+def test_qa_select_subject_callback_answers_with_subject(db, peer_org, monkeypatch):
+    """⚠️ **点按钮 ⇒ 用当初的问题继续问那个同事**。"""
+    import asyncio
+
+    from backend.app.services import feishu_qa_ai
+
+    calls: list[dict] = []
+
+    async def fake_answer_ai(db, employee, question, period, **kwargs):
+        calls.append({
+            "employee": employee.id,
+            "question": question,
+            "subject_id": kwargs.get("subject_id"),
+        })
+        return feishu_qa_ai.FeishuQaOutcome(
+            text="回答", period=period, subject_id=kwargs.get("subject_id") or "",
+            subject_name="员工丙",
+        )
+
+    monkeypatch.setattr(feishu_qa_ai, "answer_ai", fake_answer_ai)
+
+    class Client:
+        def __init__(self):
+            self.cards = []
+
+        def send_card_message(self, receive_id, card, **kwargs):
+            self.cards.append(card)
+
+    action = {
+        "open_id": "ou_emp_a",
+        "user_id": "u_emp_a",
+        "action": "qa_select_subject",
+        "value": {
+            "subject_id": "E_C",
+            "subject_name": "员工丙",
+            "question": "员工丙这个月多少分",
+            "period": "202611",
+        },
+        "form_value": {},
+    }
+    result = asyncio.run(
+        feishu_bot_routes._handle_qa_select_subject(db, Client(), action)
+    )
+    assert result["message"] == "已发送绩效查询结果"
+    assert len(calls) == 1
+    assert calls[0]["subject_id"] == "E_C"
+    assert calls[0]["question"] == "员工丙这个月多少分"
+
+
+def test_qa_select_subject_callback_rejects_forwarded_card(db, peer_org, monkeypatch):
+    """⚠️ **卡片被转发 ⇒ 用点击者自己的身份重新判定**。
+
+    员工甲能查员工丙；员工丁（外部门）点同一张卡 ⇒ 必须被拒。
+    """
+    import asyncio
+
+    from backend.app.domain.models import Employee, FeishuIdentity
+    from backend.app.services import feishu_qa_ai
+
+    # ⚠️ 员工丁：另一个部门的同事
+    db.add(Department(id="D_2", name="市场部", active=True))
+    db.add(
+        Employee(
+            id="E_D", name="员工丁", department_id="D_2",
+            employment_status="active", account_status="enabled",
+            feishu_open_id="ou_emp_d",
+        )
+    )
+    db.flush()
+    db.add(
+        FeishuIdentity(
+            id="FI_D", employee_id="E_D",
+            identity_type="open_id", identity_value="ou_emp_d", active=True,
+        )
+    )
+    db.flush()
+
+    calls: list[dict] = []
+
+    async def fake_answer_ai(db, employee, question, period, **kwargs):
+        calls.append({"employee": employee.id, "subject_id": kwargs.get("subject_id")})
+        return feishu_qa_ai.FeishuQaOutcome(text="回答", period=period)
+
+    monkeypatch.setattr(feishu_qa_ai, "answer_ai", fake_answer_ai)
+
+    class Client:
+        def __init__(self):
+            self.cards = []
+
+        def send_card_message(self, receive_id, card, **kwargs):
+            self.cards.append(card)
+
+    client = Client()
+    action = {
+        "open_id": "ou_emp_d",
+        "user_id": "",
+        "action": "qa_select_subject",
+        "value": {
+            "subject_id": "E_C",
+            "subject_name": "员工丙",
+            "question": "员工丙这个月多少分",
+            "period": "202611",
+        },
+        "form_value": {},
+    }
+    asyncio.run(feishu_bot_routes._handle_qa_select_subject(db, client, action))
+
+    # ⚠️ 越权的人**根本进不到问答** —— 要么没调用，要么被授权层拒绝。
+    assert not calls or calls[0]["subject_id"] is None
+    # ⚠️ 卡片文案**不能泄露**目标人存在。
+    if client.cards:
+        text = " ".join(
+            element.get("content", "") or (element.get("text") or {}).get("content", "")
+            for element in client.cards[0].get("body", {}).get("elements", [])
+        )
+        assert "员工丙" not in text
 
 
 def test_qa_isolated_task_and_disabled_account(db, org, monkeypatch):

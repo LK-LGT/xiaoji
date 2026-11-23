@@ -583,6 +583,7 @@ def save_state(
     *,
     task_id: str | None = None,
     period: str | None = None,
+    subject_id: str | None = None,
     subject_name: str = "",
     now: datetime | None = None,
 ) -> None:
@@ -593,6 +594,13 @@ def save_state(
 
     ⚠️ **不 commit** —— 由调用方统一提交。
        这里只改内存对象；调用方的事务边界决定何时落库。
+
+    ⚠️ ``subject_id``（P0-8）—— **传空字符串表示"回到查自己"**。
+       ⚠️ 这里用 ``None`` 与 ``""`` 区分两种语义：
+          - ``None``   ⇒ **不修改**主体（保持原样）
+          - ``""``     ⇒ **清空**主体（回到查自己）
+          - ``"abc"``  ⇒ 设置主体为该同事
+       ⇒ 这样"用户说「查我自己」"能真正把主体切回本人。
     """
     if session is None:
         return
@@ -601,6 +609,11 @@ def save_state(
         state.task_id = task_id
     if period:
         state.period = period
+    if subject_id is not None:
+        state.subject_id = subject_id or None
+        if not subject_id:
+            # ⚠️ 清空主体 ⇒ 类型回到"本人"
+            state.subject_type = "self"
     if subject_name:
         state.subject_name = subject_name
     state.last_active_at = now.timestamp()
