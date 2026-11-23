@@ -221,10 +221,21 @@ let healthTimer: number | undefined
 const MONTH_PLAN_TOPBAR_RETURN_KEY = 'month-plan-topbar-return'
 
 const userPermissions = computed(() => authStore.user?.permissions || [])
+/**
+ * ⚠️ **部门可用的功能板块**（部门维度）。
+ *
+ * ⚠️ **为什么要单独一个维度**
+ * 2026-11-21 用户投诉：「别的部门为什么会有剪辑板块？」
+ * ⇒ 只按权限过滤时，全公司每个部门的侧边栏都会出现「剪辑工作量」。
+ * ⇒ 菜单项要显示必须**同时**满足：
+ *   ① `permission` —— 这个人能不能干这件事（角色维度）
+ *   ② `module` —— 这个部门有没有这个业务（组织维度）
+ */
+const userModules = computed(() => authStore.user?.modules || [])
 const userWorkspaces = computed(() => availableWorkspaces(userPermissions.value))
 const activeWorkspace = computed(() => workspaceForPath(route.value.path) || userWorkspaces.value[0])
 const activeItems = computed(() => activeWorkspace.value
-  ? visibleWorkspaceItems(activeWorkspace.value, userPermissions.value)
+  ? visibleWorkspaceItems(activeWorkspace.value, userPermissions.value, userModules.value)
   : [])
 const breadcrumbNavigation = computed(() => resolveBreadcrumbNavigation(
   { path: route.value.path, query: route.value.query },

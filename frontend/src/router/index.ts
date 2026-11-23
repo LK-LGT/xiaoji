@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { defaultWorkspacePath, hasPermission } from '@/navigation/workspaces'
+import { canAccessPath, defaultWorkspacePath, hasPermission } from '@/navigation/workspaces'
 import { resolveLegacyResultPath } from '@/navigation/resultRoutes'
 import { useAuthStore } from '@/stores/auth'
 import { pinia } from '@/stores'
@@ -77,6 +77,7 @@ import EmployeeManagement from '@/views/system/EmployeeManagement.vue'
 import OrgManagement from '@/views/system/OrgManagement.vue'
 import RoleManagement from '@/views/system/RoleManagement.vue'
 import PermissionManagement from '@/views/system/PermissionManagement.vue'
+import DepartmentModules from '@/views/system/DepartmentModules.vue'
 import WorkdayRules from '@/views/system/WorkdayRules.vue'
 import WeekPlanStandardSupplement from '@/views/system/WeekPlanStandardSupplement.vue'
 import AuditLog from '@/views/system/AuditLog.vue'
@@ -245,6 +246,9 @@ const router = createRouter({
     withAppShell('/system/orgs', OrgManagement, { permission: 'system:org:view' }),
     withAppShell('/system/roles', RoleManagement, { permission: 'system:role:view' }),
     withAppShell('/system/permissions', PermissionManagement, { permission: 'system:permission:view' }),
+    // ★ 部门功能板块隔离（2026-11-21）—— 管理「哪个部门有哪些业务板块」
+    // ⚠️ 用 `system:department-module:manage` —— HR 专属动作位
+    withAppShell('/system/department-modules', DepartmentModules, { permission: 'system:department-module:manage' }),
     withAppShell('/system/workday-rules', WorkdayRules, { permission: 'system:workday:view' }),
     withAppShell('/system/week-plan-standard-supplements', WeekPlanStandardSupplement, { permission: 'system:week-standard:view' }),
     withAppShell('/system/audits', AuditLog, { permission: 'system:audit:view' }),
@@ -280,6 +284,20 @@ router.beforeEach(async (to) => {
   const requiredPermission = typeof to.meta.permission === 'string' ? to.meta.permission : undefined
   if (!hasPermission(permissions, requiredPermission)) {
     ElMessage.warning('当前账号无权访问该页面')
+    return home || '/no-access'
+  }
+  // ⚠️⚠️ **部门板块守卫**（2026-11-21）
+  //
+  // 用户投诉：「别的部门为什么会有剪辑板块？」
+  // ⇒ 菜单隐藏只是**表象** —— 用户仍可直接敲 URL 访问
+  // ⇒ 这里拦一道，后端 ``_require_pan_module`` 再拦一道
+  // ⇒ **两层都拦**，才算真的隔离。
+  //
+  // ⚠️ 为什么放在权限检查**之后**：没权限的人看到的应该是「无权访问」，
+  //    而不是「你的部门没开通这个板块」—— 后者会误导用户。
+  const modules = authStore.user?.modules || []
+  if (!canAccessPath(to.path, permissions, modules)) {
+    ElMessage.warning('当前部门未开通该功能板块')
     return home || '/no-access'
   }
   return true

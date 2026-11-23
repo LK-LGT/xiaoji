@@ -11,6 +11,17 @@ export interface LoginResp {
   forceChangePassword: boolean
   roles: string[]
   permissions: string[]
+  /**
+   * ⚠️ **部门可用的功能板块**（部门维度）。
+   *
+   * 与 `permissions` 的区别：
+   * - `permissions` —— 这个人**能不能干**这件事（角色维度）
+   * - `modules` —— 这个**部门有没有**这个业务（组织维度）
+   *
+   * ⚠️ 两个维度**都要满足**菜单项才显示。
+   * ⇒ 2026-11-21 用户投诉「别的部门为什么会有剪辑板块」的根因修复点。
+   */
+  modules?: string[]
 }
 
 export interface AuthUser {
@@ -30,6 +41,8 @@ export interface AuthUser {
   forceChangePassword: boolean
   roles: string[]
   permissions: string[]
+  /** ⚠️ **部门可用的功能板块** —— 见 `LoginResp.modules` */
+  modules?: string[]
 }
 
 export function loginApi(username: string, password: string) {

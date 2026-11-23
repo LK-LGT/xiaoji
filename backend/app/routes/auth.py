@@ -20,6 +20,7 @@ from ..core.db import get_db
 from ..domain.models import Employee, FeishuIdentity, SystemAdmin
 from ..services import password_hasher
 from ..services.access_control import build_access_context
+from ..services.department_modules import enabled_modules_for_employee
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,11 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "system:week-standard:view",
         "system:audit:view",
         "system:knowledge:view",
+        # ★ 部门功能板块隔离（2026-11-21）—— 维护「哪个部门有哪些业务板块」
+        # ⚠️ **独立权限位**，不挂在 `system:org:view` 上 ——
+        #    「看得到部门树」≠「能改板块开通范围」。
+        #    板块开关会直接决定谁能访问剪辑工作量这类业务接口 ⇒ 必须是 HR 专属动作。
+        "system:department-module:manage",
         # 飞书组织同步管理（触发同步 / 查看批次、失败、对账）
         "system:feishu-sync:manage",
         # ★ BP-1：百度网盘产出校验管理（授权 / 手动取数 / 查看快照与批次）
@@ -221,6 +227,8 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "system:week-standard:view",
         "system:audit:view",
         "system:knowledge:view",
+        # ★ 部门功能板块隔离（2026-11-21）—— 管理员同 HR
+        "system:department-module:manage",
         # 飞书组织同步管理（触发同步 / 查看批次、失败、对账）
         "system:feishu-sync:manage",
         # ★ BP-1：百度网盘产出校验管理（授权 / 手动取数 / 查看快照与批次）
@@ -249,6 +257,22 @@ def _resolve_permissions(db: Session, employee: Employee) -> tuple[list[str], li
     # 后端动作权限原样透出，便于前端/客户端按需判断。
     backend_permissions = set(context.permissions)
     return sorted(ui_permissions), sorted(backend_permissions)
+
+
+def _resolve_modules(db: Session, employee: Employee) -> list[str]:
+    """返回这个员工**能用的功能板块**（部门维度）。
+
+    ⚠️ **为什么权限之外还要有板块**
+    权限回答「这个人能不能干这件事」（角色维度），
+    板块回答「**这个部门有没有这个业务**」（组织维度）。
+
+    修复前只有权限 ⇒ ``pan:workload:view`` 授予基础 ``employee`` 角色后
+    **全公司每个部门**的侧边栏都出现「剪辑工作量」
+    ⇒ 仓储部、客服部的人点进去发现自己一条数据都没有。
+
+    ⇒ 两个维度缺一不可，前端菜单必须**同时**满足。
+    """
+    return sorted(enabled_modules_for_employee(db, employee))
 
 
 def _resolve_test_user(
@@ -535,6 +559,14 @@ async def login(
                 "roles": resolved["roles"],
                 "permissions": resolved["permissions"],
                 "backendPermissions": resolved["backendPermissions"],
+                # ⚠️ **部门可用的功能板块** —— 前端菜单按它过滤。
+                #    ⚠️ 这里曾经**漏掉**这个字段 ⇒ 测试账号登录后 ``modules`` 为空
+                #    ⇒ 前端把「剪辑工作量」等板块菜单全隐藏了
+                #    ⇒ 与 ``/auth/me``、真实员工登录分支**不一致**（同一个账号，
+                #    登录时看不到菜单，刷新后又能看到）。
+                "modules": (
+                    _resolve_modules(db, employee) if employee is not None else []
+                ),
             },
         }
 
@@ -623,6 +655,8 @@ async def login(
             "roles": roles,
             "permissions": permissions,
             "backendPermissions": backend_permissions,
+            # ⚠️ **部门可用的功能板块** —— 前端菜单按它过滤
+            "modules": _resolve_modules(db, employee),
         },
     }
 
@@ -654,7 +688,7 @@ async def get_me(request: Request, db: Session = Depends(get_db)) -> dict:
     if username in TEST_USERS:
         user_info = TEST_USERS[username]
         # 与登录接口保持一致：测试账号权限也走 access_control 实时解析（R5 修复）。
-        _, resolved = _resolve_test_user(db, username)
+        test_employee, resolved = _resolve_test_user(db, username)
         return {
             "code": 0,
             "data": {
@@ -667,6 +701,12 @@ async def get_me(request: Request, db: Session = Depends(get_db)) -> dict:
                 "roles": resolved["roles"],
                 "permissions": resolved["permissions"],
                 "backendPermissions": resolved["backendPermissions"],
+                # ⚠️ 测试账号也要有板块（否则前端菜单对测试账号不一致）
+                "modules": (
+                    _resolve_modules(db, test_employee)
+                    if test_employee is not None
+                    else []
+                ),
             },
         }
     if not employee:
@@ -685,6 +725,8 @@ async def get_me(request: Request, db: Session = Depends(get_db)) -> dict:
             "roles": sorted(context.roles),
             "permissions": permissions,
             "backendPermissions": backend_permissions,
+            # ⚠️ **部门可用的功能板块** —— 前端菜单按它过滤
+            "modules": _resolve_modules(db, employee),
         },
     }
 
