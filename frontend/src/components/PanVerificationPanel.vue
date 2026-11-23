@@ -9,6 +9,13 @@
 
     <template v-else-if="data">
       <el-alert :title="data.notice" type="info" :closable="false" show-icon />
+      <el-alert
+        class="score-note"
+        title="核对结果仅供人工参考，不产生任何分数影响 —— 差异请自行核实后评定。"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
 
       <div v-if="data.snapshot" class="snapshot">
         <el-descriptions :column="2" border size="small">
@@ -175,6 +182,9 @@ onMounted(load)
 }
 .items {
   margin-top: 14px;
+}
+.score-note {
+  margin-top: 10px;
 }
 .msg {
   margin-left: 8px;
