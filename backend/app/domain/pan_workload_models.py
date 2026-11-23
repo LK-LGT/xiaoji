@@ -530,12 +530,18 @@ class PanWorkloadConfig(Base):
     )
     #: 排除的目录路径段
     exclude_dir_segments: Mapped[str] = mapped_column(
-        String(255), default="草稿,工程,prj,aep,project,源文件,素材", nullable=False
+        String(255),
+        default="草稿,工程,prj,aep,project,源文件,素材,之前的成品",
+        nullable=False,
     )
     #: ⚠️ **扫描范围的目录黑名单**（2026-11-21 业务确认）
-    #: ``/口播成品``（1455 mp4，另一类业务）与 ``/鹿13``（素材库）**不纳入统计**
+    #:
+    #: - ``/鹿13`` —— 素材库（11455 个非 mp4 + 1 mp4），**不纳入统计**
+    #: - ``/口播成品`` —— **已从黑名单移除**！2026-11-21 业务确认
+    #:   「口播成品不用管，对应的用户绑定就好了」
+    #:   ⇒ 改为**绑定到具体用户**（巫宜珊），走常规的绑定-判定-聚合流程
     exclude_paths: Mapped[str] = mapped_column(
-        String(512), default="/口播成品,/鹿13", nullable=False
+        String(512), default="/鹿13", nullable=False
     )
     #: 标记字典（JSON）—— 全局默认 + 按目录覆盖
     marker_rules: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
@@ -549,9 +555,264 @@ class PanWorkloadConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
 
-# ---------------------------------------------------------------------------
-# 不可变守卫
-# ---------------------------------------------------------------------------
+class PanWorkloadPolicy(Base):
+    """★ **部门 × 岗位 → 剪辑工作量怎么考核** 的口径表（2026-11-23）。
+
+    ⚠️⚠️ **为什么必须有这张表（用户投诉：「不同部门有不同的考核方式」）**
+    ---------------------------------------------------------------------------
+    ``department_module`` 只回答「**这个部门有没有剪辑这个业务**」，
+    但**部门内部还有不同岗位**，不同岗位的考核方式**完全不一样**：
+
+    短视频部（2026-11-23 实测库）::
+
+        巫宜珊 主播   → 网盘 /口播成品 —— 业务已确认**口播成品不用管**
+        刘旭   运营   → 不产成片，只看下属
+        张洁   编导   → 不产成片，是两位剪辑的**直属上级**
+        李婵雨 剪辑   → 网盘 /成品-小雨 —— **要填报完播率/留存率**
+        佟瑶   剪辑   → 网盘 /成品-小瑶 —— **要填报完播率/留存率**
+
+    ⇒ 若只用「部门开通了板块就全推」，主播/运营/编导会**天天收到**
+      跟他们无关的填报提醒。
+    ⇒ 若把岗位名单**硬编码在代码里**，业务一变（让主播也报数据、
+      加一个新岗位）就得改代码发版。
+
+    ⇒ **口径必须存在库里**：谁要填报、谁只审、填什么指标 ——
+      都在这张表里配，改完立即生效，不发版。
+
+    ⚠️ **三种角色**
+    ``reporter``
+        要**填报**的人（剪辑）。会收到「表格 + 表单」卡。
+    ``reviewer``
+        只**审**的人（编导 / 部门 leader）。会收到只读汇总卡，
+        ⚠️ **绝不给表单** —— 否则主管能替下属填，数据就串了。
+    ``none``
+        与这块业务**无关**（主播 / 运营）。**不收任何推送**。
+
+    ⚠️ **默认关闭**
+    没有配置行 = 该岗位不参与（``none``）——
+    与 ``department_module`` 同一套哲学：**漏配导致「功能没出现」
+    （可见、可修），而不是「功能到处乱出现」（不可见、不可修）**。
+    """
+
+    __tablename__ = "pan_workload_policy"
+    __table_args__ = (
+        UniqueConstraint(
+            "department_id", "position", name="uq_pan_workload_policy_dept_position"
+        ),
+        Index("ix_pan_workload_policy_active", "active"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    #: 部门 ID
+    department_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("department.id"), nullable=False, index=True
+    )
+    #: 岗位名（与 ``employee.position`` 对齐，如「剪辑」「编导」）
+    #:
+    #: ⚠️ **用「岗位」而不是「人」** —— 岗位是稳定的维度，
+    #: 人会流动（今天李婵雨，明天佟瑶调岗）。
+    position: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    #: 角色：``reporter``（要填）/ ``reviewer``（只审）/ ``none``（不参与）
+    role: Mapped[str] = mapped_column(String(16), default="none", nullable=False)
+    #: 该岗位要填的指标（逗号分隔的指标码）—— 只有 ``reporter`` 用
+    #:
+    #: ⚠️ **指标也按岗位配** —— 不同岗位的考核指标本来就不一样。
+    #: ⚠️ 留空 = 用该板块的默认指标（短视频侧 = 完播率 + 视频留存率）。
+    metric_codes: Mapped[str] = mapped_column(
+        String(255), default="", nullable=False
+    )
+    #: 是否生效（停用某岗位时置 False，**不删** —— 保留配置痕迹）
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: 配置说明 / 依据
+    note: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_now, onupdate=_now, nullable=False
+    )
+
+
+class DepartmentModule(Base):
+    """★ **部门 ↔ 功能板块** 的开通表。
+    ⚠️⚠️ **为什么需要这张表（2026-11-21 用户投诉）**
+
+    用户反馈：「**别的部门为什么会有剪辑板块？**这个没有做各部门功能板块隔离，
+    我要的是对应的部门有对应的功能。」
+
+    **根因**（查代码后确认）：
+    前端菜单 ``frontend/src/navigation/workspaces.ts`` 的过滤维度**只有权限串**
+    ⇒ ``pan:workload:view`` 一旦授予，全公司**每个部门**的侧边栏都会出现
+    「剪辑工作量」入口 ⇒ 仓储部、客服部的人点进去发现自己一条数据都没有。
+
+    ⇒ 光靠「权限」不够 —— **权限回答「这个人能不能干这件事」，
+    部门板块回答「这个部门有没有这个业务」**。两个维度缺一不可。
+
+    ⚠️ **这不是前端过滤就能解决的事**
+    菜单隐藏只是**表象** —— 用户仍然可以直接敲 URL 访问
+    ⇒ 必须有**后端的地毯式守卫**，否则是「看不见入口但照样能访问」。
+
+    **语义**：
+    - ``department_id`` 开通了 ``module_code`` ⇒ 该部门的成员**及其下属部门**
+      都能看到这个板块
+    - **未开通 ⇒ 看不见入口，且直接访问 API 返回 403**
+    - ``hr`` / ``admin`` **永远可见**（他们要配置和维护，不能被挡住）
+    - **默认关闭**（没有配置行 = 不开通）—— 与框架「默认不信任」的
+      ``DataSourcePolicy`` 同一套哲学：漏配导致「功能没出现」（可见、可修），
+      而不是「功能到处乱出现」（不可见、不可修）。
+
+    ⚠️ **为什么不开「继承父部门」的配置项**
+    部门树会变动 ⇒ 继承规则会让「谁有权限」变得不可预测。
+    ⇒ 改成**显式展开**（迁移里把子部门都写上），改结构时按需增删行。
+    """
+
+    __tablename__ = "department_module"
+    __table_args__ = (
+        UniqueConstraint(
+            "department_id", "module_code", name="uq_department_module_dept_code"
+        ),
+        Index("ix_department_module_code", "module_code"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    #: 部门 ID
+    department_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("department.id"), nullable=False, index=True
+    )
+    #: 板块代码（如 ``pan_workload``）
+    module_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    #: 是否生效（停用某部门某板块时置 False，**不删** —— 保留配置痕迹）
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: 配置说明 / 依据
+    note: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_now, onupdate=_now, nullable=False
+    )
+
+
+class PanFeishuMetricSource(Base):
+    """★ **剪辑人员 ↔ 飞书表格** 的绑定（人工指标的飞书端来源）。
+
+    ⚠️ **为什么每人一张表，而不是部门一张共享表**
+    共享表要靠「剪辑人」列的**人名文本**匹配到员工 ⇒ 同名、改名、
+    打字错误都会导致「数据算到别人头上」。
+    ⇒ 每人一张表 ⇒ **归属在绑定时就已确定**，表格里每一行
+    100% 是这个人的数据 ⇒ **不需要猜**。
+
+    ⚠️ **为什么表格在飞书上，而不是在系统里做表单**
+    2026-11-21 实测结论：
+    - 飞书卡片 JSON 2.0 的 ``table`` 组件**不能内嵌输入框**
+      （官方：「表格组件不支持内嵌其它组件」）
+    - 飞书应用**没有** ``sheets:spreadsheet`` 写权限、也没有 ``bitable`` scope
+      ⇒ 系统**没法替员工建表/写表**
+    ⇒ 只能让员工**在飞书原生表格里加行**，系统**只读**同步。
+    ⇒ 这也正好是业务想要的：表格就是「部门以表格形式填写」的载体。
+
+    ⚠️ **两种表格类型都支持**
+    - ``sheet``  —— 飞书电子表格（``spreadsheetToken``）
+      ⇒ ✅ **读权限已开通**（实测），今天就能用
+    - ``bitable`` —— 飞书多维表格（``app_token`` + ``table_id``）
+      ⇒ ⏳ **需要 IT 申请** ``bitable:app:readonly`` + ``base:table:read``
+      ⇒ 但它有**人员字段**（选一下就是本人，归属最准）与**附件字段**
+    ⇒ 两条路都留着，用 ``table_kind`` 区分。
+
+    ⚠️ **不存 token**
+    只存飞书**文档标识**（``obj_token`` / ``app_token``），
+    不存任何 access_token —— 与 ``FeishuSchemeSource`` 同一套做法。
+
+    ⚠️ **幂等靠 ``last_content_hash``**
+    同一份内容重复同步**不重复入库** —— 跟方案同步一个套路。
+    """
+
+    __tablename__ = "pan_feishu_metric_source"
+    __table_args__ = (
+        # ⚠️ **一个员工一张表** —— 同一员工不能绑两张（否则重复计入）
+        UniqueConstraint("employee_id", name="uq_pan_feishu_metric_source_employee"),
+        Index("ix_pan_feishu_metric_source_active", "active"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    #: ★ **绑定的员工** —— 表格里每一行都算这个人的数据
+    employee_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("employee.id"), nullable=False, index=True
+    )
+    #: 表格类型：``sheet``（电子表格）/ ``bitable``（多维表格）
+    table_kind: Mapped[str] = mapped_column(String(16), default="sheet", nullable=False)
+    #: 飞书表格 token（``sheet`` 时是 spreadsheetToken；``bitable`` 时是 app_token）
+    obj_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: 多维表格的数据表 id（``bitable`` 必填；``sheet`` 空）
+    table_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    #: 电子表格的工作表 id（``sheet`` 必填；``bitable`` 空）
+    sheet_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    #: 表格标题（飞书返回，便于人工核对）
+    title: Mapped[str] = mapped_column(String(256), default="", nullable=False)
+    #: 原始链接（HR 填表用）
+    source_url: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+
+    #: 是否参与同步（人工可临时停用）
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    #: 上次同步到的飞书表格编辑时间（秒级时间戳字符串）—— 变更检测依据
+    last_edit_time: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    #: 上次同步后的内容指纹（sha256）—— **幂等去重**
+    last_content_hash: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    #: 上次同步写入的行数
+    last_row_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: 上次同步时间
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: 上次同步的错误信息
+    last_error: Mapped[str] = mapped_column(String(1024), default="", nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_now, onupdate=_now, nullable=False
+    )
+
+
+class FeishuDailyPushRecord(Base):
+    """★ **每日填报提醒的推送记录**（2026-11-23）。
+
+    ⚠️ **为什么幂等要落库，而不是靠内存状态**
+    ------------------------------------------
+    服务是**多实例**部署的（滚动更新时两个实例会同时在跑）。
+    若幂等靠「进程内记一个今天推过了」⇒ 两个实例都判定「没推过」
+    ⇒ 剪辑**收到两张一样的提醒卡**。
+
+    ⇒ **数据库唯一约束**兜底：``(push_day, kind, target_id)`` 唯一。
+    ⇒ 第二个实例插入时撞唯一约束 ⇒ 认输、跳过。
+
+    ⚠️ **两种 kind**
+    - ``editor`` —— 推给剪辑本人的「表格 + 表单」卡
+    - ``leader`` —— 推给主管的只读汇总卡
+
+    ⚠️ **不存内容**
+    只记「哪天、推给谁、成没成」—— 推送内容是即时的，不留档。
+    """
+
+    __tablename__ = "feishu_daily_push_record"
+    __table_args__ = (
+        UniqueConstraint(
+            "push_day", "kind", "target_id", name="uq_feishu_daily_push_record_day_kind"
+        ),
+        Index("ix_feishu_daily_push_record_day", "push_day"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    #: 推送日期（``YYYY-MM-DD``）
+    push_day: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    #: ``editor``（剪辑本人）/ ``leader``（主管汇总）
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: 收件人（员工 ID）
+    target_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("employee.id"), nullable=False, index=True
+    )
+    #: ``sent`` / ``failed`` / ``skipped``
+    status: Mapped[str] = mapped_column(String(16), default="sent", nullable=False)
+    #: 失败原因
+    error: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 # ⚠️ **证据与事件流不可覆盖**
 # 事件流是 hash 链的一环，附件是裁定的依据 ——
 # 任何一条被 UPDATE 或 DELETE，链就失去审计价值。

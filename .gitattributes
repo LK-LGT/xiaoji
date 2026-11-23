@@ -1,0 +1,47 @@
+# ⚠️ 行尾符统一策略 —— 防止「整文件伪 diff」
+#
+# 背景：本仓库没有 .gitattributes 时，行尾符由各机器的 core.autocrlf 决定。
+# Windows 上是 true（入库转 LF、检出转 CRLF），Linux/macOS 上通常是 false。
+# 结果：同一份代码在不同机器上检出后行尾符不一致，
+# 任何一次编辑都可能让整个文件在 git diff 里显示为「全删全增」
+# （实测 auth.py 曾因此产生 1650 行伪 diff，真实改动只有 44 行）。
+#
+# 规则：
+#   * 文本文件 —— 入库统一 LF，检出按平台转换（Windows 检出 CRLF，Linux 检出 LF）
+#   * 二进制文件 —— 不做任何转换（否则图片/表格会被损坏）
+
+# 默认：所有文本文件走 text=auto，让 git 自动识别并规范化
+* text=auto
+
+# 明确指定为文本的文件类型（跨平台统一 LF 入库）
+*.py       text eol=lf
+*.ts       text eol=lf
+*.vue      text eol=lf
+*.js       text eol=lf
+*.json     text eol=lf
+*.md       text eol=lf
+*.toml     text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.cfg      text eol=lf
+*.ini      text eol=lf
+*.css      text eol=lf
+*.html     text eol=lf
+*.sql      text eol=lf
+*.sh       text eol=lf
+*.bat      text eol=crlf
+*.ps1      text eol=crlf
+
+# 二进制：禁止任何转换
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.ico      binary
+*.pdf      binary
+*.zip      binary
+*.xlsx     binary
+*.docx     binary
+*.woff     binary
+*.woff2    binary
+*.ttf      binary
