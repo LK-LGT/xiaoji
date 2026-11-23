@@ -231,8 +231,30 @@ def _clean_sources(sources: list[str] | None, *, limit: int = 6, max_len: int = 
 
 
 def _text(content: str) -> dict[str, Any]:
-    """构造纯文本元素。"""
+    """构造纯文本元素。
+
+    ⚠️⚠️ **不能直接当 body 元素用**（2026-11-23 真机实测）
+    ------------------------------------------------------
+    JSON 2.0 的 ``body.elements`` **不接受** ``plain_text`` ——
+    实测报错：
+
+        type of element is not supported tag: plain_text,
+        path: ROOT -> body -> elements -> [0]
+
+    ⇒ 当 body 元素必须包一层 ``div`` ⇒ 用 ``_div()``。
+    ⇒ ``_text`` 只用于**字段值**（label / placeholder / button.text /
+    header.title / div.text）。
+    """
     return {"tag": "plain_text", "content": content}
+
+
+def _div(content: str) -> dict[str, Any]:
+    """构造**纯文本正文块**（JSON 2.0 的 ``div`` 元素）。
+
+    ⚠️ **这是 body 元素的正确形态** —— 纯文本要包 ``div``，
+    直接放 ``plain_text`` 会被飞书拒收（整张卡发不出去）。
+    """
+    return {"tag": "div", "text": _text(content)}
 
 
 def _markdown(content: str) -> dict[str, Any]:
@@ -576,6 +598,97 @@ def build_error_card(message: str) -> dict[str, Any]:
     )
 
 
+#: P0-9：拒绝场景 → 引导去后台的页面。
+#:
+#: ⚠️ **为什么不直接把页面名放进卡片**
+#:    页面路径因部署而异，写死会让用户点不到。
+#:    ⇒ 这里只给**页面名**，让用户自己在后台找。
+QA_DENIED_GUIDANCE_PAGES: dict[str, str] = {
+    "score": "考核记录",
+    "metric_value": "算分集 / 指标实测值",
+    "rule": "绩效方案",
+    "rating": "考核记录（评级确认）",
+    "nudge": "绩效待办",
+}
+
+
+def build_qa_denied_card(
+    *,
+    message: str,
+    guidance: str = "",
+    page: str = "",
+) -> dict[str, Any]:
+    """构造「无权查看」提示卡片（P0-9）。
+
+    ⚠️ **为什么拒绝时必须给「为什么 + 下一步」**
+    ------------------------------------------
+    只说"没有权限"用户会**反复试同一个问题** ——
+    他不知道是自己搞错了、还是系统坏了、还是换个问法就行。
+    ⇒ 卡片里必须有：**原因**（组织范围隔离）+ **下一步**（找谁 / 去哪做）。
+
+    ⚠️ **但文案不能区分具体原因**
+    ----------------------------
+    「跨部门」和「上一级」给**不同文案** ⇒ 用户能通过文案差异
+    推断出目标人的层级与部门 —— 这是**信息泄露**，比拒绝对他更糟。
+    ⇒ 调用方传的 ``message`` 必须是**统一口径**的文案。
+    本函数**不做**任何原因推断，只负责把上游给的话渲染出来。
+
+    ⚠️ **用 plain_text 而非 markdown**
+    ------------------------------
+    文案可能含员工姓名（如「张三不在可见范围内」）——
+    markdown 会把 ``<at>`` 之类的语法解析成「@某人」。
+    """
+    elements: list[dict[str, Any]] = []
+    if message:
+        elements.append(_div(message))
+    if guidance:
+        elements.append({
+            "tag": "div",
+            "text": _text(f"💡 {guidance}"),
+        })
+    if page:
+        elements.append({
+            "tag": "div",
+            "text": _text(f"📍 请前往后台「{page}」页面操作。"),
+        })
+    if not elements:
+        elements.append(_div("该操作不在可见范围内。"))
+
+    return build_card(
+        title="无法查看该数据",
+        elements=elements,
+        header_template="orange",
+    )
+
+
+def build_qa_write_denied_card(
+    *,
+    message: str = "",
+    page: str = "",
+) -> dict[str, Any]:
+    """构造「AI 问答不提供绩效修改功能」卡片（P0-9）。
+
+    ⚠️ **写操作要用红色**
+    --------------
+    读操作的拒绝是「范围问题」，写操作的拒绝是「能力边界」——
+    两者性质不同，标题与配色都该不一样。
+    写成"操作未完成"会让用户以为是系统故障，反复重试。
+    """
+    elements: list[dict[str, Any]] = [
+        _div(message or "AI 问答不提供绩效修改功能。"),
+    ]
+    target_page = page or QA_DENIED_GUIDANCE_PAGES["score"]
+    elements.append({
+        "tag": "div",
+        "text": _text(f"📍 请前往后台「{target_page}」页面操作。"),
+    })
+    return build_card(
+        title="此操作需在后台完成",
+        elements=elements,
+        header_template="red",
+    )
+
+
 def build_manual_metric_saved_card(
     *,
     metric_name: str,
@@ -786,6 +899,8 @@ __all__ = [
     "build_month_plan_form_card",
     "build_prompt_card",
     "build_qa_ai_card",
+    "build_qa_denied_card",
+    "build_qa_write_denied_card",
     "build_qa_subject_picker_card",
     "build_qa_task_picker_card",
 ]

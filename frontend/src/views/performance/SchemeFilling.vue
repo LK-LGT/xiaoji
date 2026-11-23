@@ -11,6 +11,7 @@
 <div v-if="form.payload.document && form.can_review" class="metric"><h3>加减分与原文等级确认</h3><p v-for="(rule, i) in form.payload.document.adjustment_rules" :key="i">{{ rule.cells.join(' · ') }}</p><el-input-number v-model="form.reviews._adjustment.score" :min="form.payload.document.adjustment_min" :max="form.payload.document.adjustment_max" :disabled="!canReview" /><el-input v-model="form.reviews._adjustment.comment" placeholder="加减分依据，无加减分也请说明" :disabled="!canReview" /><p v-for="g in form.payload.document.grade_rules" :key="g.level">{{ g.level }}：{{ g.condition }} · {{ g.description }}</p><el-select v-model="form.reviews._grade.level" placeholder="依据原文确认等级" :disabled="!canReview"><el-option v-for="g in form.payload.document.grade_rules" :key="g.level" :label="g.level" :value="g.level" /></el-select><el-input v-model="form.reviews._grade.comment" placeholder="等级判定理由（含边界情况的依据）" :disabled="!canReview" /></div>
 <div v-if="form.result || form.workflow.history?.length" class="metric"><h3>面谈、确认与归档</h3><p>当前阶段：{{ phaseLabel }}</p><p v-if="form.workflow.interview">面谈结论：{{ form.workflow.interview }}</p><el-input v-model="workflowNote" type="textarea" placeholder="填写面谈结论与改进项、确认意见、异议理由或HR处理依据" :rows="3" /><div class="numbers"><el-button v-for="action in workflowActions" :key="action.key" @click="run(() => advance(action.key))">{{ action.label }}</el-button></div><p v-for="(entry, i) in form.workflow.history || []" :key="i">{{ entry.at }} · {{ entry.action }} · {{ entry.note }}</p></div>
 <PeerReviewPanel :record-id="currentId" :task-id="form.task_id" :can-assign="canAssignPeers" :can-remind="canRemindPeers" />
+<PanVerificationPanel v-if="showVerification" :record-id="currentId" />
 </template><template #footer><el-button @click="visible=false">关闭</el-button><el-button v-if="canFill || canReview" type="primary" @click="run(submit)">{{ canFill ? '提交填报' : '提交评价并计算' }}</el-button></template></el-drawer></section>
 </template>
 <script setup lang="ts">
@@ -19,6 +20,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { http } from '@/api/http'
 import type { SchemePayload } from '@/api/schemes'
 import PeerReviewPanel from '@/components/PeerReviewPanel.vue'
+import PanVerificationPanel from '@/components/PanVerificationPanel.vue'
 import { useAuthStore } from '@/stores/auth'
 interface RecordRow { id:string; task_id?:string; name:string; period:string; employee_name:string; is_own:boolean; status:string }
 interface FormData { self_scores:Record<string,number | undefined>; task_id?:string; can_finalize:boolean; workflow:{phase?:string;interview?:string;history?:{action:string;note:string;at:string}[]}; result?:{total:number;rating?:string} | null; payload:SchemePayload; is_own:boolean; can_review:boolean; status:string; revision:number; values:Record<string,string>; metric_values:Record<string,{target:number | undefined; actual:number | undefined}>; reviews:Record<string,{score:number | undefined;comment:string;level?:string}> }
@@ -45,6 +47,15 @@ const workflowActions=computed(() => {
 async function advance(action:string){if(!form.value)return;if(!workflowNote.value.trim())throw new Error('请填写操作说明');await ElMessageBox.confirm('确认执行此流程操作？内容将记录在考核历史中。','确认操作');await http.post(`/performance/scheme-records/${currentId.value}/workflow`,{action,note:workflowNote.value,revision:form.value.revision});workflowNote.value='';await open(currentId.value);await load();ElMessage.success('流程已更新')}
 const canFill=computed(() => form.value?.is_own && ['not_started','self_review_open'].includes(form.value.status))
 const canReview=computed(() => form.value?.can_review && form.value.status === 'self_review_submitted')
+/**
+ * 是否显示「产出核对」面板。
+ *
+ * ⚠️ **主管评价时显示，员工填报时不显示** ——
+ * 网盘计数是**部门级**总量（文件不带"谁剪的"信息），
+ * 在填报阶段给员工看会造成"这是我的产出" 的误解。
+ * ⚠️ **不产生任何分数影响** —— 差异仅供主管人工核实。
+ */
+const showVerification=computed(() => !!form.value && !form.value.is_own)
 async function run(fn:()=>Promise<unknown>) {busy.value=true;error.value='';try{await fn()}catch(e){if(e !== 'cancel' && e !== 'close'){error.value=e instanceof Error ? e.message : String(e);ElMessage.error(error.value)}}finally{busy.value=false}}
 async function load(){records.value=await http.get<unknown,RecordRow[]>('/performance/scheme-records')}
 async function open(id:string){currentId.value=id;form.value=await http.get<unknown,FormData>(`/performance/scheme-records/${id}`);for(const m of form.value.payload.metrics){form.value.metric_values[m.code] ??= {target:m.target ?? undefined,actual:undefined};form.value.reviews[m.code] ??= {score:undefined,comment:''}}form.value.reviews._adjustment ??= {score:0,comment:''};form.value.reviews._grade ??= {score:undefined,comment:'',level:''};visible.value=true}

@@ -38,6 +38,7 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
       { label: '绩效分析', path: '/system/performance-analytics', icon: '◫', permission: 'system:dashboard:view' },
       { label: '企业知识', path: '/system/knowledge', icon: '◎', permission: 'system:knowledge:view' },
       { label: '飞书同步', path: '/system/feishu-sync', icon: '⇄', permission: 'system:feishu-sync:manage' },
+      { label: '网盘校验', path: '/system/pan-verification', icon: '⬓', permission: 'system:pan-verification:manage' },
     ],
   },
   {

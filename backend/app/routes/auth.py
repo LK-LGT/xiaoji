@@ -198,6 +198,9 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "system:knowledge:view",
         # 飞书组织同步管理（触发同步 / 查看批次、失败、对账）
         "system:feishu-sync:manage",
+        # ★ BP-1：百度网盘产出校验管理（授权 / 手动取数 / 查看快照与批次）
+        # ⚠️ 独立权限位 —— 授权动作涉及第三方账号凭证，必须 HR/管理员专属。
+        "system:pan-verification:manage",
         "dispute:dashboard:view",
         "dispute:case:view",
         # HR 可查看全部考核记录
@@ -220,6 +223,9 @@ ROLE_UI_PERMISSIONS: dict[str, list[str]] = {
         "system:knowledge:view",
         # 飞书组织同步管理（触发同步 / 查看批次、失败、对账）
         "system:feishu-sync:manage",
+        # ★ BP-1：百度网盘产出校验管理（授权 / 手动取数 / 查看快照与批次）
+        # ⚠️ 管理员同 HR —— 授权动作涉及第三方账号凭证。
+        "system:pan-verification:manage",
         # ★ BP-2：管理员同 HR
         "pan:workload:view",
         "pan:workload:resolve",

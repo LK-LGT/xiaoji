@@ -84,6 +84,7 @@ import AiManagement from '@/views/system/AiManagement.vue'
 import PerformanceAnalytics from '@/views/system/PerformanceAnalytics.vue'
 import EnterpriseKnowledge from '@/views/system/EnterpriseKnowledge.vue'
 import FeishuSyncManagement from '@/views/system/FeishuSyncManagement.vue'
+import PanVerificationManagement from '@/views/system/PanVerificationManagement.vue'
 
 import SchemeFilling from '@/views/performance/SchemeFilling.vue'
 import SchemeManagement from '@/views/performance/SchemeManagement.vue'
@@ -251,6 +252,7 @@ const router = createRouter({
     withAppShell('/system/performance-analytics', PerformanceAnalytics, { permission: 'system:dashboard:view' }),
     withAppShell('/system/knowledge', EnterpriseKnowledge, { permission: 'system:knowledge:view' }),
     withAppShell('/system/feishu-sync', FeishuSyncManagement, { permission: 'system:feishu-sync:manage' }),
+    withAppShell('/system/pan-verification', PanVerificationManagement, { permission: 'system:pan-verification:manage' }),
 
     // --- 争议处理 ---
     withAppShell('/dispute/dashboard', DisputeDashboard, { permission: 'dispute:dashboard:view' }),
