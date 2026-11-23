@@ -38,9 +38,12 @@ test('conversation API uses employee scoped lifecycle endpoints', () => {
 test('month generate optimize and check contracts share a conversation id', () => {
   assert.match(monthWorkspace, /usePlanAiConversation\('MONTH'/)
   assert.match(monthWorkspace, /conversationId:\s*active\.id/)
-  assert.match(monthEditor, /const aiConversationId = ref<number>/)
+  // ⚠️ 会话主键是 **UUID 字符串**（后端 `AiConversation.id: String(64)`，
+  //   路由参数也是 `conversation_id: str`）。
+  //   此处曾断言 `ref<number>` —— 那会把 UUID 当数字发给后端，直接 422。
+  assert.match(monthEditor, /const aiConversationId = ref<string>/)
   assert.match(monthEditor, /conversationId: aiConversationId\.value/)
-  assert.equal((employeeAiApi.match(/conversationId\?: number/g) || []).length, 7)
+  assert.equal((employeeAiApi.match(/conversationId\?: string/g) || []).length, 7)
 })
 
 test('week and day assistant routes follow ups through generate or adjust with memory', () => {
