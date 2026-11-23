@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 
 import httpx
@@ -187,12 +188,38 @@ class TestBindingDriven:
         assert rows[0].employee_id == "emp_yao"
 
     def test_黑名单目录被跳过(self, db, emp):
-        """⚠️ ``/口播成品`` 在黑名单里 —— 绑了也不该扫。"""
-        _bind(db, "emp_yao", "/口播成品", "口播")
+        """⚠️ ``/鹿13``（素材库）在黑名单里 —— 绑了也不该扫。"""
+        _bind(db, "emp_yao", "/鹿13", "鹿13")
         svc = _service(db, [])
         result = svc.collect()
         assert result["scanned"] == 0
         assert db.scalars(select(PanWorkloadFile)).all() == []
+
+    def test_口播成品已移出黑名单(self, db, emp):
+        """⚠️⚠️ **回归点（2026-11-21）**
+
+        业务确认：「口播成品不用管，对应的用户绑定就好了」
+        ⇒ ``/口播成品`` **不再是黑名单**，而是**绑定到具体用户**
+        （巫宜珊）走常规的绑定-判定-聚合流程。
+
+        ⇒ 这个测试锁死「黑名单里不再有 ``/口播成品``」，
+        防止有人「顺手」把它加回去 ⇒ 巫宜珊的工作量会**整段归零**。
+        """
+        _bind(db, "emp_yao", "/口播成品", "巫宜珊")
+        svc = _service(db, [
+            dir_response([
+                make_file(
+                    "阔腿裤10.24.mp4",
+                    "/口播成品/10.24/阔腿裤10.24.mp4",
+                    fs_id=901,
+                ),
+            ]),
+        ])
+        result = svc.collect()
+        assert result["scanned"] == 1, "/口播成品 必须能被扫描"
+        rows = db.scalars(select(PanWorkloadFile)).all()
+        assert len(rows) == 1
+        assert rows[0].employee_id == "emp_yao"
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -434,6 +461,89 @@ class TestAnomaly:
         svc.detect_anomalies()
         after = {r.id: r.total_count for r in db.scalars(select(PanWorkloadDaily)).all()}
         assert before == after
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ⚠️⚠️ **业务日期兜底 —— 静默少计回归**
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestDateFallback:
+    """⚠️⚠️ **静默少计的回归测试**
+
+    回归点（2026-11-21，绑定 ``/口播成品`` 后暴露）：
+    ``/口播成品/灯笼裤.mp4`` 与 ``/口播成品/6月18日.mp4`` 直接挂在**根目录**，
+    **目录名里没有日期** ⇒ 原实现返回空 ``business_date``
+    ⇒ 文件**计入判定成立**（``counted=True``）
+    但 ``aggregate_daily`` 会**跳过没有日期的行**
+    ⇒ 「1346 条」在面板上只显示「1345 条」
+    ⇒ **差额永远查不出来**（机器判定值与聚合值对不上，且无任何提示）。
+
+    ⇒ 契约：**机器判定条数 == 日汇总条数**，永远相等。
+    """
+
+    def test_根目录无日期文件不会丢(self, db, emp):
+        _bind(db, "emp_yao", "/口播成品", "巫宜珊")
+        resp = dir_response([
+            make_file("灯笼裤.mp4", "/口播成品/灯笼裤.mp4", fs_id=1),
+            make_file("6月18日.mp4", "/口播成品/6月18日.mp4", fs_id=2),
+        ])
+        svc = _service(db, [resp])
+        result = svc.collect()
+        assert result["counted"] == 2
+
+        files = db.scalars(select(PanWorkloadFile)).all()
+        assert len(files) == 2
+        # ★ 每个计入的文件都必须有业务日期 —— 绝不为空
+        for row in files:
+            assert row.business_date, "计入的文件必须有业务日期，否则会被聚合静默丢弃"
+            assert row.business_date != "", "空字符串同样会被聚合丢弃"
+
+        # ★ 机器判定条数 == 日汇总条数（差 0）
+        file_weight = sum(r.count_weight for r in files if r.counted)
+        dailies = db.scalars(select(PanWorkloadDaily)).all()
+        daily_weight = sum(d.total_count for d in dailies)
+        assert file_weight == daily_weight, (
+            f"机器判定 {file_weight} 条 vs 日汇总 {daily_weight} 条 —— 静默少计！"
+        )
+
+    def test_文件名日期可作兜底(self, db, emp):
+        """⚠️ ``6月18日.mp4`` —— 文件名里有日期 ⇒ 能解析出来。"""
+        _bind(db, "emp_yao", "/口播成品", "巫宜珊")
+        resp = dir_response([
+            make_file("6月18日.mp4", "/口播成品/6月18日.mp4", fs_id=2),
+        ])
+        svc = _service(db, [resp])
+        svc.collect()
+        row = db.scalars(select(PanWorkloadFile)).one()
+        assert row.business_date, "文件名日期应当兜底成功"
+        assert row.business_date.endswith("-06-18")
+
+    def test_日期未知有显式标记(self, db, emp):
+        """⚠️ 兜底到底也要**留痕** —— 主管能看见「这天日期定不出来」。"""
+        _bind(db, "emp_yao", "/口播成品", "巫宜珊")
+        resp = dir_response([
+            make_file("灯笼裤.mp4", "/口播成品/灯笼裤.mp4", fs_id=1),
+        ])
+        svc = _service(db, [resp])
+        svc.collect()
+        row = db.scalars(select(PanWorkloadFile)).one()
+        flags = json.dumps(row.anomaly_flags or [], ensure_ascii=False)
+        assert "date_from_name" in flags or "date_from_ctime" in flags or "date_unknown" in flags, (
+            f"日期兜底必须留痕，实际 flags={flags}"
+        )
+
+    def test_被排除文件也有日期(self, db, emp):
+        """⚠️ 被排除的文件若没日期 ⇒ 那天的「全部被排除」在面板上不可见。"""
+        _bind(db, "emp_yao", "/口播成品", "巫宜珊")
+        resp = dir_response([
+            make_file("灯笼裤.png", "/口播成品/灯笼裤.png", fs_id=1),
+        ])
+        svc = _service(db, [resp])
+        svc.collect()
+        row = db.scalars(select(PanWorkloadFile)).one()
+        assert not row.counted
+        assert row.business_date, "被排除的文件也必须落到某一天，否则那天整行消失"
 
 
 # ─────────────────────────────────────────────────────────────────────────

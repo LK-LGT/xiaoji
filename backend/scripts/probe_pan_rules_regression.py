@@ -73,7 +73,7 @@ def main() -> int:
         # 每日明细
         for emp, items in sorted(per_person.items()):
             daily = defaultdict(int)
-            for f, v in items:
+            for v in items:
                 daily[v.business_date or "(未知)"] += v.count_weight
             print(f"\n【{emp}】每日条数（共 {len(daily)} 天）")
             line = []

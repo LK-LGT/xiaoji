@@ -42,8 +42,7 @@
       <h4 class="section-title">
         人工填报
         <span class="section-hint">完播率 / 留存率</span>
-      </h4>
-      <el-form :inline="true" :model="metricForm" class="metric-form">
+      </h4>      <el-form :inline="true" :model="metricForm" class="metric-form">
         <el-form-item label="日期">
           <el-date-picker
             v-model="metricForm.metric_date"
@@ -108,7 +107,10 @@
       </el-table>
     </section>
 
-    <!-- ③ 发起异议抽屉 -->
+    <!-- ③ 飞书表格填报（★ 剪辑同事主要用这个） -->
+    <PanFeishuTableBinding ref="tableBindingRef" />
+
+    <!-- ④ 发起异议抽屉 -->
     <el-drawer v-model="disputeDrawer" title="提出异议" size="60%">
       <div v-if="disputeTarget" class="dispute-form">
         <el-alert type="warning" :closable="false" class="dispute-note">
@@ -234,6 +236,7 @@ import {
   type PanWorkloadDaily,
   type PanWorkloadFile,
 } from '@/api/panWorkload'
+import PanFeishuTableBinding from './PanFeishuTableBinding.vue'
 
 /** 争议类型中文名。 */
 const DISPUTE_LABELS: Record<string, string> = {
@@ -279,6 +282,7 @@ const disputeForm = reactive({
 
 const evidenceInput = ref<HTMLInputElement | null>(null)
 const evidenceMetricId = ref('')
+const tableBindingRef = ref<InstanceType<typeof PanFeishuTableBinding> | null>(null)
 
 /** 加载我的数据。 */
 async function loadAll() {

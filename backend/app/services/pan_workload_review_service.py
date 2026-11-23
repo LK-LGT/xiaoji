@@ -500,6 +500,7 @@ class PanWorkloadReviewService:
         final_weight: int | None = None,
         resolution_note: str = "",
         actor_id: str = "",
+        expect_review_id: str = "",
     ) -> PanWorkloadReviewItem:
         """裁定单个争议项。
 
@@ -510,12 +511,21 @@ class PanWorkloadReviewService:
 
         ⚠️ **``need_more`` 不改数**
         只有 ``upheld`` 才会影响最终条数。
+
+        ⚠️ **``expect_review_id``（2026-11-23 加）**
+        路由是 ``/reviews/{review_id}/items/{item_id}/resolve`` ⇒
+        **争议项必须属于该工单**。不传则跳过校验（内部调用方用）。
         """
         if resolution not in ("upheld", "rejected", "need_more"):
             raise PanWorkloadReviewError(f"裁定结果非法：{resolution}")
         item = self.db.get(PanWorkloadReviewItem, item_id)
         if item is None:
             raise PanWorkloadReviewError("争议项不存在", 404)
+        # ⚠️⚠️ **归属校验**（2026-11-23 加）—— 争议项必须属于该工单。
+        #    ⚠️ 不校验 ⇒ 路由里的 ``review_id`` 形同虚设，
+        #    主管可以拿 A 工单的 review_id 去裁定 B 工单的争议项。
+        if expect_review_id and item.review_id != expect_review_id:
+            raise PanWorkloadReviewError("争议项不属于该工单", 404)
         review = self.get_review(item.review_id)
         if review.status != "pending":
             raise PanWorkloadReviewError("工单已裁定", 409)

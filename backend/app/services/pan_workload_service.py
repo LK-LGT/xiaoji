@@ -44,9 +44,8 @@ from .pan_workload_rules import (
     DEFAULT_EXCLUDE_DIR_SEGMENTS,
     DEFAULT_EXCLUDE_KEYWORDS,
     FileVerdict,
-    compute_content_digest,
     judge_file,
-    resolve_business_date,
+    resolve_file_business_date,
     resolve_owner,
 )
 
@@ -240,15 +239,32 @@ class PanWorkloadService:
             if bind_type == "unbound":
                 bind_type = "path"
 
-            # ⚠️⚠️ **被排除的文件也必须有业务日期**
+            # ⚠️⚠️ **每个文件都必须有业务日期** —— 否则**静默少计**
+            #
             # ``judge_file`` 对扩展名/关键词/草稿目录是**提前 return** 的，
             # 此时 ``business_date`` 是空的。若直接落空，
             # 聚合时会因为「没有日期」被跳过 ⇒ **那天在日汇总里整行消失**
             # ⇒ 面板上看不到「这天有文件但全被排除了」⇒ 静默少计。
-            # ⇒ 这里补算一次日期，保证排除项也能落到某一天。
+            #
+            # ⚠️⚠️ **计入的文件更严重**（2026-11-21 回归点）
+            # ``/口播成品/灯笼裤.mp4`` 与 ``/口播成品/6月18日.mp4`` 直接挂在根目录，
+            # **目录名里没有日期** ⇒ 日期为空
+            # ⇒ 文件**计入判定成立**（``counted=True``）
+            # 但 ``aggregate_daily`` 会跳过没有日期的行
+            # ⇒ 「1346 条」在面板上只显示「1345 条」
+            # ⇒ **差额永远查不出来**（机器判定值与聚合值对不上，无提示）。
+            #
+            # ⇒ ``resolve_file_business_date`` 保证**永不返回空**
+            #    （目录日期 → 文件名日期 → 上传时间 → 显式占位）。
             if not verdict.business_date:
-                day, _ = resolve_business_date(f.path, f.name)
+                day, extra = resolve_file_business_date(
+                    f, default_year=rule_kwargs.get("default_year", 0)
+                )
                 verdict.business_date = day
+                verdict.anomaly_flags = [
+                    *verdict.anomaly_flags,
+                    *[x for x in extra if x not in verdict.anomaly_flags],
+                ]
 
             is_dup = False
             dup_kind = "none"

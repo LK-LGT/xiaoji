@@ -357,3 +357,78 @@ export const panWorkloadActions = {
   aggregate: (payload: { period?: string; employee_ids?: string[] }) =>
     http.post(`${BASE}/aggregate`, payload),
 }
+
+// ===========================================================================
+// ★ 飞书表格填报（2026-11-21）
+// ===========================================================================
+
+/**
+ * 飞书表格绑定。
+ *
+ * ⚠️ **一人一张表** —— 后端有唯一约束 `uq_pan_feishu_metric_source_employee`。
+ * ⇒ 归属由绑定关系决定，不需要在表里写「剪辑人」列 ⇒ 杜绝张冠李戴。
+ */
+export interface PanFeishuMetricSource {
+  id: string
+  employeeId: string
+  /** `sheet`（电子表格）/ `bitable`（多维表格） */
+  tableKind: 'sheet' | 'bitable'
+  objToken: string
+  tableId: string
+  sheetId: string
+  title: string
+  sourceUrl: string
+  active: boolean
+  lastEditTime: string
+  lastRowCount: number
+  lastSyncedAt: string | null
+  lastError: string
+}
+
+/** 填报模板说明（表头长什么样）。 */
+export interface PanFeishuTableTemplate {
+  sheetKind: string
+  sheetKindBitable: string
+  header: string[]
+  example: string[][]
+  rules: string[]
+  aliasTable: Record<string, string[]>
+}
+
+/** 飞书表格填报 API。 */
+export const feishuTableApi = {
+  /** 列绑定（员工只看自己的）。 */
+  listSources: () =>
+    http.get<{ items: PanFeishuMetricSource[] }, { items: PanFeishuMetricSource[] }>(
+      `${BASE}/feishu-tables/sources`,
+    ),
+
+  /** 绑定表格（HR/管理员）。 */
+  bindSource: (payload: {
+    employee_id: string
+    source_url: string
+    table_kind?: 'sheet' | 'bitable'
+  }) =>
+    http.post<{ item: PanFeishuMetricSource }, { item: PanFeishuMetricSource }>(
+      `${BASE}/feishu-tables/sources`,
+      payload,
+    ),
+
+  /** 解绑（HR/管理员）。 */
+  unbindSource: (sourceId: string) =>
+    http.delete(`${BASE}/feishu-tables/sources/${sourceId}`),
+
+  /** 同步某张表（员工可同步自己的）。 */
+  syncSource: (sourceId: string) =>
+    http.post(`${BASE}/feishu-tables/sources/${sourceId}/sync`),
+
+  /** 批量同步（HR/管理员）。 */
+  syncAll: (sourceId = '') =>
+    http.post(`${BASE}/feishu-tables/sync`, { source_id: sourceId }),
+
+  /** 模板说明。 */
+  getTemplate: () =>
+    http.get<{ data: PanFeishuTableTemplate }, { data: PanFeishuTableTemplate }>(
+      `${BASE}/feishu-tables/template`,
+    ),
+}

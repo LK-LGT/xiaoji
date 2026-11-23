@@ -54,6 +54,11 @@ from ..domain.pan_workload_models import (
     PanWorkloadReviewArtifact,
 )
 from ..services.access_control import build_access_context
+from ..services.department_modules import (
+    PAN_WORKLOAD_MODULE,
+    has_module,
+    module_guard_message,
+)
 from ..services.pan_manual_metric_service import (
     PanManualMetricError,
     PanManualMetricService,
@@ -62,13 +67,60 @@ from ..services.pan_workload_review_service import (
     PanWorkloadReviewError,
     PanWorkloadReviewService,
 )
+from ..services.pan_workload_rules import validate_bindings
 from ..services.pan_workload_service import PanWorkloadService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/baidu/workload", tags=["baidu-pan-workload"])
 
-#: 证据上传上限（与���务层一致）
+def _require_pan_module(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_user),
+) -> Employee:
+    """★ **部门板块守卫** —— 整个 ``/v1/baidu/workload`` 的总闸门。
+
+    ⚠️⚠️ **为什么必须有这层（2026-11-21 用户投诉）**
+
+    用户反馈：「别的部门为什么会有剪辑板块？」
+
+    修复前的状况：``pan:workload:view`` 授予了基础 ``employee`` 角色
+    ⇒ **仓储部、客服部**的侧边栏也出现「剪辑工作量」
+    ⇒ 点进去发现自己一条数据都没有。
+
+    ⇒ 板块隔离**必须由后端兜底** ——
+    前端隐藏菜单只是表象，用户仍可直接敲 URL 访问
+    ⇒ 「看不见入口但照样能访问」等于没隔离。
+
+    ⚠️ **为什么做成 router 级依赖**
+    逐个端点加守卫 ⇒ 一定会有人漏掉新加的端点
+    ⇒ **总闸门在 router 上**，新端点自动受保护。
+
+    ⚠️ **HR / 管理员豁免**（见 ``department_modules.is_admin_or_hr``）
+    他们要配置板块、维护绑定、核对全局数据 ⇒ 不能被挡住。
+
+    ⚠️ **判定口径与飞书端共用**（2026-11-21）
+    飞书端填报也受同一套板块约束 ⇒ 两处判定若各写一份，
+    迟早漂移 ⇒ 提示文案与判定都取自 ``department_modules``。
+
+    Returns:
+        通过则返回当前用户；不通过抛 403。
+    """
+    if not has_module(db, user, PAN_WORKLOAD_MODULE):
+        raise HTTPException(
+            status_code=403,
+            detail=module_guard_message(PAN_WORKLOAD_MODULE),
+        )
+    return user
+
+
+router = APIRouter(
+    prefix="/v1/baidu/workload",
+    tags=["baidu-pan-workload"],
+    # ⚠️ **整组端点的板块守卫** —— 见 ``_require_pan_module``。
+    dependencies=[Depends(_require_pan_module)],
+)
+
+#: 证据上传上限（与服务层一致）
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
@@ -622,6 +674,38 @@ def create_binding(
     existing.employee_id = payload.employee_id
     existing.folder_name = payload.folder_name or folder.rsplit("/", 1)[-1]
     existing.active = payload.active
+
+    # ⚠️⚠️ **必须校验「前缀互不冲突」** —— 这是归属正确性的地基
+    #
+    # 归属判定 = ``file_path.startswith(folder_path)``（见
+    # ``pan_workload_rules.resolve_owner``）。
+    # ⇒ ``/成品`` 与 ``/成品-小瑶`` **互为前缀** ⇒ 同一个文件会命中两条绑定
+    #    ⇒ 采集时判为 ``ambiguous``（归属为空，不落任何人），
+    #    或者在别的实现里「取第一条」⇒ **同一份工作量算给两个人**。
+    #
+    # ⚠️ 这段校验在**服务层**（``validate_bindings``）已经写好了，
+    #    但**路由层没调用** ⇒ 配错绑定不会报错，只会在采集时静默算错。
+    # ⇒ 这里补上：把「将要生效的全部绑定」一起送进校验器。
+    active_bindings = [
+        {
+            "employee_id": b.employee_id,
+            "folder_path": b.folder_path,
+            "active": b.active,
+        }
+        for b in db.scalars(select(PanAccountBinding)).all()
+        if b.id != existing.id
+    ]
+    active_bindings.append(
+        {
+            "employee_id": existing.employee_id,
+            "folder_path": existing.folder_path,
+            "active": existing.active,
+        }
+    )
+    conflicts = validate_bindings(active_bindings)
+    if conflicts:
+        raise HTTPException(status_code=409, detail="；".join(conflicts))
+
     db.commit()
     return {"item": _serialize_binding(existing)}
 
@@ -903,7 +987,16 @@ def resolve_review_item(
     """裁定单个争议项 —— **主管专属**。"""
     _require_leader(db, user)
     svc = PanWorkloadReviewService(db)
-    review = svc.get_review(review_id)
+    # ⚠️ **先确认工单存在** —— 不存在直接 404（而不是等 item 找不到时报 404）。
+    svc.get_review(review_id)
+    # ⚠️⚠️ **必须校验「争议项属于这个工单」**（2026-11-23 修的真实漏洞）
+    # ------------------------------------------------------------------
+    # 路由签名是 ``/reviews/{review_id}/items/{item_id}/resolve``，
+    # 但 ``svc.resolve_item()`` **只按 item_id 找项** ⇒
+    # ⚠️ **review_id 形同虚设**：
+    #    主管 A 拿自己工单的 review_id + 别人工单的 item_id 就能串门裁定。
+    #
+    # ⇒ 显式比对 ``item.review_id == review_id``，对不上直接 404。
     try:
         item = svc.resolve_item(
             item_id,
@@ -911,6 +1004,7 @@ def resolve_review_item(
             final_weight=payload.final_weight,
             resolution_note=payload.resolution_note,
             actor_id=user.id,
+            expect_review_id=review_id,
         )
         db.commit()
     except PanWorkloadReviewError as exc:

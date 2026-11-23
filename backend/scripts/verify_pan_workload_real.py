@@ -11,8 +11,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import delete, select  # noqa: E402
-
 from app.core.db import get_sessionmaker  # noqa: E402
 from app.domain.models import Employee  # noqa: E402
 from app.domain.pan_workload_models import (  # noqa: E402
@@ -21,6 +19,7 @@ from app.domain.pan_workload_models import (  # noqa: E402
     PanWorkloadFile,
 )
 from app.services.pan_workload_service import PanWorkloadService  # noqa: E402
+from sqlalchemy import delete, select  # noqa: E402
 
 #: 期望值 —— 来自探针脚本 ``probe_pan_rules_regression.py`` 的真实回归结果
 EXPECTED = {

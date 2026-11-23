@@ -26,15 +26,13 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..domain.models import MetricValue
 from ..domain.pan_workload_models import (
     PanManualMetric,
     PanManualMetricArtifact,
     PanWorkloadDaily,
-    PanWorkloadFile,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,11 +51,42 @@ METRIC_COMPLETION_RATE = "video_completion_rate"
 #: 视频留存率（**不是** HR 的「留任率」—— 见上方说明）
 METRIC_RETENTION_RATE = "video_retention_rate"
 
+#: ★ **普通视频条数**（2026-11-23 业务确认）
+#:
+#: ⚠️ **为什么数量与比率要分开存**
+#: 数量（条）与比率（%）**量纲不同**，塞进同一列会让
+#: 「值域校验」和「月度聚合的平均值」都算错。
+#: ⇒ 数量走整数指标码，比率走 ``video_*_rate`` 指标码。
+METRIC_NORMAL_COUNT = "video_normal_count"
+#: ★ **OOTD 条数**（业务已确认 OOTD 每条算 2 条工作量，此处填**条数**）
+METRIC_OOTD_COUNT = "video_ootd_count"
+#: ★ **智能体条数**（业务已确认智能体每条算 2 条工作量，此处填**条数**）
+METRIC_AGENT_COUNT = "video_agent_count"
+
 #: ⚠️ **允许填报的指标** —— 白名单，防止写任意指标码污染算分集
 ALLOWED_METRIC_CODES = (
     METRIC_COMPLETION_RATE,
     METRIC_RETENTION_RATE,
+    METRIC_NORMAL_COUNT,
+    METRIC_OOTD_COUNT,
+    METRIC_AGENT_COUNT,
 )
+
+#: ★ **数量类指标**（2026-11-23）—— 值域是「非负整数」，不是 0~1。
+#:
+#: ⚠️ **为什么不能共用比率的值域**
+#: 比率是 0~1（35% ⇒ 0.35），数量是 0~N（剪了 8 条 ⇒ 8）。
+#: ⇒ 共用 0~1 的话，「8 条」会被判成越界直接拒掉。
+COUNT_METRIC_CODES = frozenset(
+    {
+        METRIC_NORMAL_COUNT,
+        METRIC_OOTD_COUNT,
+        METRIC_AGENT_COUNT,
+    }
+)
+
+#: 数量类指标的值域上限（防止手滑填个 999999 进来）
+COUNT_MAX = 10000.0
 
 #: 指标值的取值范围（比率类 0~1）
 RATE_MIN = 0.0
@@ -133,7 +162,17 @@ class PanManualMetricService:
             raise PanManualMetricError(f"填报粒度非法：{scope}")
         if scope == "file" and not target_key:
             raise PanManualMetricError("逐条填报必须指定 target_key（网盘文件 id）")
-        if not (RATE_MIN <= metric_value <= RATE_MAX):
+        # ⚠️ **量纲不同，值域也不同**（2026-11-23）
+        #   比率 0~1（35% ⇒ 0.35）；数量 0~10000 且**必须是整数**。
+        #   ⇒ 共用 0~1 的话「剪了 8 条」会被判越界直接拒掉。
+        if metric_code in COUNT_METRIC_CODES:
+            if metric_value < 0 or metric_value > COUNT_MAX:
+                raise PanManualMetricError(
+                    f"数量超出范围：{metric_value}（应在 0~{COUNT_MAX:.0f}）"
+                )
+            if float(metric_value) != int(metric_value):
+                raise PanManualMetricError(f"条数必须是整数：{metric_value}")
+        elif not (RATE_MIN <= metric_value <= RATE_MAX):
             raise PanManualMetricError(
                 f"指标值超出范围：{metric_value}（应在 {RATE_MIN}~{RATE_MAX}）"
             )

@@ -17,10 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from backend.app.services.baidu_pan_client import PanFile  # noqa: E402
 from backend.app.services.pan_workload_rules import (  # noqa: E402
     DEFAULT_MARKER_RULES,
+    UNKNOWN_DATE,
     FileVerdict,
     judge_file,
     match_markers,
     resolve_business_date,
+    resolve_file_business_date,
     resolve_marker_rules,
     resolve_owner,
     strip_version_suffix,
@@ -197,6 +199,83 @@ class TestBusinessDate:
             "/成品-小雨/10月/10.17/10月17日 (1).mp4", "10月17日 (1).mp4"
         )
         assert "name_date_conflict" not in anomalies
+
+
+# ─────────────────────────────────────────────────────────────
+# ⚠️⚠️ **业务日期兜底 —— 静默少计回归**
+# ─────────────────────────────────────────────────────────────
+
+
+class TestDateFallback:
+    """⚠️⚠️ **契约：``resolve_file_business_date`` 永远不返回空字符串**
+
+    ``aggregate_daily`` 会跳过 ``business_date`` 为空的行
+    ⇒ 空日期 = 该文件**永远进不了日汇总** = 工作量**静默少计**，
+    而且机器判定值与聚合值**对不上却查不出原因**。
+
+    真实回归点（2026-11-21，绑定 ``/口播成品`` 后暴露）：
+    ``/口播成品/灯笼裤.mp4`` 直接挂在根目录，目录名里没有日期
+    ⇒ 机器判定 1347 vs 面板 1345，**差 2**。
+    """
+
+    def test_目录日期优先(self):
+        f = _mk("x.mp4", "/口播成品/10.24/阔腿裤.mp4")
+        day, anomalies = resolve_file_business_date(f)
+        assert day.endswith("-10-24")
+        assert "date_unparsed" not in anomalies
+
+    def test_文件名日期兜底(self):
+        """⚠️ ``/口播成品/6月18日.mp4`` —— 文件名里有中文日期。"""
+        f = _mk("6月18日.mp4", "/口播成品/6月18日.mp4")
+        day, anomalies = resolve_file_business_date(f)
+        assert day, "兜底必须成功，绝不为空"
+        assert day.endswith("-06-18")
+        assert "date_from_name" in anomalies
+
+    def test_点分文件名日期兜底(self):
+        f = _mk("5.28 白衬衫.mp4", "/口播成品/5.28 白衬衫.mp4")
+        day, anomalies = resolve_file_business_date(f)
+        assert day.endswith("-05-28")
+        assert "date_from_name" in anomalies
+
+    def test_上传时间兜底(self):
+        """⚠️ 目录与文件名都没有日期 ⇒ 退回 ``ctime`` 并留痕。"""
+        f = PanFile(
+            path="/口播成品/灯笼裤.mp4",
+            name="灯笼裤.mp4",
+            is_dir=False,
+            size=1000,
+            ctime=1790000000,  # 2026-09 前后
+        )
+        day, anomalies = resolve_file_business_date(f)
+        assert day, "兜底必须成功，绝不为空"
+        assert "date_from_ctime" in anomalies
+
+    def test_全都没有时用显式占位(self):
+        """⚠️ 兜底到底也要**有值** —— 绝不返回空串。"""
+        f = _mk("灯笼裤.mp4", "/口播成品/灯笼裤.mp4")  # ctime=0
+        day, anomalies = resolve_file_business_date(f)
+        assert day == UNKNOWN_DATE
+        assert "date_unknown" in anomalies
+
+    def test_永远不返回空(self):
+        """★ **核心契约** —— 任何输入都不能返回空串。"""
+        for path, name in [
+            ("/口播成品/灯笼裤.mp4", "灯笼裤.mp4"),
+            ("/口播成品/杂项/x.mp4", "x.mp4"),
+            ("/成品-小瑶/11月/11.13/x.mp4", "x.mp4"),
+            ("/", "x.mp4"),
+        ]:
+            for ctime in (0, 1790000000):
+                f = PanFile(
+                    path=path, name=name, is_dir=False, size=1, ctime=ctime
+                )
+                day, _ = resolve_file_business_date(f)
+                assert day, f"path={path} ctime={ctime} 解析出了空日期"
+
+    def test_占位日期不与真实日期混淆(self):
+        """⚠️ 占位日期必须是**不可能是真实业务日**的值。"""
+        assert UNKNOWN_DATE == "0001-01-01"
 
 
 # ─────────────────────────────────────────────────────────────

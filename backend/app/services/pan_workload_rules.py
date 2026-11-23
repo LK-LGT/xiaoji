@@ -40,8 +40,11 @@ DEFAULT_EXCLUDE_KEYWORDS: tuple[str, ...] = (
 )
 
 #: 排除的目录路径段
+#:
+#: ⚠️ ``之前的成品``（2026-11-21 加入）—— ``/口播成品/之前的成品``
+#: 是**历史归档目录**（110 个 mp4），不属于当期产出 ⇒ 排除。
 DEFAULT_EXCLUDE_DIR_SEGMENTS: tuple[str, ...] = (
-    "草稿", "工程", "prj", "aep", "project", "源文件", "素材",
+    "草稿", "工程", "prj", "aep", "project", "源文件", "素材", "之前的成品",
 )
 
 #: 默认标记字典 —— **业务已确认（2026-11-21）：智能体 / OOTD 各算 2 条**
@@ -58,6 +61,16 @@ _NAME_DATE_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 #: 序号后缀（``-2`` / ``(1)`` / ``（6）``）—— 用于识别「版本号」而非标记
 _VERSION_SUFFIX = re.compile(r"(?:[-_]\d+|\(\d+\)|（\d+）)$")
+
+#: ⚠️ **无法解析业务日期时的显式占位日期**
+#:
+#: 为什么需要它：``aggregate_daily`` 会跳过 ``business_date`` 为空的行
+#: ⇒ 那些文件**永远进不了日汇总** ⇒ 工作量**静默少计**，
+#: 而且差额**对不上却查不出原因**（机器判定值 1346 vs 聚合值 1345）。
+#:
+#: ⇒ 用一个**不可能存在的日期**占位：既不与真实业务日期混淆，
+#:    又能在日汇总里**占一行**，让主管看得见、能人工复核。
+UNKNOWN_DATE = "0001-01-01"
 
 
 @dataclass(slots=True)
@@ -204,6 +217,69 @@ def resolve_business_date(
             return dir_date.isoformat(), anomalies
     anomalies.append("date_unparsed")
     return "", anomalies
+
+
+def resolve_file_business_date(
+    file: PanFile,
+    *,
+    default_year: int = 0,
+) -> tuple[str, list[str]]:
+    """解析文件的**最终业务日期** → ``(YYYY-MM-DD, 异常标记列表)``。
+
+    ⚠️⚠️ **绝不返回空字符串** —— 空日期会让 ``aggregate_daily``
+    静默跳过该文件 ⇒ 工作量**无声少计**（差额查不出来）。
+
+    ⇒ **降级链**（逐级降级，每级都留痕）：
+
+    1. **目录日期**（``/11月/11.14/xxx.mp4``）—— 首选，铁律 3
+    2. **文件名日期**（``11.14-xxx.mp4``）—— 次选
+    3. **上传时间**（``ctime``）—— 降级，会标 ``date_from_ctime``
+    4. **显式占位**（``0001-01-01``）—— 最后兜底，标 ``date_unknown``
+
+    ⚠️ 第 3 级是**真正的降级** —— 上传时间比制作日期晚
+    （实测 11.5 的片子 11.6 才上传）⇒ 统计会错位。
+    ⇒ 必须标 ``date_from_ctime`` 让主管知道这天的数据**不完全可信**。
+
+    ⚠️ 第 4 级不会与真实日期混淆，但**在日汇总里占一行**
+    ⇒ 主管能看见「这天有文件但日期定不出来」，进而人工复核。
+
+    回归点（2026-11-21，绑定 ``/口播成品`` 后暴露）：
+    ``/口播成品/灯笼裤.mp4`` 与 ``/口播成品/6月18日.mp4`` 直接挂在根目录，
+    **目录名里没有日期** ⇒ 原实现返回空 ⇒ 计入判定成立但聚合时被丢弃
+    ⇒ 「1346 条」在面板上只显示「1345 条」。
+    """
+    day, anomalies = resolve_business_date(
+        file.path or "", file.name or "", default_year=default_year
+    )
+    if day:
+        return day, anomalies
+
+    anomalies = list(anomalies)
+
+    # ── 第 2 级：文件名日期 ──
+    name_date = _extract_name_date(file.name or "")
+    if name_date:
+        month, day_of_month = name_date
+        year = default_year or time.localtime().tm_year
+        try:
+            resolved = date(year, month, day_of_month)
+        except ValueError:
+            resolved = None
+        if resolved:
+            anomalies.append("date_from_name")
+            return resolved.isoformat(), anomalies
+
+    # ── 第 3 级：上传时间（降级）──
+    if getattr(file, "ctime", 0):
+        anomalies.append("date_from_ctime")
+        return (
+            time.strftime("%Y-%m-%d", time.localtime(file.ctime)),
+            anomalies,
+        )
+
+    # ── 第 4 级：显式占位（绝不静默丢弃）──
+    anomalies.append("date_unknown")
+    return UNKNOWN_DATE, anomalies
 
 
 def compute_content_digest(file: PanFile) -> str:
