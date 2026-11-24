@@ -134,6 +134,19 @@ import {
   type AiConversationMessage,
   type AiPlanType,
 } from '@/api/aiConversations'
+// ⚠️ **纯逻辑已抽到 `@/utils/aiConversationPanel`**（CI-5 阶段 2 第四轮）⇒ 这里只做转发。
+import {
+  buildAiPeriodLabel,
+  buildAiResultSummary,
+  canPreviewAiResult,
+  countHiddenAiMessages,
+  formatAiCompactTime,
+  isAiConversationReadonly,
+  resolveAiMessageBody,
+  resolveAiMessageRoleLabel,
+  resolveAiOperationLabel,
+  selectVisibleAiMessages,
+} from '@/utils/aiConversationPanel'
 
 const props = withDefaults(defineProps<{
   planType: AiPlanType
@@ -176,13 +189,10 @@ const nextBeforeId = ref<string>()
 const messageViewport = ref<HTMLElement>()
 let scopeRequest = 0
 
-const readonlyView = computed(() => Boolean(viewingConversation.value && viewingConversation.value.status === 'ENDED'))
-const visibleMessages = computed(() => messages.value.slice(-5))
-const hiddenMessageCount = computed(() => Math.max(0, messages.value.length - visibleMessages.value.length))
-const periodLabel = computed(() => {
-  const type = props.planType === 'MONTH' ? '月计划' : props.planType === 'WEEK' ? '周计划' : '日计划'
-  return `${props.periodKey} ${type}`
-})
+const readonlyView = computed(() => isAiConversationReadonly(viewingConversation.value))
+const visibleMessages = computed(() => selectVisibleAiMessages(messages.value))
+const hiddenMessageCount = computed(() => countHiddenAiMessages(messages.value))
+const periodLabel = computed(() => buildAiPeriodLabel(props.planType, props.periodKey))
 
 async function resolveActive() {
   if (!props.periodKey) return
@@ -321,55 +331,31 @@ function reload() {
   void resolveActive()
 }
 
+// ⚠️ **纯逻辑已抽到 `@/utils/aiConversationPanel`**：
+//   `roleLabel` / `operationLabel` / `messageBody` / `compactTime` /
+//   `resultSummary` / `canPreviewResult`
 function roleLabel(role: AiConversationMessage['role']) {
-  return role === 'USER' ? '我' : role === 'ASSISTANT' ? 'AI 助手' : '操作记录'
+  return resolveAiMessageRoleLabel(role)
 }
 
 function operationLabel(code?: string) {
-  const labels: Record<string, string> = {
-    MONTH_PLAN_DRAFT: '生成月计划', MONTH_PLAN_ITEM_OPTIMIZE: '优化计划事项', MONTH_PLAN_CHECK: '检查月计划',
-    WEEK_PLAN_DRAFT: '生成周计划', WEEK_PLAN_ADJUST: '调整周计划', DAY_PLAN_DRAFT: '生成日计划', DAY_PLAN_ADJUST: '调整日计划',
-    PREVIEW: '已查看建议', APPLY_ALL: '已应用到草稿', APPLY_ITEM: '已应用到草稿', APPLY_FIELDS: '已应用到草稿', ADOPT_WITH_EDIT: '修改后采纳', IGNORE: '已忽略',
-  }
-  return code ? labels[code] || code : ''
+  return resolveAiOperationLabel(code)
 }
 
 function messageBody(message: AiConversationMessage) {
-  const raw = (message.textContent || '').trim()
-  const mapped = operationLabel(message.operationCode || raw)
-  if (message.role === 'EVENT') return mapped || '操作已记录'
-  if (!raw) return mapped || '内容已记录'
-  return mapped && raw === (message.operationCode || raw) ? mapped : raw
+  return resolveAiMessageBody(message)
 }
 
 function compactTime(value?: string) {
-  if (!value) return ''
-  const normalized = value.replace('T', ' ')
-  return normalized.length >= 16 ? normalized.slice(11, 16) : normalized
+  return formatAiCompactTime(value)
 }
 
 function resultSummary(message: AiConversationMessage) {
-  const payload = message.payload || {}
-  if (Array.isArray(payload.items)) {
-    return payload.items.map((raw, index) => {
-      const item = raw as Record<string, unknown>
-      return [
-        `${index + 1}. ${String(item.content || 'AI 未返回工作内容')}`,
-        item.deliverable ? `交付物：${String(item.deliverable)}` : '',
-        item.quality ? `质量：${String(item.quality)}` : '',
-      ].filter(Boolean).join('\n')
-    }).join('\n\n') || 'AI 未返回计划建议'
-  }
-  if (Array.isArray(payload.issues)) return `共 ${payload.issues.length} 条检查提示`
-  if (payload.item) return '1 条计划事项优化建议'
-  if (typeof payload.content === 'string') return payload.content
-  return message.textContent || '结构化建议已保存'
+  return buildAiResultSummary(message)
 }
 
 function canPreviewResult(message: AiConversationMessage) {
-  if (message.role !== 'ASSISTANT' || !message.payload) return false
-  const payload = message.payload
-  return Array.isArray(payload.items) || typeof payload.content === 'string'
+  return canPreviewAiResult(message)
 }
 
 async function scrollToBottom() {

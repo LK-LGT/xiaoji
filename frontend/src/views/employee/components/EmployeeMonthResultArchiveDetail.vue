@@ -136,6 +136,26 @@ import EmployeeMonthResultPrintSheet from './EmployeeMonthResultPrintSheet.vue'
 import ResultApprovalTimeline from './ResultApprovalTimeline.vue'
 import ResultVersionHistory from './ResultVersionHistory.vue'
 import MonthPlanTaskContentView from '@/components/MonthPlanTaskContentView.vue'
+// ⚠️ **纯逻辑已抽到 `@/utils/monthResultArchive`**（CI-5 阶段 2 第四轮）⇒ 这里只做转发。
+import {
+  buildArchiveApprovalEvents,
+  buildArchivePrintDetails,
+  buildArchiveVersionRows,
+  formatArchiveDateTime,
+  formatArchiveFileSize,
+  formatArchiveMoney,
+  formatArchiveNumber,
+  formatArchiveOptionalMoney,
+  hasLoadingArchiveTask,
+  hasRejectedArchiveTask,
+  resolveArchiveTaskState,
+  resolveArchiveTaskStatusMeta,
+  resolveSelectedArchiveTask,
+  selectArchiveResultTasks,
+  selectFailedArchiveTaskIds,
+  selectFailedArchiveTasks,
+  sumArchivePersonalPerformance,
+} from '@/utils/monthResultArchive'
 
 type DetailTab = 'content' | 'approval' | 'history'
 type TaskLoadState = 'idle' | 'loading' | 'loaded' | 'failed'
@@ -157,47 +177,42 @@ const printedAt = ref('')
 const tabs = [{ label: '成果内容', value: 'content' as const }, { label: '审批记录', value: 'approval' as const }, { label: '历史版本', value: 'history' as const }]
 
 const archiveStatus = computed(() => monthArchiveStatusMeta(archive.value?.status || 'PARTIAL'))
-const resultTasks = computed(() => archive.value?.tasks.filter((task) => task.latestVersion) || [])
-const selectedTask = computed(() => resultTasks.value.find((task) => task.id === selectedTaskId.value) || resultTasks.value[0] || null)
+// ⚠️ **纯逻辑已抽到 `@/utils/monthResultArchive`**：下面这些 computed 只是转发。
+const resultTasks = computed(() => selectArchiveResultTasks(archive.value?.tasks ?? []))
+const selectedTask = computed(() => resolveSelectedArchiveTask(archive.value?.tasks ?? [], selectedTaskId.value))
 const selectedDetail = computed(() => selectedTask.value ? taskDetails.get(selectedTask.value.id)?.detail || null : null)
-const failedTasks = computed(() => archive.value?.tasks.filter((task) => taskDetails.get(task.id)?.state === 'failed') || [])
-const failedTaskIds = computed(() => failedTasks.value.map((task) => task.id))
-const detailsLoading = computed(() => [...taskDetails.values()].some((item) => item.state === 'loading'))
-const hasRejectedTask = computed(() => archive.value?.tasks.some((task) => task.status === 'REJECTED') || false)
-const performanceTotal = computed(() => [...taskDetails.values()].reduce((sum, item) => sum + Number(item.detail?.personalPerformance || 0), 0))
-const printDetails = computed<Record<string, EmployeeResultDetailResp>>(() => Object.fromEntries(
-  [...taskDetails.entries()].flatMap(([taskId, value]) => value.detail ? [[taskId, value.detail]] : []),
-))
-const approvalEvents = computed(() => {
-  const detail = selectedDetail.value
-  if (!detail) return []
-  return [
-    { label: '员工提交', operatorName: '本人', occurredAt: detail.submittedAt, state: 'SUBMITTED', current: detail.status === 'submitted' },
-    ...(detail.suggestedAt ? [{ label: '领导处理', operatorName: '直属领导', occurredAt: detail.suggestedAt, comment: detail.leaderSuggestion, state: detail.status === 'rejected' ? 'REJECTED' : 'APPROVED', current: false }] : []),
-    ...(detail.confirmedAt ? [{ label: '部门确认', operatorName: '部门负责人', occurredAt: detail.confirmedAt, comment: detail.confirmComment, state: 'CONFIRMED', current: false }] : []),
-  ]
-})
+const failedTasks = computed(() => selectFailedArchiveTasks(archive.value?.tasks ?? [], taskDetails))
+const failedTaskIds = computed(() => selectFailedArchiveTaskIds(archive.value?.tasks ?? [], taskDetails))
+const detailsLoading = computed(() => hasLoadingArchiveTask(taskDetails))
+const hasRejectedTask = computed(() => hasRejectedArchiveTask(archive.value?.tasks ?? []))
+const performanceTotal = computed(() => sumArchivePersonalPerformance(taskDetails))
+const printDetails = computed(() => buildArchivePrintDetails<EmployeeResultDetailResp>(taskDetails))
+const approvalEvents = computed(() => buildArchiveApprovalEvents(selectedDetail.value))
 const versions = computed(() => {
   const task = selectedTask.value
   if (!task || !options.value) return []
-  return options.value.resultVersions
-    .filter((version) => version.monthPlanId === archive.value?.planId && version.monthPlanItemId === task.id && !['draft', 'not_submitted'].includes(version.status))
-    // BUG-R6-14：成果 ID 是字符串，不能做数值减法。
-    .sort((left, right) => String(right.submittedAt).localeCompare(String(left.submittedAt)) || String(right.id).localeCompare(String(left.id)))
-    .map((version) => ({ resultId: version.id, versionNo: version.versionNo, submittedAt: dateTime(version.submittedAt), changeSummary: version.status === 'rejected' ? '成果退回' : version.status === 'confirmed' ? '成果确认' : '提交成果', rejectionComment: version.status === 'rejected' ? version.leaderSuggestion : '', current: version.id === task.latestVersion?.id }))
+  // ⚠️ BUG-R6-14：成果 ID 是字符串，不能做数值减法 ⇒ 排序用字符串比较。
+  return buildArchiveVersionRows(options.value.resultVersions, {
+    planId: archive.value?.planId,
+    taskId: task.id,
+    latestVersionId: task.latestVersion?.id,
+  })
 })
 
-function taskState(task: MonthResultArchiveTask): TaskDetailState { return taskDetails.get(task.id) || { state: 'idle', detail: null, error: '' } }
-function taskStatusMeta(task: MonthResultArchiveTask) { return ({ REJECTED: { label: '已退回', type: 'danger' as const }, SUBMITTED: { label: '审批中', type: 'primary' as const }, CONFIRMED: { label: '已确认', type: 'success' as const }, NOT_SUBMITTED: { label: '未提交', type: 'info' as const } })[task.status] }
+// ⚠️ **纯逻辑已抽到 `@/utils/monthResultArchive`**：
+//   `taskState` / `taskStatusMeta` / `dateTime` / `numberText` /
+//   `moneyText` / `optionalMoneyText` / `fileSize`
+function taskState(task: MonthResultArchiveTask): TaskDetailState { return resolveArchiveTaskState<TaskDetailState>(task.id, taskDetails) }
+function taskStatusMeta(task: MonthResultArchiveTask) { return resolveArchiveTaskStatusMeta(task) }
 // ⚠️ **BUG-R6-26**：统一走 `formatPeriodLabel`（唯一权威实现）。
 function monthText(value: string) { return formatPeriodLabel(value, value) }
-function dateTime(value?: string) { return value ? value.replace('T', ' ').slice(0, 16) : '--' }
-function numberText(value?: number) { return Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 }) }
-function moneyText(value?: number) { return Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
-function optionalMoneyText(value?: number) { return value == null ? '未填写' : moneyText(value) }
+function dateTime(value?: string) { return formatArchiveDateTime(value) }
+function numberText(value?: number) { return formatArchiveNumber(value) }
+function moneyText(value?: number) { return formatArchiveMoney(value) }
+function optionalMoneyText(value?: number) { return formatArchiveOptionalMoney(value) }
 function periodText(task: MonthResultArchiveTask) { return formatMonthPlanPeriod(task.estimatedStartDate, task.estimatedEndDate, '--') }
 function standardText(task: MonthResultArchiveTask) { return formatMonthPlanStandard(task.deliverable, task.quality, '--') }
-function fileSize(value?: number) { if (!value) return '未知大小'; if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`; return `${(value / 1024 / 1024).toFixed(2)} MB` }
+function fileSize(value?: number) { return formatArchiveFileSize(value) }
 
 async function loadTaskDetails(tasks: MonthResultArchiveTask[]) {
   const pending = tasks.filter((task) => task.latestVersion)
