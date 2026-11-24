@@ -87,10 +87,15 @@ const props = defineProps<{ item: T; index: number; taskKey: string; expanded: b
 defineEmits<{ optimize: []; 'stop-optimize': []; duplicate: []; remove: []; 'toggle-expanded': [] }>()
 
 const required = ['taskContent', 'deliverable', 'quality', 'estimatedStartDate', 'estimatedEndDate'] as const
+// ⚠️ **必填项共 7 项**：5 个文本字段 + 绩效权重 + 预估价值。
+//    ⇒ 完整度上限就是 7。
+//    ⇒ 这里用 ``required.length + 2`` 而不是写死 7 ——
+//      万一以后增删必填字段，**总数自动跟着变**，不会留下 off-by-one。
+const totalRequiredCount = required.length + 2
 const completeCount = computed(() => required.filter((key) => String(props.item[key] || '').trim()).length
   + (Number(props.item.performanceWeight) > 0 ? 1 : 0)
   + (Number(props.item.estimatedValue) >= 0 ? 1 : 0))
-const completenessText = computed(() => completeCount.value === 7 ? '信息完整' : `还差 ${7 - completeCount.value} 项`)
+const completenessText = computed(() => completeCount.value === totalRequiredCount ? '信息完整' : `还差 ${totalRequiredCount - completeCount.value} 项`)
 const weightText = computed(() => props.item.performanceWeight == null ? '权重未填' : `${props.item.performanceWeight}%`)
 const valueText = computed(() => props.item.estimatedValue == null ? '价值未填' : `¥${Number(props.item.estimatedValue).toLocaleString('zh-CN')}`)
 const taskTitle = computed(() => String(props.item.taskContent || '').replace(/\s+/g, ' ').trim().slice(0, 48) || '未填写任务内容')

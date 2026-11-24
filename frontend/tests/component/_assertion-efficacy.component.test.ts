@@ -430,3 +430,370 @@ describe('组织架构后代判定的有效性', () => {
     expect(isDescendantNumericSentinel(directChild, 'D1', map)).toBe(false)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 7. 提交前检查侧栏：阻塞项统计
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface ChecklistIssue {
+  key: string
+  label: string
+  blocking: boolean
+}
+
+/** ✅ **正确实现** —— 复制自 ``PlanValidationAside.vue`` 的 ``blockingIssues``。 */
+function blockingCountCorrect(issues: ChecklistIssue[]): number {
+  return issues.filter((issue) => issue.blocking).length
+}
+
+/**
+ * ❌ **错误实现**：把所有 issue 都当成阻塞项。
+ *
+ * ⚠️ 后果：用户只收到一条**建议**（``blocking: false``），
+ *   界面却显示「1 项待处理」且**提交按钮被禁用** ⇒ 用户永远提交不了。
+ */
+function blockingCountAllIssues(issues: ChecklistIssue[]): number {
+  return issues.length
+}
+
+/** ❌ **错误实现**：只看第一条 issue（漏掉了后面的）。 */
+function blockingCountFirstOnly(issues: ChecklistIssue[]): number {
+  return issues.filter((issue) => issue.blocking).slice(0, 1).length
+}
+
+describe('提交前检查侧栏阻塞项统计的有效性', () => {
+  const issues: ChecklistIssue[] = [
+    { key: 'a', label: '缺少交付物', blocking: true },
+    { key: 'b', label: '建议补充验收标准', blocking: false },
+    { key: 'c', label: '缺少质量标准', blocking: true },
+  ]
+
+  test('✅ 正确实现：阻塞 2 项（建议项不计入）', () => {
+    expect(blockingCountCorrect(issues)).toBe(2)
+  })
+
+  test('⚠️ 把建议项也算阻塞 → 计数**不同**（判据有区分力）', () => {
+    expect(blockingCountAllIssues(issues)).not.toBe(blockingCountCorrect(issues))
+    expect(blockingCountAllIssues(issues)).toBe(3)
+  })
+
+  test('⚠️ 只看第一条 → 计数**不同**（判据有区分力）', () => {
+    expect(blockingCountFirstOnly(issues)).not.toBe(blockingCountCorrect(issues))
+    expect(blockingCountFirstOnly(issues)).toBe(1)
+  })
+
+  test('⚠️ 全是建议项时：三种实现的**分歧最大**', () => {
+    const advisoryOnly: ChecklistIssue[] = [
+      { key: 'a', label: '建议', blocking: false },
+    ]
+
+    expect(blockingCountCorrect(advisoryOnly)).toBe(0)
+    expect(blockingCountAllIssues(advisoryOnly)).toBe(1)
+    expect(blockingCountFirstOnly(advisoryOnly)).toBe(0)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 8. 月计划任务卡片：完整度计数（off-by-one）
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface TaskItem {
+  taskContent: string
+  deliverable: string
+  quality: string
+  estimatedStartDate: string
+  estimatedEndDate: string
+  performanceWeight: number | null
+  estimatedValue: number | null
+}
+
+/**
+ * ✅ **正确实现** —— 复制自 ``MonthPlanTaskEditorCard.vue``。
+ *
+ * ⚠️ **必填项共 7 项**：5 个文本字段 + 绩效权重 + 预估价值。
+ *    ⇒ 完整度上限是 **7**，不是 6。
+ */
+function completenessCorrect(item: TaskItem): string {
+  const required = ['taskContent', 'deliverable', 'quality', 'estimatedStartDate', 'estimatedEndDate']
+  const total = required.length + 2
+  const complete = required.filter((key) => String(item[key] || '').trim()).length
+    + (Number(item.performanceWeight) > 0 ? 1 : 0)
+    + (Number(item.estimatedValue) >= 0 ? 1 : 0)
+  return complete === total ? '信息完整' : `还差 ${total - complete} 项`
+}
+
+/**
+ * ❌ **错误实现**：把总数写成 **6**（漏算了权重与价值其中一项）。
+ *
+ * ⚠️ 后果：用户把任务**填满 7 项**时，``complete === 7 ≠ 6``
+ *   ⇒ 显示「还差 -1 项」—— 界面出现**负数**。
+ */
+function completenessMagicSix(item: TaskItem): string {
+  const required = ['taskContent', 'deliverable', 'quality', 'estimatedStartDate', 'estimatedEndDate']
+  const complete = required.filter((key) => String(item[key] || '').trim()).length
+    + (Number(item.performanceWeight) > 0 ? 1 : 0)
+    + (Number(item.estimatedValue) >= 0 ? 1 : 0)
+  return complete === 6 ? '信息完整' : `还差 ${6 - complete} 项`
+}
+
+/** ❌ **错误实现**：用 truthy 判断（空格字符串会被算「已填」）。 */
+function completenessTruthy(item: TaskItem): string {
+  const required = ['taskContent', 'deliverable', 'quality', 'estimatedStartDate', 'estimatedEndDate']
+  const total = required.length + 2
+  const complete = required.filter((key) => item[key]).length
+    + (Number(item.performanceWeight) > 0 ? 1 : 0)
+    + (Number(item.estimatedValue) >= 0 ? 1 : 0)
+  return complete === total ? '信息完整' : `还差 ${total - complete} 项`
+}
+
+describe('月计划任务卡片完整度计算的有效性', () => {
+  const full: TaskItem = {
+    taskContent: '完成接口开发',
+    deliverable: '接口文档',
+    quality: '评审通过',
+    estimatedStartDate: '2026-11-01',
+    estimatedEndDate: '2026-11-10',
+    performanceWeight: 40,
+    estimatedValue: 1000,
+  }
+
+  test('✅ 正确实现：全满 → 「信息完整」', () => {
+    expect(completenessCorrect(full)).toBe('信息完整')
+  })
+
+  test('⚠️⚠️ 总数写成 6 → 填满时显示「还差 -1 项」（判据有区分力）', () => {
+    // ⚠️ **界面出现负数** ⇒ 用户一脸困惑。
+    expect(completenessMagicSix(full)).toBe('还差 -1 项')
+    expect(completenessMagicSix(full)).not.toBe(completenessCorrect(full))
+  })
+
+  test('⚠️⚠️ 总数写成 6 → 全部为空时数量也错', () => {
+    const empty: TaskItem = {
+      taskContent: '',
+      deliverable: '',
+      quality: '',
+      estimatedStartDate: '',
+      estimatedEndDate: '',
+      performanceWeight: null,
+      estimatedValue: null,
+    }
+
+    // ⚠️ ``Number(null) >= 0`` 成立 ⇒ 价值（null）被算「已填」⇒ 实际填了 1 项。
+    expect(completenessCorrect(empty)).toBe('还差 6 项')
+    expect(completenessMagicSix(empty)).toBe('还差 5 项')
+    expect(completenessMagicSix(empty)).not.toBe(completenessCorrect(empty))
+  })
+
+  test('⚠️⚠️ truthy 判断 → 纯空格被算「已填」（判据有区分力）', () => {
+    const spaced: TaskItem = { ...full, taskContent: '   ' }
+
+    expect(completenessCorrect(spaced)).toBe('还差 1 项')
+    expect(completenessTruthy(spaced)).toBe('信息完整')
+    expect(completenessTruthy(spaced)).not.toBe(completenessCorrect(spaced))
+  })
+
+  test('⚠️ 权重 0 → 两种实现**一致**（都在完整度里排除 0）', () => {
+    const zeroWeight: TaskItem = { ...full, performanceWeight: 0 }
+
+    expect(completenessCorrect(zeroWeight)).toBe('还差 1 项')
+    expect(completenessTruthy(zeroWeight)).toBe('还差 1 项')
+  })
+
+  test('⚠️ 价值 0 → 两种实现**一致**（0 是合法值）', () => {
+    const zeroValue: TaskItem = { ...full, estimatedValue: 0 }
+
+    expect(completenessCorrect(zeroValue)).toBe('信息完整')
+    expect(completenessTruthy(zeroValue)).toBe('信息完整')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 9. AI 提交前检查：风险等级映射
+// ═══════════════════════════════════════════════════════════════════════════
+
+type Level = 'INFO' | 'WARNING' | 'HIGH'
+
+/** ✅ **正确实现** —— 复制自 ``MonthPlanAiCheckPanel.vue`` 的 ``levelText``。 */
+function levelTextCorrect(level: Level): string {
+  return level === 'HIGH' ? '高风险' : level === 'WARNING' ? '警告' : '提示'
+}
+
+/** ❌ **错误实现**：把 WARNING 也映射成「高风险」。 */
+function levelTextWarningAsHigh(level: Level): string {
+  return level === 'HIGH' || level === 'WARNING' ? '高风险' : '提示'
+}
+
+/** ❌ **错误实现**：标签类型全部一样（都当 warning）。 */
+function levelTagAllWarning(): string {
+  return 'warning'
+}
+
+/** ✅ **正确实现** —— 标签类型映射。 */
+function levelTagCorrect(level: Level): string {
+  return level === 'HIGH' ? 'danger' : level === 'WARNING' ? 'warning' : 'info'
+}
+
+describe('AI 风险等级映射的有效性', () => {
+  test('✅ 正确实现：三个等级三套文案', () => {
+    expect(levelTextCorrect('HIGH')).toBe('高风险')
+    expect(levelTextCorrect('WARNING')).toBe('警告')
+    expect(levelTextCorrect('INFO')).toBe('提示')
+  })
+
+  test('⚠️⚠️ WARNING 也当高风险 → 文案**不同**（判据有区分力）', () => {
+    expect(levelTextWarningAsHigh('WARNING')).not.toBe(levelTextCorrect('WARNING'))
+    expect(levelTextWarningAsHigh('WARNING')).toBe('高风险')
+    // ⚠️ HIGH 与 INFO 不受影响 ⇒ 两条错误实现**只在一个等级上出错**，
+    //    正好证明「三条文案断言」比「一条文案断言」更有区分力。
+    expect(levelTextWarningAsHigh('HIGH')).toBe(levelTextCorrect('HIGH'))
+    expect(levelTextWarningAsHigh('INFO')).toBe(levelTextCorrect('INFO'))
+  })
+
+  test('⚠️⚠️ 标签类型全部一样 → 与正确实现**不同**（判据有区分力）', () => {
+    expect(levelTagAllWarning()).not.toBe(levelTagCorrect('HIGH'))
+    expect(levelTagAllWarning()).not.toBe(levelTagCorrect('INFO'))
+    // ⚠️ WARNING 恰好撞上 ⇒ 如实记录。
+    expect(levelTagAllWarning()).toBe(levelTagCorrect('WARNING'))
+  })
+
+  test('⚠️ 三种等级的标签类型**互不相同**', () => {
+    const tags = (['HIGH', 'WARNING', 'INFO'] as Level[]).map(levelTagCorrect)
+    expect(new Set(tags).size).toBe(3)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10. AI 建议卡片：操作类型标签
+// ═══════════════════════════════════════════════════════════════════════════
+
+type OperationMode =
+  | 'GENERATE'
+  | 'SUPPLEMENT'
+  | 'OPTIMIZE'
+  | 'REVISE_REJECTION'
+  | 'CLARIFY'
+
+/** ✅ **正确实现** —— 复制自 ``MonthPlanAiResultCard.vue`` 的 ``operationLabel``。 */
+function operationLabelCorrect(mode: OperationMode): string {
+  return ({
+    GENERATE: '完整月计划',
+    SUPPLEMENT: '补充任务',
+    OPTIMIZE: '计划优化',
+    REVISE_REJECTION: '审批反馈修改',
+    CLARIFY: '需要确认',
+  } as Record<string, string>)[mode] || '月计划建议'
+}
+
+/**
+ * ❌ **错误实现**：把 ``SUPPLEMENT`` 也写成「完整月计划」。
+ *
+ * ⚠️ 后果：用户以为 AI 只是**追加**几条任务，实际**整个计划被替换**了。
+ */
+function operationLabelSupplementAsGenerate(mode: OperationMode): string {
+  return ({
+    GENERATE: '完整月计划',
+    SUPPLEMENT: '完整月计划',
+    OPTIMIZE: '计划优化',
+    REVISE_REJECTION: '审批反馈修改',
+    CLARIFY: '需要确认',
+  } as Record<string, string>)[mode] || '月计划建议'
+}
+
+/** ❌ **错误实现**：去掉兜底（未知模式返回空串）。 */
+function operationLabelNoFallback(mode: OperationMode): string {
+  return ({
+    GENERATE: '完整月计划',
+    SUPPLEMENT: '补充任务',
+    OPTIMIZE: '计划优化',
+    REVISE_REJECTION: '审批反馈修改',
+    CLARIFY: '需要确认',
+  } as Record<string, string>)[mode] || ''
+}
+
+describe('AI 建议卡片操作类型标签的有效性', () => {
+  const modes: OperationMode[] = [
+    'GENERATE',
+    'SUPPLEMENT',
+    'OPTIMIZE',
+    'REVISE_REJECTION',
+    'CLARIFY',
+  ]
+
+  test('✅ 正确实现：5 种模式标签**互不相同**', () => {
+    const labels = modes.map(operationLabelCorrect)
+    expect(new Set(labels).size).toBe(modes.length)
+  })
+
+  test('⚠️⚠️ SUPPLEMENT 写成「完整月计划」→ 标签**重复**（判据有区分力）', () => {
+    expect(operationLabelSupplementAsGenerate('SUPPLEMENT')).not.toBe(
+      operationLabelCorrect('SUPPLEMENT'),
+    )
+
+    const labels = modes.map(operationLabelSupplementAsGenerate)
+    expect(new Set(labels).size).toBe(modes.length - 1)
+  })
+
+  test('⚠️⚠️ 去掉兜底 → 未知模式返回空串（判据有区分力）', () => {
+    const unknown = 'NEW_MODE' as OperationMode
+
+    expect(operationLabelCorrect(unknown)).toBe('月计划建议')
+    expect(operationLabelNoFallback(unknown)).toBe('')
+    expect(operationLabelNoFallback(unknown)).not.toBe(operationLabelCorrect(unknown))
+  })
+
+  test('⚠️ 五种模式的错误实现只影响**一个**模式（定位能力强）', () => {
+    // ⚠️ **重要**：若一条错误实现能同时搞坏 5 个标签，
+    //    那这条断言虽然「有区分力」，但**定位不到具体哪个标签错了**。
+    //    ⇒ 这里验证「错误只打中一个模式」⇒ 断言能精确定位。
+    const correct = modes.map(operationLabelCorrect)
+    const broken = modes.map(operationLabelSupplementAsGenerate)
+
+    const diffIndexes = modes.filter((_, i) => correct[i] !== broken[i])
+    expect(diffIndexes).toEqual(['SUPPLEMENT'])
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 11. 计划示例输入：文件大小上限
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** ✅ **正确实现** —— 复制自 ``PlanAiExampleInput.vue`` 的 10MB 判断。 */
+function isTooLargeCorrect(size: number): boolean {
+  return size > 10 * 1024 * 1024
+}
+
+/** ❌ **错误实现**：上限写成 100MB。 */
+function isTooLargeHundredMb(size: number): boolean {
+  return size > 100 * 1024 * 1024
+}
+
+/** ❌ **错误实现**：边界写成 ``>=``（正好 10MB 也被拒）。 */
+function isTooLargeInclusive(size: number): boolean {
+  return size >= 10 * 1024 * 1024
+}
+
+describe('计划示例文件大小上限的有效性', () => {
+  const MB = 1024 * 1024
+
+  test('✅ 正确实现：11MB 超限、9MB 不超限', () => {
+    expect(isTooLargeCorrect(11 * MB)).toBe(true)
+    expect(isTooLargeCorrect(9 * MB)).toBe(false)
+  })
+
+  test('⚠️⚠️ 上限写成 100MB → 11MB **不再被拒**（判据有区分力）', () => {
+    expect(isTooLargeHundredMb(11 * MB)).toBe(false)
+    expect(isTooLargeHundredMb(11 * MB)).not.toBe(isTooLargeCorrect(11 * MB))
+  })
+
+  test('⚠️⚠️ 边界写成 ``>=`` → 正好 10MB **被误拒**（判据有区分力）', () => {
+    expect(isTooLargeInclusive(10 * MB)).toBe(true)
+    expect(isTooLargeInclusive(10 * MB)).not.toBe(isTooLargeCorrect(10 * MB))
+  })
+
+  test('⚠️ 超大文件（100MB）在正确实现下**必须被拒**', () => {
+    // ⚠️ 100MB 版本对 100MB 也不拒 ⇒ 两种实现在极端值上**才会分岔**。
+    //    ⇒ 「超大文件必须被拒」这条断言对 100MB 版本**有区分力**。
+    expect(isTooLargeCorrect(100 * MB)).toBe(true)
+    expect(isTooLargeHundredMb(100 * MB)).toBe(false)
+  })
+})

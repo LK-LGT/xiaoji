@@ -100,6 +100,14 @@ vi.mock('axios', () => {
     default: {
       ...instance,
       create: vi.fn(() => mockAxiosInstance()),
+      // ⚠️ ``isCancel`` 是 axios 的**静态方法**，不是实例方法。
+      //    ``useCancelableAiRequest`` 的 ``isAiCancellation`` 会调用它
+      //    ⇒ 缺了它，**任何 AI 请求失败都会炸成
+      //    "axios.isCancel is not a function"**，
+      //    真实错误信息（"AI 服务不可用"）反而被吞掉。
+      isCancel: vi.fn(() => false),
+      // ⚠️ ``isAxiosError`` 同理（多处代码用它判断错误类型）。
+      isAxiosError: vi.fn(() => false),
     },
   }
 })
