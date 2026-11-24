@@ -9,18 +9,22 @@ const departmentApiUrl = new URL('../src/api/department.ts', import.meta.url)
 const approvalUrl = new URL('../src/views/department/MonthPlanApproval.vue', import.meta.url)
 const resultConfirmUrl = new URL('../src/views/department/ResultConfirm.vue', import.meta.url)
 const resultPackageUrl = new URL('../src/components/ProjectResultPackageTable.vue', import.meta.url)
+const dashboardUtilsUrl = new URL('../src/utils/departmentDashboard.ts', import.meta.url)
 
 test('department dashboard gates complete project month plans by approval progress', async () => {
-  const [dashboard, api] = await Promise.all([
+  const [dashboard, api, dashboardUtils] = await Promise.all([
     readFile(dashboardUrl, 'utf8'),
     readFile(departmentApiUrl, 'utf8'),
+    readFile(dashboardUtilsUrl, 'utf8'),
   ])
 
   assert.match(dashboard, /项目组月计划/)
   assert.match(dashboard, /已通过\/总人数/)
   assert.match(dashboard, /需项目组所有成员计划审批通过后开放/)
   assert.match(dashboard, /按计划归属月份统计/)
-  assert.match(dashboard, /member\.statusLabel/)
+  // ⚠️ CI-5 阶段 2 第三轮：待完成人员的拼装逻辑已抽到工具模块。
+  assert.match(dashboard, /formatPendingMembers\(row\.pendingMembers\)/)
+  assert.match(dashboardUtils, /member\.statusLabel/)
   assert.match(dashboard, /:disabled="!row\.contentAvailable"/)
   assert.match(dashboard, /getProjectMonthPlanPackageApi/)
   assert.match(dashboard, /el-collapse-item v-for="plan in packageDetail\.plans"/)

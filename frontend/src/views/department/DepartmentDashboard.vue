@@ -56,7 +56,7 @@
             <div class="package-progress">
               <strong>{{ row.approvedCount }}/{{ row.totalMemberCount }}</strong>
               <el-progress
-                :percentage="packagePercentage(row)"
+                :percentage="computePackagePercentage(row)"
                 :stroke-width="6"
                 :show-text="false"
                 :status="row.contentAvailable ? 'success' : undefined"
@@ -66,15 +66,15 @@
         </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
-            <el-tag :type="packageStatusType(row)" effect="plain">{{ packageStatusLabel(row) }}</el-tag>
+            <el-tag :type="resolvePackageStatusType(row.status)" effect="plain">{{ resolvePackageStatusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="待完成人员" min-width="245">
           <template #default="{ row }">
             <span v-if="row.contentAvailable" class="package-complete-text">全员已通过</span>
             <span v-else-if="!row.pendingMembers.length" class="package-pending-empty">暂无成员</span>
-            <el-tooltip v-else :content="pendingMemberText(row)" placement="top" :show-after="250">
-              <span class="package-pending-text">{{ pendingMemberPreview(row) }}</span>
+            <el-tooltip v-else :content="formatPendingMembers(row.pendingMembers)" placement="top" :show-after="250">
+              <span class="package-pending-text">{{ previewPendingMembers(row.pendingMembers) }}</span>
             </el-tooltip>
           </template>
         </el-table-column>
@@ -341,6 +341,28 @@ import { useDepartmentOrgScope } from '@/composables/useDepartmentOrgScope'
 import ProjectResultPackageTable from '@/components/ProjectResultPackageTable.vue'
 import MonthPlanTaskContentView from '@/components/MonthPlanTaskContentView.vue'
 import { formatMonthPlanPeriod, formatMonthPlanStandard } from '@/utils/monthPlanPeriod'
+// ⚠️ **纯逻辑已抽到 `@/utils/departmentDashboard`**（CI-5 阶段 2 第三轮）⇒ 这里只做转发。
+import {
+  computePackagePercentage,
+  countEmployeesByOrganization,
+  currentMonthKey,
+  employeeInitial,
+  filterByOrganizationScope,
+  filterDepartmentEmployees,
+  formatCurrency,
+  formatDateTime,
+  formatPendingMembers,
+  hasActiveFilter,
+  hasMorePages,
+  paginateRows,
+  previewPendingMembers,
+  projectGroupInitial,
+  resolveEmptyText,
+  resolvePackageStatusLabel,
+  resolvePackageStatusType,
+  resolveSelectedOrgIds,
+  sumEmployeeMetric,
+} from '@/utils/departmentDashboard'
 
 const route = useRoute()
 const router = useRouter()
@@ -351,7 +373,7 @@ const appliedKeyword = ref('')
 const employeePageNo = ref(1)
 const employeePageSize = ref(10)
 const loading = ref(false)
-const packageMonth = ref(currentMonth())
+const packageMonth = ref(currentMonthKey())
 const packages = ref<ProjectMonthPlanPackage[]>([])
 const resultPackages = ref<ProjectResultPackage[]>([])
 const packageLoading = ref(false)
@@ -360,74 +382,34 @@ const packageDetailLoading = ref(false)
 const packageDetail = ref<ProjectMonthPlanPackageDetail>()
 const activePlanNames = ref<string[]>([])
 
-const organizationEmployeeCounts = computed(() => {
-  const directCounts = new Map<string, number>()
-  allEmployees.value.forEach((employee) => {
-    directCounts.set(employee.orgId, (directCounts.get(employee.orgId) || 0) + 1)
-  })
-  const totals = new Map<string, number>()
-  const countNode = (node: OrgNode): number => {
-    const total = (directCounts.get(node.id) || 0)
-      + (node.children || []).reduce((sum, child) => sum + countNode(child), 0)
-    totals.set(node.id, total)
-    return total
-  }
-  orgTree.value.forEach(countNode)
-  return totals
-})
+// ⚠️ **纯逻辑已抽到 `@/utils/departmentDashboard`**：下面这些 computed 只是转发。
+const organizationEmployeeCounts = computed(() => countEmployeesByOrganization(orgTree.value, allEmployees.value))
 
-const selectedOrganizationIds = computed(() => {
-  if (selectedOrgId.value == null) return null
-  const selected = findOrganization(orgTree.value, selectedOrgId.value)
-  if (!selected) return new Set<string>()
-  const ids = new Set<string>()
-  collectOrganizationIds(selected, ids)
-  return ids
-})
+const selectedOrganizationIds = computed(() => resolveSelectedOrgIds(orgTree.value, selectedOrgId.value))
 
-const visibleEmployees = computed(() => {
-  const normalizedKeyword = appliedKeyword.value.trim().toLowerCase()
-  return allEmployees.value.filter((employee) => {
-    if (selectedOrganizationIds.value && !selectedOrganizationIds.value.has(employee.orgId)) return false
-    if (!normalizedKeyword) return true
-    return employee.employeeName.toLowerCase().includes(normalizedKeyword)
-      || (employee.employeeNo || '').toLowerCase().includes(normalizedKeyword)
-  })
-})
+const visibleEmployees = computed(() => filterDepartmentEmployees(allEmployees.value, {
+  organizationIds: selectedOrganizationIds.value,
+  keyword: appliedKeyword.value,
+}))
 
-const pagedEmployees = computed(() => {
-  const start = (employeePageNo.value - 1) * employeePageSize.value
-  return visibleEmployees.value.slice(start, start + employeePageSize.value)
-})
+const pagedEmployees = computed(() => paginateRows(visibleEmployees.value, employeePageNo.value, employeePageSize.value))
 
-const visiblePackages = computed(() => packages.value.filter((item) => (
-  !selectedOrganizationIds.value || selectedOrganizationIds.value.has(item.groupId)
-)))
+const visiblePackages = computed(() => filterByOrganizationScope(packages.value, selectedOrganizationIds.value))
 
-const visibleResultPackages = computed(() => resultPackages.value.filter((item) => (
-  !selectedOrganizationIds.value || selectedOrganizationIds.value.has(item.groupId)
-)))
+const visibleResultPackages = computed(() => filterByOrganizationScope(resultPackages.value, selectedOrganizationIds.value))
 
-const visibleMonthPlanCount = computed(() => visibleEmployees.value.reduce(
-  (total, employee) => total + Number(employee.monthPlanCount || 0),
-  0,
-))
+const visibleMonthPlanCount = computed(() => sumEmployeeMetric(visibleEmployees.value, 'monthPlanCount'))
 
-const visibleResultCount = computed(() => visibleEmployees.value.reduce(
-  (total, employee) => total + Number(employee.resultCount || 0),
-  0,
-))
+const visibleResultCount = computed(() => sumEmployeeMetric(visibleEmployees.value, 'resultCount'))
 
-const hasEmployeePagination = computed(() => visibleEmployees.value.length > employeePageSize.value)
+const hasEmployeePagination = computed(() => hasMorePages(visibleEmployees.value.length, employeePageSize.value))
 
-const hasFilter = computed(() => selectedOrgId.value != null || Boolean(keyword.value.trim()) || Boolean(appliedKeyword.value))
+const hasFilter = computed(() => hasActiveFilter(selectedOrgId.value, keyword.value, appliedKeyword.value))
 const selectedOrganizationLabel = computed(() => {
   if (selectedOrgId.value == null) return '全部部门'
   return orgOptions.value.find((item) => item.value === selectedOrgId.value)?.label || '所选组织'
 })
-const emptyText = computed(() => hasFilter.value
-  ? '当前筛选条件下没有员工'
-  : '当前部门及下级组织暂无员工，请先在员工管理中配置所属组织')
+const emptyText = computed(() => resolveEmptyText(hasFilter.value))
 
 async function loadEmployees(showMessage = false) {
   loading.value = true
@@ -531,38 +513,10 @@ function closePackageDetail() {
   activePlanNames.value = []
 }
 
-function packagePercentage(row: ProjectMonthPlanPackage) {
-  if (!row.totalMemberCount) return 0
-  return Math.round((row.approvedCount / row.totalMemberCount) * 100)
-}
-
-function packageStatusLabel(row: ProjectMonthPlanPackage) {
-  if (row.status === 'OPEN') return '完整开放'
-  if (row.status === 'EMPTY') return '暂无成员'
-  return '等待集齐'
-}
-
-function packageStatusType(row: ProjectMonthPlanPackage): 'success' | 'warning' | 'info' {
-  if (row.status === 'OPEN') return 'success'
-  if (row.status === 'EMPTY') return 'info'
-  return 'warning'
-}
-
-function pendingMemberText(row: ProjectMonthPlanPackage) {
-  return row.pendingMembers.map((member) => `${member.employeeName}（${member.statusLabel}）`).join('、')
-}
-
-function pendingMemberPreview(row: ProjectMonthPlanPackage) {
-  const names = row.pendingMembers
-    .slice(0, 3)
-    .map((member) => `${member.employeeName}（${member.statusLabel}）`)
-    .join('、')
-  return row.pendingMembers.length > 3 ? `${names} 等 ${row.pendingMembers.length} 人` : names
-}
-
-function projectGroupInitial(name: string) {
-  return name?.trim().slice(0, 1) || '组'
-}
+// ⚠️ **纯逻辑已抽到 `@/utils/departmentDashboard`**：
+//   `computePackagePercentage` / `resolvePackageStatusLabel` / `resolvePackageStatusType`
+//   / `formatPendingMembers` / `previewPendingMembers` / `projectGroupInitial`
+//   / `employeeInitial` / `formatDateTime` / `formatCurrency` / `currentMonthKey`
 
 function openEmployee(row: DepartmentEmployeeSummary) {
   router.push({
@@ -574,39 +528,9 @@ function openEmployee(row: DepartmentEmployeeSummary) {
   })
 }
 
-function findOrganization(nodes: OrgNode[], id: string): OrgNode | undefined {
-  for (const node of nodes) {
-    if (node.id === id) return node
-    const child = findOrganization(node.children || [], id)
-    if (child) return child
-  }
-  return undefined
-}
-
-function collectOrganizationIds(node: OrgNode, result: Set<string>) {
-  result.add(node.id)
-  for (const child of node.children || []) {
-    collectOrganizationIds(child, result)
-  }
-}
-
-function employeeInitial(name: string) {
-  return name?.trim().slice(-1) || '员'
-}
-
-function formatDateTime(value?: string) {
-  if (!value) return '暂无工作记录'
-  return value.replace('T', ' ').slice(0, 16)
-}
-
-function formatCurrency(value?: number) {
-  return `¥${Number(value || 0).toLocaleString('zh-CN')}`
-}
-
-function currentMonth() {
-  const now = new Date()
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-}
+// ⚠️ **纯逻辑已抽到 `@/utils/departmentDashboard`**：
+//   `findOrgNode` / `collectOrgNodeIds` / `employeeInitial` / `formatDateTime`
+//   / `formatCurrency` / `currentMonthKey`
 
 onMounted(async () => {
   try {
@@ -621,7 +545,7 @@ onMounted(async () => {
     appliedKeyword.value = keyword.value.trim()
     packageMonth.value = typeof route.query.planMonth === 'string' && /^\d{4}-\d{2}$/.test(route.query.planMonth)
       ? route.query.planMonth
-      : currentMonth()
+      : currentMonthKey()
     await Promise.all([loadEmployees(false), loadPackages()])
   } catch (error) {
     ElMessage.error(errorMessage(error))

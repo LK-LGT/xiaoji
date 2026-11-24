@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8')
 const editor = read('../src/views/employee/EmployeeMonthPlanEdit.vue')
 const card = read('../src/views/employee/components/MonthPlanTaskEditorCard.vue')
+// ⚠️ CI-5 阶段 2 第三轮：任务名兜底等纯逻辑已抽到工具模块。
+const editorUtils = read('../src/utils/monthPlanEditor.ts')
 
 test('month editor has one task-focused workflow without a plan summary', () => {
   assert.doesNotMatch(editor, /计划基础信息|month-plan-identity__head|month-plan-identity__meta/)
@@ -83,9 +85,10 @@ test('task view preference persists and defaults to cards on narrow screens', ()
 test('task name is hidden from editing and filled only for backend compatibility', () => {
   assert.doesNotMatch(editor, /任务名称|v-model="row\.taskName"/)
   assert.doesNotMatch(card, /label="任务名称"|v-model="item\.taskName"/)
-  assert.match(editor, /function taskNameForSave\(item:/)
-  assert.match(editor, /if \(existing\) return existing/)
-  assert.match(editor, /replace\(\/\\s\+\/g, ' '\)\.trim\(\)\.slice\(0, 30\)/)
+  // ⚠️ 兜底逻辑现在住在工具模块里，组件只做转发。
+  assert.match(editorUtils, /export function taskNameForSave\(/)
+  assert.match(editorUtils, /if \(existing\) return existing/)
+  assert.match(editorUtils, /replace\(\/\\s\+\/g, ' '\)\.trim\(\)\.slice\(0, 30\)/)
   assert.match(editor, /taskName: taskNameForSave\(item\)/)
 })
 

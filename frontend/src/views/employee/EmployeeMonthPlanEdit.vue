@@ -243,6 +243,26 @@ import PlanAiReviewCell from '@/components/PlanAiReviewCell.vue'
 import PlanAiReviewDrawer from '@/components/PlanAiReviewDrawer.vue'
 import { notifyAiReviewResult } from '@/utils/aiReviewFeedback'
 import { normalizeMonthPlanPeriods } from '@/utils/monthPlanPeriod'
+import {
+  buildOptimizePreview,
+  collectMonthPlanIssues,
+  computeMonthPlanReadiness,
+  countHiddenMonthPlanIssues,
+  defaultSelectedOptimizeFields,
+  displayOptimizeValue,
+  editableNumber,
+  groupMonthPlanIssues,
+  hasTaskContent,
+  isEmptyMonthPlanItem,
+  numberForSave,
+  previewMonthPlanIssueGroups,
+  resolveAutoSaveState,
+  sameOptimizableValues,
+  sumRegularWeights,
+  taskNameForSave,
+  type OptimizePreviewField,
+  type OptimizableField,
+} from '@/utils/monthPlanEditor'
 import { periodMonthKey } from '@/utils/period'
 import { listMonthPlansApi } from '@/api/planning'
 import {
@@ -270,16 +290,7 @@ interface EditableMonthPlanItem extends Omit<AiPlanItem, 'performanceWeight' | '
   estimatedValue: number | null
 }
 
-type OptimizableField = 'taskName' | 'taskContent' | 'deliverable' | 'quality' | 'estimatedStartDate' | 'estimatedEndDate' | 'performanceWeight' | 'estimatedValue'
 type TaskViewMode = 'table' | 'cards'
-
-interface OptimizePreviewField {
-  key: OptimizableField
-  label: string
-  originalValue: unknown
-  suggestedValue: unknown
-  changed: boolean
-}
 
 interface ValidationIssue {
   id: string
@@ -339,12 +350,6 @@ const restoredVersionNo = ref<number>()
 let optimizationRequestVersion = 0
 let aiConversationRequest = 0
 let aiAppliedTimer: ReturnType<typeof setTimeout> | undefined
-const optimizableFields: Array<{ key: OptimizableField; label: string }> = [
-  { key: 'taskContent', label: '任务内容' },
-  { key: 'deliverable', label: '交付物' }, { key: 'quality', label: '质量' },
-  { key: 'estimatedStartDate', label: '预估开始日期' }, { key: 'estimatedEndDate', label: '预估结束日期' },
-  { key: 'performanceWeight', label: '绩效权重' }, { key: 'estimatedValue', label: '预估价值（元）' },
-]
 const hasOptimizeChanges = computed(() => optimizePreviewFields.value.some((field) => field.changed))
 
 const form = reactive({
@@ -359,16 +364,6 @@ const form = reactive({
 const expandedTaskKeys = reactive(new Set<string>())
 let nextLocalTaskKey = 0
 const createTaskUiKey = (id?: string) => id ? `saved-${id}` : `local-${++nextLocalTaskKey}`
-
-function editableNumber(value: unknown) {
-  const number = Number(value ?? 0)
-  return Number.isFinite(number) && number !== 0 ? number : null
-}
-
-function numberForSave(value: unknown) {
-  const number = Number(value ?? 0)
-  return Number.isFinite(number) ? number : 0
-}
 
 function toAiPlanItem(item: Omit<EditableMonthPlanItem, 'id' | 'uiKey'>): AiPlanItem {
   return {
@@ -387,60 +382,15 @@ const editingDisabled = computed(() => !editable.value || submitting.value || ai
 const hasMonthPlanDraft = computed(() => Boolean(form.id || form.items.length))
 const validationIssuesExpanded = ref(false)
 const validationFeedbackVisible = ref(false)
-const regularWeightTotal = computed(() => Number(form.items
-  .reduce((sum, item) => sum + (Number(item.performanceWeight) || 0), 0)
-  .toFixed(2)))
-const validationIssues = computed<ValidationIssue[]>(() => {
-  const issues: ValidationIssue[] = []
-  if (!form.planMonth) issues.push({ id: 'plan-month', field: 'planMonth', message: '请选择计划月份' })
-  if (!form.items.length) issues.push({ id: 'items-empty', message: '请至少新增一项计划任务' })
-  const requiredFields: Array<[keyof EditableMonthPlanItem, string]> = [['taskContent', '任务内容'], ['deliverable', '交付物'], ['quality', '质量'], ['estimatedStartDate', '预估开始日期'], ['estimatedEndDate', '预估结束日期']]
-  form.items.forEach((item, itemIndex) => {
-    requiredFields.forEach(([field, label]) => { if (!String(item[field] || '').trim()) issues.push({ id: `${itemIndex}-${String(field)}`, itemIndex, field: String(field), message: `任务 ${itemIndex + 1}：请填写${label}` }) })
-    if (!item.performanceWeight || item.performanceWeight <= 0 || item.performanceWeight > 100) issues.push({ id: `${itemIndex}-performanceWeight`, itemIndex, field: 'performanceWeight', message: `任务 ${itemIndex + 1}：请填写有效绩效权重` })
-    if (Number(item.estimatedValue) < 0 || Number(item.estimatedValue) > 9999999999.99) issues.push({ id: `${itemIndex}-estimatedValue`, itemIndex, field: 'estimatedValue', message: `任务 ${itemIndex + 1}：预估价值需在 0 至 9999999999.99 元之间` })
-    if (item.estimatedStartDate && item.estimatedEndDate && item.estimatedStartDate > item.estimatedEndDate) issues.push({ id: `${itemIndex}-estimatedEndDate-order`, itemIndex, field: 'estimatedEndDate', message: `任务 ${itemIndex + 1}：预估结束日期不能早于开始日期` })
-  })
-  if (form.items.length && regularWeightTotal.value !== 100) issues.push({ id: 'weight-total', field: 'performanceWeight', message: `常规任务权重合计需为 100%，当前为 ${regularWeightTotal.value}%` })
-  return issues
-})
+// ⚠️ **纯逻辑已抽到 `@/utils/monthPlanEditor`**（CI-5 阶段 2 第三轮）⇒ 这里只做转发。
+const regularWeightTotal = computed(() => sumRegularWeights(form.items))
+const validationIssues = computed<ValidationIssue[]>(() => collectMonthPlanIssues(form.planMonth, form.items))
 const visibleValidationIssues = computed(() => validationFeedbackVisible.value ? validationIssues.value : [])
-const validationIssueGroups = computed(() => [
-  { key: 'plan', label: '计划信息', issues: visibleValidationIssues.value.filter((issue) => issue.itemIndex === undefined) },
-  { key: 'tasks', label: '任务内容', issues: visibleValidationIssues.value.filter((issue) => issue.itemIndex !== undefined) },
-].filter((group) => group.issues.length))
-const visibleValidationIssueGroups = computed(() => validationIssueGroups.value.map((group) => ({
-  ...group,
-  total: group.issues.length,
-  issues: validationIssuesExpanded.value ? group.issues : group.issues.slice(0, group.key === 'plan' ? 3 : 4),
-})))
-const hiddenValidationIssueCount = computed(() => validationIssueGroups.value
-  .reduce((count, group) => count + Math.max(0, group.issues.length - (group.key === 'plan' ? 3 : 4)), 0))
-const readiness = computed(() => {
-  if (!form.items.length) return 0
-  const planMonthReady = Boolean(form.planMonth && form.planMonth >= currentMonth())
-  const planScore = planMonthReady ? 10 : 0
-  const itemFieldCount = form.items.length * 7
-  const completedItemFields = form.items.reduce((count, item) => count
-    + (String(item.taskContent || '').trim() ? 1 : 0)
-    + (String(item.deliverable || '').trim() ? 1 : 0)
-    + (String(item.quality || '').trim() ? 1 : 0)
-    + (String(item.estimatedStartDate || '').trim() ? 1 : 0)
-    + (String(item.estimatedEndDate || '').trim() ? 1 : 0)
-    + (Number(item.performanceWeight) > 0 ? 1 : 0)
-    + (Number(item.estimatedValue) >= 0 ? 1 : 0), 0)
-  const itemScore = itemFieldCount ? (completedItemFields / itemFieldCount) * 65 : 0
-  const weightDistance = Math.min(Math.abs(regularWeightTotal.value - 100), 100)
-  const weightScore = regularWeightTotal.value > 0 ? (1 - weightDistance / 100) * 25 : 0
-  return Math.max(0, Math.min(100, Math.round(planScore + itemScore + weightScore)))
-})
-const autoSaveState = computed(() => {
-  if (!editable.value || autoSaveStatus.value === 'readonly') return { text: '只读', type: 'info' as const }
-  if (autoSaveStatus.value === 'saving') return { text: '自动保存中', type: 'warning' as const }
-  if (autoSaveStatus.value === 'saved') return { text: '已自动保存', type: 'success' as const }
-  if (autoSaveStatus.value === 'error') return { text: '自动保存失败', type: 'danger' as const }
-  return { text: dirty.value ? '有未保存修改' : '尚未修改', type: 'info' as const }
-})
+const validationIssueGroups = computed(() => groupMonthPlanIssues(visibleValidationIssues.value))
+const visibleValidationIssueGroups = computed(() => previewMonthPlanIssueGroups(visibleValidationIssues.value, validationIssuesExpanded.value))
+const hiddenValidationIssueCount = computed(() => countHiddenMonthPlanIssues(visibleValidationIssues.value))
+const readiness = computed(() => computeMonthPlanReadiness(form.planMonth, form.items, currentMonth()))
+const autoSaveState = computed(() => resolveAutoSaveState(autoSaveStatus.value, editable.value, dirty.value))
 
 function formatDate(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
@@ -508,15 +458,8 @@ async function applyDetail(detail: EmployeeMonthPlanDetailResp | EmployeeMonthPl
     }))
     form.items = normalizeMonthPlanPeriods(detail.planMonth, detailItems).map((item, index) => {
       const raw = detailItems[index]
-      const emptyRow = !String(raw.taskName || '').trim()
-        && !String(raw.taskContent || '').trim()
-        && !String(raw.deliverable || '').trim()
-        && !String(raw.quality || '').trim()
-        && raw.performanceWeight == null
-        && raw.estimatedValue == null
-        && !String(raw.estimatedStartDate || '').trim()
-        && !String(raw.estimatedEndDate || '').trim()
-      return emptyRow ? { ...item, estimatedStartDate: '', estimatedEndDate: '' } : item
+      // ⚠️ **纯逻辑已抽到 `@/utils/monthPlanEditor`**：只有「全空行」才清掉自动排期。
+      return isEmptyMonthPlanItem(raw) ? { ...item, estimatedStartDate: '', estimatedEndDate: '' } : item
     })
     expandedTaskKeys.clear()
     expandedIndexes.forEach((index) => {
@@ -529,16 +472,6 @@ async function applyDetail(detail: EmployeeMonthPlanDetailResp | EmployeeMonthPl
   } finally {
     suppressChangeTracking = false
   }
-}
-
-function taskNameForSave(item: Pick<EditableMonthPlanItem, 'taskName' | 'taskContent'>) {
-  const existing = String(item.taskName || '').trim()
-  if (existing) return existing
-  return String(item.taskContent || '').replace(/\s+/g, ' ').trim().slice(0, 30)
-}
-
-function hasTaskContent(item: Pick<EditableMonthPlanItem, 'taskContent'>) {
-  return Boolean(String(item.taskContent || '').trim())
 }
 
 async function focusTaskContent(index: number, row: EditableMonthPlanItem) {
@@ -1078,7 +1011,7 @@ async function optimizeRow(index: number) {
     latestDraftVersionNo.value = response.draftVersionNo
     optimizePreviewFields.value = previewFields
     optimizationTargetIndex.value = index
-    selectedOptimizeFields.value = previewFields.filter((field) => field.changed).map((field) => field.key)
+    selectedOptimizeFields.value = defaultSelectedOptimizeFields(previewFields)
     optimizeDialogVisible.value = true
     await recordAiSuggestionActionApi(response.suggestionId, { actionCode: 'PREVIEW' })
   } catch (error) {
@@ -1113,33 +1046,8 @@ async function ignoreOptimization() {
   optimizePreviewFields.value = []
 }
 
-function normalizeOptimizeValue(value: unknown, field: OptimizableField) {
-  if (field === 'performanceWeight' || field === 'estimatedValue') {
-    const number = Number(value)
-    return Number.isFinite(number) ? number : 0
-  }
-  return String(value ?? '').trim()
-}
-
-function sameOptimizableValues(left: EditableMonthPlanItem, right: EditableMonthPlanItem) {
-  return optimizableFields.every(({ key }) => normalizeOptimizeValue(left[key], key) === normalizeOptimizeValue(right[key], key))
-}
-
-function buildOptimizePreview(source: EditableMonthPlanItem, suggestion: AiPlanItem): OptimizePreviewField[] {
-  return optimizableFields.map(({ key, label }) => ({
-    key,
-    label,
-    originalValue: source[key],
-    suggestedValue: suggestion[key],
-    changed: normalizeOptimizeValue(source[key], key) !== normalizeOptimizeValue(suggestion[key], key),
-  }))
-}
-
-function displayOptimizeValue(value: unknown, field: OptimizableField) {
-  if (field === 'performanceWeight') return value == null ? '未填写' : `${value}%`
-  if (field === 'estimatedValue') return value == null ? '未填写' : `¥${Number(value ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-  return String(value ?? '暂无')
-}
+// ⚠️ **纯逻辑已抽到 `@/utils/monthPlanEditor`**：
+//   `normalizeOptimizeValue` / `sameOptimizableValues` / `buildOptimizePreview` / `displayOptimizeValue`
 
 async function stopOptimization() {
   optimizationRequestVersion += 1
