@@ -533,3 +533,41 @@ def get_plan_binding(
     if row is None:
         raise HTTPException(status_code=404, detail="该计划尚无绑定")
     return {"code": 0, "data": feishu_binding.serialize_binding(row)}
+
+
+# ===========================================================================
+# 4. 定时补偿（FS-7）
+# ===========================================================================
+
+
+@router.get("/approval/compensation/status")
+def compensation_status(
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """审批补偿调度器的运行态（是否在跑、上次结果、连续失败次数）。"""
+    _require_admin(db, current_user)
+    from ..services.feishu_approval_compensation_scheduler import get_scheduler_status
+
+    return {"code": 0, "data": get_scheduler_status()}
+
+
+@router.post("/approval/compensation/run")
+def compensation_run(
+    current_user: Employee = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """手工触发一轮审批补偿。
+
+    ⚠️ **运维手段** —— webhook 漏推导致计划卡在审批中时，
+    不必等定时器（默认 10 分钟一轮）自然恢复。
+    """
+    _require_admin(db, current_user)
+    from ..services.feishu_approval_compensation_scheduler import run_compensation
+
+    try:
+        result = run_compensation()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("手工触发审批补偿失败")
+        raise HTTPException(status_code=503, detail="审批补偿执行失败") from exc
+    return {"code": 0, "data": result}

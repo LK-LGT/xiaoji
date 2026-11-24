@@ -98,6 +98,9 @@ _TEST_SCHEDULER_OFF = {
     "NOTIFICATION_ENABLED": "false",
     # ★ 每日填报提醒推送（后台线程 + 首轮真实取数）
     "FEISHU_DAILY_PUSH_ENABLED": "false",
+    # ★ 飞书审批回流定时补偿（2026-11-24，FS-7）
+    #    ⚠️ 后台线程 + 首轮就真去拉飞书审批实例 ⇒ 必须关。
+    "FEISHU_APPROVAL_COMPENSATION_ENABLED": "false",
 }
 for _key, _value in _TEST_SCHEDULER_OFF.items():
     # ⚠️ 用直接赋值，不用 setdefault ——

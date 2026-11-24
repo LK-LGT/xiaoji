@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import time
 from collections.abc import Callable
@@ -19,6 +20,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+
+from .feishu_token_cache import tenant_token_cache
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,30 @@ def describe_feishu_error(code: int | None, fallback: str = "飞书接口错误"
     if code is None:
         return fallback
     return FEISHU_ERROR_CODES.get(code, f"{fallback}（错误码 {code}）")
+
+
+#: 文件扩展名 → MIME 类型（上传飞书附件时用）。
+#:
+#: ⚠️ **不能只靠扩展名推断** —— 飞书按 MIME 决定客户端能否预览，
+#:    给错了文件能上传成功但**打不开**。
+_CONTENT_TYPES: dict[str, str] = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".csv": "text/csv",
+    ".txt": "text/plain",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+
+
+def _guess_content_type(filename: str) -> str:
+    """按扩展名推断 MIME 类型（未知扩展名退回二进制流）。"""
+    _, ext = os.path.splitext(filename or "")
+    return _CONTENT_TYPES.get(ext.lower(), "application/octet-stream")
 
 
 class FeishuError(Exception):
@@ -156,6 +183,13 @@ class FeishuClient:
         self.sleep = sleep
         self._access_token: str | None = None
         self._token_expires_at: datetime | None = None
+        # ⚠️ **是否注入了 transport** —— 决定用不用进程级共享 token 缓存。
+        #
+        # 注入 transport = 测试用的 MockTransport（按录制顺序返回响应）。
+        # 若共享缓存生效，token 会跨实例复用 ⇒ 测试之间互相污染，
+        # 而且**换测试顺序就会失败**。
+        # ⇒ 注入 transport ⇒ 只用实例级缓存（保持测试可预测）。
+        self._transport_injected = transport is not None
         # ─────────────────────────────────────────────────────────────
         # ⚠️ 用户态 / 应用态 Token —— **独立槽位**，绝不与租户态共用
         #
@@ -189,6 +223,36 @@ class FeishuClient:
         ):
             return self._access_token
 
+        # ⚠️⚠️ **共享缓存只在「真实 transport」下启用**（FS-7）
+        #
+        # 注入 transport 的是**测试用的 MockTransport** ——
+        # 它按录制顺序返回响应。若共享缓存生效，token 会跨实例复用
+        # ⇒ A 测试拿到的 token 被 B 测试"继承" ⇒ 断言互相污染，
+        #    而且**换个测试顺序就会失败**（典型的顺序依赖）。
+        #
+        # ⇒ 注入 transport ⇒ 只用实例级缓存（保持测试可预测）。
+        if self._transport_injected:
+            return self._fetch_tenant_token_local()
+
+        # ⚠️ **进程级共享缓存** —— 跨 client 实例复用，
+        #    避免每个请求都打一次 token 接口（飞书对 token 接口有频控）。
+        #
+        #    `force_refresh=True`（收到 token 失效错误码后的重试）
+        #    ⇒ 先作废共享槽位再取，避免拿到同一个坏 token。
+        if force_refresh:
+            tenant_token_cache.invalidate(self.app_id, self.app_secret)
+
+        return tenant_token_cache.get(
+            self.app_id,
+            self.app_secret,
+            self._fetch_tenant_token,
+        )
+
+    def _fetch_tenant_token(self) -> tuple[str, int]:
+        """向飞书拉取租户 token，返回 ``(token, expire_seconds)``。
+
+        ⚠️ **不写任何缓存** —— 缓存由 ``TenantTokenCache`` 负责。
+        """
         try:
             resp = self._http_client.post(
                 self.TOKEN_ENDPOINT,
@@ -229,7 +293,17 @@ class FeishuClient:
             raise FeishuTokenError("飞书 Token 获取失败")
 
         expires_in = max(60, int(data.get("expire", 7200)))
-        self._access_token = str(data["tenant_access_token"])
+        return str(data["tenant_access_token"]), expires_in
+
+    def _fetch_tenant_token_local(self) -> str:
+        """实例级拉取 token（**仅注入 transport 时使用**）。
+
+        ⚠️ 保留原有的 TTL 计算语义（见下方注释）——
+        共享缓存那条路径由 ``TenantTokenCache`` 用同样的余量计算。
+        """
+        token, expires_in = self._fetch_tenant_token()
+
+        self._access_token = token
         # ⚠️ 刷新余量 300 秒 —— 避免 token 在请求途中过期。
         #
         # 原来的写法 ``max(30, expires_in - 300)`` 有个**隐蔽的错误**：
@@ -526,17 +600,22 @@ class FeishuClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        files: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """发送认证请求；网络错误、429、5xx 自动退避重试。
 
         使用**租户态** token（应用身份）。用户态请求请用
         ``_request_with_token`` —— 两者绝不能混用（RK3）。
+
+        ⚠️ ``files`` 与 ``json`` **互斥** ——
+        httpx 要求 multipart 与 json body 不能同时给。
         """
         return self._request_with_token(
             method,
             endpoint,
             params=params,
             json=json,
+            files=files,
             token=None,
         )
 
@@ -547,6 +626,7 @@ class FeishuClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        files: dict[str, Any] | None = None,
         token: str | None = None,
     ) -> dict[str, Any]:
         """发送认证请求，可显式指定 token。
@@ -557,6 +637,9 @@ class FeishuClient:
         ⚠️ 显式 token 失效时**不做**自动刷新重放 —— 用户态 token 的刷新
         方式（refresh_token）与租户态完全不同，盲目重放只会把同一个失败
         放大成重试风暴。调用方应自行决定如何重新换取 token。
+
+        ⚠️ ``files`` 用于 multipart 上传（如 ``/im/v1/files``）。
+        ⚠️ **files 与 json 互斥** —— 同时给会让 httpx 抛异常。
         """
         token_refreshed = False
         for attempt in range(self.max_retries + 1):
@@ -578,6 +661,7 @@ class FeishuClient:
                     endpoint,
                     params=params,
                     json=json,
+                    files=files,
                     headers={"Authorization": f"Bearer {auth_token}"},
                 )
             except httpx.TimeoutException as exc:
@@ -643,6 +727,16 @@ class FeishuClient:
                     token_refreshed = True
                     self._access_token = None
                     self._token_expires_at = None
+                    # ⚠️⚠️ **必须同时作废进程级共享缓存**（FS-7）
+                    #
+                    # 共享缓存存在后，这里只清实例槽位**是不够的** ——
+                    # 下一次重试会从共享缓存里拿到**同一个已失效的 token**
+                    # ⇒ 重试再次 99991663 ⇒ 而 `token_refreshed` 已为 True
+                    # ⇒ 直接抛错 ⇒ **一次 token 失效导致整个请求失败**。
+                    #
+                    # ⇒ 共享槽位与实例槽位**必须一起作废**。
+                    if not self._transport_injected:
+                        tenant_token_cache.invalidate(self.app_id, self.app_secret)
                     continue
                 raise FeishuError(
                     message,
@@ -929,6 +1023,106 @@ class FeishuClient:
                 "content": content,
             },
         )
+        return data
+
+    # ─────────────────────────────────────────────────────────────
+    # 附件（FS-6）
+    # ─────────────────────────────────────────────────────────────
+
+    def upload_file(
+        self,
+        filename: str,
+        content: bytes,
+        *,
+        file_type: str = "xlsx",
+    ) -> str:
+        """上传文件到飞书，返回 ``file_key``（`POST /im/v1/files`）。
+
+        ⚠️ **飞书发附件是两步的**
+        ------------------------------
+        1. 先把文件**上传**（``/im/v1/files``）→ 拿到 ``file_key``；
+        2. 再发消息时把 ``file_key`` 放进消息内容。
+
+        ⇒ 直接把二进制塞进消息是**不行的**。
+
+        ⚠️ **两步用的是不同的 token**
+        ------------------------------
+        上传文件用的是 **tenant_access_token**（应用身份），
+        而「发给某个用户」时消息体里的 ``file_key`` 还需带
+        接收方信息 —— 这里只上传，发送由 ``send_file_message`` 负责。
+
+        ⚠️ **file_type 必须是飞书认识的类型**
+        ------------------------------
+        飞书按类型决定能否在客户端预览。常用取值：
+
+        ==============  ==========================
+        扩展名           file_type
+        ==============  ==========================
+        ``.xlsx``       ``xlsx``
+        ``.pdf``        ``pdf``
+        ``.docx``       ``doc``
+        ``.txt``        ``txt``
+        ==============  ==========================
+
+        传错的话文件能上传成功，但客户端**打不开**。
+
+        需要的权限：`im:resource`（或对应的新版权限点）。
+        """
+        if not filename or not content:
+            raise FeishuError("上传飞书附件失败：文件名或内容为空")
+
+        files = {"file": (filename, content, _guess_content_type(filename))}
+        data = self._request(
+            "POST",
+            "/im/v1/files",
+            params={"file_type": file_type, "file_name": filename},
+            files=files,
+        )
+        file_key = data.get("file_key")
+        if not file_key:
+            raise FeishuError("上传飞书附件失败：未返回 file_key")
+        logger.info("飞书附件上传成功：file=%s type=%s", filename, file_type)
+        return str(file_key)
+
+    def send_file_message(
+        self,
+        receive_id: str,
+        file_key: str,
+        *,
+        receive_id_type: str = "open_id",
+        title: str = "",
+    ) -> dict[str, Any]:
+        """发**文件消息**（`POST /im/v1/messages`，``msg_type="file"``）。
+
+        ⚠️ **为什么单独一个方法**
+        卡片消息（``interactive``）**不能**带附件 ——
+        飞书只允许 ``file`` / ``image`` / ``audio`` / ``media`` / ``sticker``
+        这几种消息类型携带 ``file_key``。
+
+        ⇒ 需要附件时**必须**额外发一条 file 消息，
+        不能把 file_key 塞进卡片。
+
+        Args:
+            receive_id: 接收者 ID。
+            file_key: 上传文件拿到的 ``file_key``。
+            receive_id_type: ``open_id`` / ``user_id`` / ``chat_id``。
+            title: 文件标题（可空）。
+
+        需要的权限：`im:message:send_as_bot`。
+        """
+        content = json.dumps({"file_key": file_key}, ensure_ascii=False)
+        data = self._request(
+            "POST",
+            "/im/v1/messages",
+            params={"receive_id_type": receive_id_type},
+            json={
+                "receive_id": receive_id,
+                "msg_type": "file",
+                "content": content,
+            },
+        )
+        if title:
+            logger.debug("已发送飞书文件消息：title=%s", title)
         return data
 
     # ─────────────────────────────────────────────────────────────

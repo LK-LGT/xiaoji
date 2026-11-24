@@ -553,6 +553,16 @@ def _startup() -> None:
         start_feishu_daily_push_scheduler()
     except Exception:
         logging.getLogger(__name__).exception("启动每日填报推送失败")
+    try:
+        # ★ 飞书审批回流定时补偿（2026-11-24，FS-7）
+        # ⚠️ **默认关闭**（配置项 ``feishu_approval_compensation_enabled``）——
+        #    补偿会主动调飞书接口并写入业务状态，必须业务显式开启。
+        from .services.feishu_approval_compensation_scheduler import (
+            start as start_feishu_approval_compensation,
+        )
+        start_feishu_approval_compensation()
+    except Exception:
+        logging.getLogger(__name__).exception("启动飞书审批补偿失败")
 
 
 @app.on_event("shutdown")
@@ -615,6 +625,14 @@ def _shutdown() -> None:
         stop_feishu_daily_push_scheduler()
     except Exception:
         logging.getLogger(__name__).exception("停止每日填报推送失败")
+    try:
+        # ★ 飞书审批回流定时补偿（2026-11-24，FS-7）
+        from .services.feishu_approval_compensation_scheduler import (
+            stop as stop_feishu_approval_compensation,
+        )
+        stop_feishu_approval_compensation()
+    except Exception:
+        logging.getLogger(__name__).exception("停止飞书审批补偿失败")
 
 
 # ---------------------------------------------------------------------------

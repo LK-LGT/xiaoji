@@ -134,6 +134,45 @@ def delivery_scope() -> tuple[str, str, str] | None:
     return None
 
 
+def _send_rating_attachment(
+    db: Session,
+    sender: Any,
+    receive_id: str,
+    receive_type: str,
+    record: AssessmentRecord,
+) -> None:
+    """生成并发送绩效评定表附件（FS-6）。
+
+    ⚠️ **两步**：先上传拿 ``file_key``，再发 file 消息。
+    ⚠️ **附件格式**由 ``settings.feishu_rating_attachment_type`` 决定
+    （默认 ``xlsx``；PDF 需要 ``reportlab`` 依赖，缺失时自动降级为 Excel）。
+    """
+    from .feishu_rating_export import build_rating_attachment
+
+    export = build_rating_attachment(
+        db,
+        record,
+        file_type=settings.feishu_rating_attachment_type,
+    )
+    file_key = sender.upload_file(
+        export.filename,
+        export.content,
+        file_type=export.file_type,
+    )
+    sender.send_file_message(
+        receive_id,
+        file_key,
+        receive_id_type=receive_type,
+        title=export.filename,
+    )
+    logger.info(
+        "绩效评定表附件已发送：record=%s file=%s type=%s",
+        record.id,
+        export.filename,
+        export.file_type,
+    )
+
+
 def dispatch_pending(db: Session, *, client: Any = None, limit: int = 50) -> int:
     """仅处理获准员工和场景的已提交发件箱。"""
     scope = delivery_scope()
@@ -173,7 +212,12 @@ def dispatch_pending(db: Session, *, client: Any = None, limit: int = 50) -> int
         employee = db.get(Employee, row.employee_id)
         receive_id, receive_type = employee_feishu_receive_id(employee) if employee else ("", "open_id")
         own_client = None
-        record = db.get(AssessmentRecord, row.object_id) if row.scene in {"N3", "N4"} else None
+        # ⚠️ N8（绩效等级已发布）也要拿记录 —— FS-6 要用它生成评定表附件。
+        record = (
+            db.get(AssessmentRecord, row.object_id)
+            if row.scene in {"N3", "N4", "N8"}
+            else None
+        )
         obsolete = (row.scene == "N3" and (not record or record.status not in {"not_started", "self_review_open"})) or (
             row.scene == "N4" and (not record or record.status != "self_review_submitted")
         )
@@ -198,6 +242,25 @@ def dispatch_pending(db: Session, *, client: Any = None, limit: int = 50) -> int
                     )
                     sender = own_client
                 sender.send_text_message(receive_id, content, receive_id_type=receive_type)
+                # ⚠️ **附件是独立的第二条消息**（FS-6）
+                #
+                # 飞书的消息类型**互斥** —— 卡片（interactive）不能带 file_key，
+                # 文件（file）不能带正文。
+                # ⇒ 要「一句话 + 一个附件」就**必须发两条消息**。
+                #
+                # ⚠️ **附件失败不推翻整条通知** —— 文字已经送到了，
+                #    附件是「锦上添花」。附件挂了就记 warning，主消息仍算 sent。
+                if row.scene == "N8" and record is not None:
+                    try:
+                        _send_rating_attachment(
+                            db, sender, receive_id, receive_type, record
+                        )
+                    except Exception as exc:  # noqa: BLE001 - 附件失败不影响主消息
+                        logger.warning(
+                            "绩效评定表附件发送失败（不影响主消息）：record=%s err=%s",
+                            record.id,
+                            exc,
+                        )
                 row.status, row.sent_at, row.last_error = "sent", now(), None
                 sent += 1
             except Exception as exc:
