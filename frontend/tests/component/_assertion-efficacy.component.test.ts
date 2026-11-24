@@ -261,3 +261,71 @@ describe('月计划列表的判据有效性', () => {
     expect(correct).toEqual(buggy)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. 周计划任务卡片：字段绑定 / 要点计数
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface CardModel {
+  content?: string
+  deliverable?: string
+  quality?: string
+  /** ⚠️ 故意拼错的字段名 —— 模拟 ``v-model="model.contents"`` 这类 bug。 */
+  contents?: string
+}
+
+/** ✅ **正确绑定** —— 三个字段各读各的。 */
+function readBoundFieldsCorrect(model: CardModel) {
+  return {
+    content: model.content ?? '',
+    deliverable: model.deliverable ?? '',
+    quality: model.quality ?? '',
+  }
+}
+
+/** ❌ **错误绑定**：内容字段名拼错（``content`` → ``contents``）。 */
+function readBoundFieldsTypo(model: CardModel) {
+  return {
+    content: model.contents ?? '',
+    deliverable: model.deliverable ?? '',
+    quality: model.quality ?? '',
+  }
+}
+
+/** ✅ **正确计数** —— 复制自 ``countWeekWorkPoints``。 */
+function countPointsCorrect(content: string | undefined): number {
+  return String(content || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .length
+}
+
+/** ❌ **错误计数**：把空白行也算进去。 */
+function countPointsIncludingBlank(content: string | undefined): number {
+  return String(content || '').split(/\r?\n/).length
+}
+
+describe('周计划任务卡片的判据有效性', () => {
+  test('⚠️ 字段名拼错 → 内容框读到的值不同 ⇒ 判据有区分力', () => {
+    const model: CardModel = { content: '我的工作内容', contents: undefined }
+
+    expect(readBoundFieldsCorrect(model).content).toBe('我的工作内容')
+    expect(readBoundFieldsTypo(model).content).toBe('')
+    // ⚠️ **关键**：两者必须不同 ⇒ 「内容框的值 = model.content」这条判据能抓到拼写 bug。
+    expect(readBoundFieldsCorrect(model).content).not.toBe(readBoundFieldsTypo(model).content)
+  })
+
+  test('⚠️ 空白行计入 → 计数不同 ⇒ 判据有区分力', () => {
+    const content = '1. 一件事\n\n   \n2. 两件事'
+
+    expect(countPointsCorrect(content)).toBe(2)
+    expect(countPointsIncludingBlank(content)).toBe(4)
+    expect(countPointsCorrect(content)).not.toBe(countPointsIncludingBlank(content))
+  })
+
+  test('空内容的要点数 = 0', () => {
+    expect(countPointsCorrect('')).toBe(0)
+    expect(countPointsCorrect(undefined)).toBe(0)
+  })
+})
