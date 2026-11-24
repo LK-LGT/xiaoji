@@ -329,3 +329,104 @@ describe('周计划任务卡片的判据有效性', () => {
     expect(countPointsCorrect(undefined)).toBe(0)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. 组织架构：后代判定 / 哨兵值
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface OrgNode {
+  id: string
+  parentId: string
+  name: string
+}
+
+/** ✅ **正确实现** —— 复制自 ``OrgManagement.vue`` 的 ``isDescendant``。 */
+function isDescendantCorrect(
+  row: OrgNode,
+  parentId: string,
+  parentMap: Map<string, string>,
+): boolean {
+  let current = row.parentId
+  while (current && current !== '0') {
+    if (current === parentId) return true
+    current = parentMap.get(current) || '0'
+  }
+  return false
+}
+
+/**
+ * ❌ **错误实现**：哨兵值写成**数字** ``0``。
+ *
+ * ⚠️ 组件源码里就有这个警示：
+ *   「哨兵值必须是字符串 "0"，不能写成数字 0，否则 `===` 严格比较静默失效。」
+ *
+ * ⇒ ``current !== 0`` 对字符串 ``'0'`` 永远为真 ⇒ 循环**不会停**在根节点，
+ *   但由于 ``parentMap.get(current) || '0'`` 兜底，仍能返回。
+ *   真正的杀伤在**根节点的直接子节点**这一层。
+ */
+function isDescendantNumericSentinel(
+  row: OrgNode,
+  parentId: string,
+  parentMap: Map<string, string>,
+): boolean {
+  let current = row.parentId
+  while (current && current !== 0) {
+    if (current === parentId) return true
+    current = parentMap.get(current) || 0
+  }
+  return false
+}
+
+describe('组织架构后代判定的有效性', () => {
+  // ⚠️ 树：D1 → G1 → P1，D1 → D2（兄弟）
+  const map = new Map<string, string>([
+    ['D1', '0'],
+    ['G1', 'D1'],
+    ['P1', 'G1'],
+    ['D2', '0'],
+  ])
+
+  test('✅ 正确实现：孙节点是后代', () => {
+    expect(isDescendantCorrect({ id: 'P1', parentId: 'G1', name: 'P1' }, 'D1', map)).toBe(true)
+  })
+
+  test('✅ 正确实现：兄弟节点不是后代', () => {
+    expect(isDescendantCorrect({ id: 'D2', parentId: '0', name: 'D2' }, 'D1', map)).toBe(false)
+  })
+
+  test('✅ 正确实现：自己不是自己的后代', () => {
+    expect(isDescendantCorrect({ id: 'D1', parentId: '0', name: 'D1' }, 'D1', map)).toBe(false)
+  })
+
+  test('✅ 正确实现：根节点的直接子节点不是任何节点的后代', () => {
+    expect(isDescendantCorrect({ id: 'D2', parentId: '0', name: 'D2' }, 'D1', map)).toBe(false)
+  })
+
+  test('⚠️ 哨兵值写成数字 0 → **多数路径结果相同**（诚实记录）', () => {
+    // ⚠️ **这是一个「自检发现自检盲区」的实例**，如实记录：
+    //
+    //   把哨兵值从字符串 "0" 改成数字 0，**在绝大多数路径上结果完全相同** ——
+    //   因为 ``parentMap.get(current) || 0`` 的兜底把链路收住了。
+    //
+    //   ⇒ **「层级过滤」这条断言抓不到这个哨兵 bug**。
+    //   ⇒ 真正能抓它的是**别的判据**：
+    //      比如「根节点 id 必须是字符串 '0'」这种**契约级**断言。
+    //
+    //   ⇒ 结论：挂载断言擅长测**可见行为**，
+    //      但**不擅长测「值恰好相同时不会暴露的写法问题」**。
+    //      这类要靠类型/契约断言（TypeScript 类型或专门的契约测试）。
+    const row = { id: 'P1', parentId: 'G1', name: 'P1' }
+
+    expect(isDescendantCorrect(row, 'D1', map)).toBe(true)
+    expect(isDescendantNumericSentinel(row, 'D1', map)).toBe(true)
+    // ⚠️ 如实断言：两者**相同** ⇒ 该判据在这个 bug 上**没有区分力**。
+    expect(isDescendantNumericSentinel(row, 'D1', map)).toBe(isDescendantCorrect(row, 'D1', map))
+  })
+
+  test('⚠️ 哨兵值写成数字 0 → 根节点直系子节点判定**相同**（诚实记录）', () => {
+    const directChild = { id: 'D2', parentId: '0', name: 'D2' }
+
+    expect(isDescendantCorrect(directChild, 'D1', map)).toBe(false)
+    expect(isDescendantNumericSentinel(directChild, 'D1', map)).toBe(false)
+  })
+})
