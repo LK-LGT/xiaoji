@@ -190,3 +190,74 @@ describe('错误实现与正确实现可区分', () => {
     expect(rows[0].content).toBe('共 3 项月计划任务')
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4. 月计划列表：防重复建计划 / 历史月份不可建
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** ✅ **正确实现** —— 复制自 ``EmployeeMonthPlanListRefactored.vue``。 */
+function canCreateCorrect(currentMonth: string, thisMonth: string): boolean {
+  return currentMonth >= thisMonth
+}
+
+/** ❌ **错误实现**：忘了「不能早于本月」这道闸。 */
+function canCreateWithoutGuard(currentMonth: string, thisMonth: string): boolean {
+  void thisMonth
+  return true
+}
+
+/** ✅ **正确实现** —— ``goCreateSelectedMonth``。 */
+function goCreateCorrect(
+  selectedPlanId: string | undefined,
+  currentMonth: string,
+): { kind: 'edit' | 'create'; target: string } {
+  if (selectedPlanId) return { kind: 'edit', target: `/edit/${selectedPlanId}` }
+  return { kind: 'create', target: `/edit?planMonth=${currentMonth}` }
+}
+
+/** ❌ **错误实现**：忘了「已有计划就打开它」⇒ 会重复建计划。 */
+function goCreateWithoutGuard(
+  selectedPlanId: string | undefined,
+  currentMonth: string,
+): { kind: 'edit' | 'create'; target: string } {
+  return { kind: 'create', target: `/edit?planMonth=${currentMonth}` }
+}
+
+describe('月计划列表的判据有效性', () => {
+  test('历史月份不可建：正确实现为 false，漏闸的实现为 true', () => {
+    const past = '2026-09'
+    const now = '2026-11'
+
+    expect(canCreateCorrect(past, now)).toBe(false)
+    expect(canCreateWithoutGuard(past, now)).toBe(true)
+    // ⚠️ **关键**：两者必须不同 ⇒ 「历史月份不给新建按钮」这条判据有区分力。
+    expect(canCreateCorrect(past, now)).not.toBe(canCreateWithoutGuard(past, now))
+  })
+
+  test('本月可建：正确实现为 true', () => {
+    expect(canCreateCorrect('2026-11', '2026-11')).toBe(true)
+  })
+
+  test('未来月份可建：正确实现为 true', () => {
+    expect(canCreateCorrect('2026-12', '2026-11')).toBe(true)
+  })
+
+  test('已有计划 → 打开它；漏闸的实现 → 会新建', () => {
+    const correct = goCreateCorrect('PLAN_42', '2026-11')
+    const buggy = goCreateWithoutGuard('PLAN_42', '2026-11')
+
+    expect(correct.kind).toBe('edit')
+    expect(correct.target).toContain('PLAN_42')
+    // ⚠️ 漏闸的实现会新建出第二份计划 ⇒ 判据有区分力。
+    expect(buggy.kind).toBe('create')
+    expect(buggy.target).not.toContain('PLAN_42')
+  })
+
+  test('没有计划 → 新建；两种实现一致（此处判据无区分力，故不作为有效判据）', () => {
+    const correct = goCreateCorrect(undefined, '2026-11')
+    const buggy = goCreateWithoutGuard(undefined, '2026-11')
+
+    expect(correct.kind).toBe('create')
+    expect(correct).toEqual(buggy)
+  })
+})
