@@ -210,6 +210,14 @@ def frontend_checks() -> list[Check]:
             ["node", "--experimental-strip-types", "--test", "tests/*.test.ts"],
             REPO_ROOT / "frontend",
         ),
+        Check(
+            # ⚠️ CI-5 阶段 1：组件测试（真实挂载 + 交互断言）。
+            #    与上面那条**并存** —— vitest 有 SFC 编译能力，
+            #    ``node --test`` 没有 ⇒ 组件测试只能跑在 vitest 上。
+            "前端组件测试（vitest · 真实挂载）",
+            [NPM, "run", "test:component"],
+            REPO_ROOT / "frontend",
+        ),
     ]
 
 

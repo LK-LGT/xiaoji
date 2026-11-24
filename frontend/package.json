@@ -7,6 +7,8 @@
     "dev": "vite --host 0.0.0.0 --port 5180",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "test:ci": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:component": "vitest run",
+    "test:all": "npm run test:ci && npm run test:component",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 5181"
   },
@@ -19,10 +21,13 @@
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.2.1",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "@vue/test-utils": "^2.6.0",
+    "jsdom": "^25.0.1",
     "typescript": "^5.7.2",
     "unplugin-vue-components": "^32.1.0",
     "vite": "^6.0.5",
+    "vitest": "^5.1.1",
     "vue-tsc": "^2.2.0"
   }
 }

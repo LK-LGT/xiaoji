@@ -268,6 +268,28 @@ jobs:
         working-directory: frontend
         run: node --experimental-strip-types --test tests/*.test.ts
 
+      - name: 前端组件测试（vitest · 真实挂载）
+        # ⚠️ **CI-5 阶段 1** —— 这是一条**新**的测试腿，与上面那条并存。
+        #
+        # ⚠️ **为什么两条并存而不是合并**
+        #   - ``node --test``：测纯函数 + 源码文本约定（43 文件 / 337 例）
+        #   - ``vitest``：测**组件挂载与交互**（tests/component/）
+        #   ⇒ vitest 有 SFC 编译能力，``node --test`` 没有 ⇒
+        #     组件测试**只能**跑在 vitest 上。
+        #   ⇒ 反过来，现有 337 例不需要迁移（迁移成本大、收益为零）。
+        #
+        # ⚠️ **这一步补上了什么**
+        #   现有 337 例里有 **165 处是「读 .vue 源文件做正则断言」** ——
+        #   验证的是「文件里有没有这个 CSS 字符串」，**不是**「组件行为对不对」。
+        #   ⇒ 组件逻辑写错（条件渲染反了、事件发错、状态映射错位）时，
+        #     读源码断言**一个都不会红**。
+        #   ⇒ 本步骤补上「真实挂载 + 交互断言」这一层。
+        #
+        # ⚠️ **不设覆盖率门槛** —— 当前只有 3 个示范文件，
+        #    门槛会在存量组件补齐前把 CI 卡死。
+        working-directory: frontend
+        run: npm run test:component
+
       - name: 构建产物
         working-directory: frontend
         run: npm run build
