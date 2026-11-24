@@ -89,18 +89,51 @@ def test_root_conftest_disables_scheduler_switch(env_key: str) -> None:
 
 
 def test_root_conftest_uses_forced_assignment_not_setdefault() -> None:
-    """⚠️ 必须用**直接赋值**，不得用 ``setdefault``。
+    """⚠️ 关闭**调度器开关**时必须用**直接赋值**，不得用 ``setdefault``。
 
     ``setdefault`` 不会覆盖已存在的环境变量 —— 而我们要的是**强制**关闭，
     否则开发者 shell 里残留的 ``BAIDU_PAN_ENABLED=true`` 依然会泄漏进来。
+
+    ⚠️ **范围必须是「调度器开关」，不是「conftest 里的所有 setdefault」**
+    --------------------------------------------------------------------
+    本断言原先用一条正则扫**全文**的 ``os.environ.setdefault(...)``，
+    于是会**误伤**用途完全不同的 setdefault。
+
+    实例（2026-11-24 B1 登录入口改造引入）::
+
+        os.environ.setdefault(
+            "TEST_USER_PASSWORDS",
+            '{"admin": "admin123", ...}',
+        )
+
+    这行是**测试账号口令注入** —— 它**就该**用 ``setdefault``：
+    允许外部（CI secret / 开发者 shell）覆盖测试口令，
+    而调度器开关恰恰**不允许**被覆盖。
+
+    ⇒ 两者语义相反，用一条全文正则无法区分 ⇒ 必须**限定到开关字典**。
     """
     text = _root_conftest_text()
 
-    offenders = re.findall(r"os\.environ\.setdefault\(\s*[\"'][A-Z_]+[\"']", text)
+    # ⚠️ 只提取「关调度器开关的那个字典」的内容。
+    #    `_TEST_SCHEDULER_OFF` 是本文件的既定约定（见 conftest.py）。
+    match = re.search(
+        r"_TEST_SCHEDULER_OFF\s*=\s*\{(?P<body>.*?)\}",
+        text,
+        re.DOTALL,
+    )
+    assert match, (
+        "根 conftest.py 里找不到 _TEST_SCHEDULER_OFF 字典。\n"
+        "本断言依赖它来限定检查范围 —— 请保持该字典名不变。"
+    )
+    body = match.group("body")
+
+    offenders = re.findall(r"os\.environ\.setdefault\(\s*[\"'][A-Z_]+[\"']", body)
     assert not offenders, (
-        "根 conftest.py 不得用 os.environ.setdefault 关调度器开关：\n"
+        "根 conftest.py 的 _TEST_SCHEDULER_OFF 用了 os.environ.setdefault：\n"
         + "\n".join(f"  - {o}" for o in offenders)
-        + "\nsetdefault 不会覆盖已存在的值，无法真正强制关闭。"
+        + "\nsetdefault 不会覆盖已存在的值，无法真正强制关闭调度器开关。\n"
+        "（⚠️ 字典**之外**的 setdefault 不受此限制 —— "
+        "例如测试口令注入就应当允许被覆盖。）"
     )
 
 

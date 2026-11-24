@@ -159,6 +159,30 @@ def backend_checks() -> list[Check]:
             [PYTHON, "-m", "ruff", "check", "."],
             REPO_ROOT,
         ),
+        Check(
+            # ⚠️ CI-6：后端依赖安全扫描。
+            #    ⚠️ **扫 lock 文件，不扫整个环境** ——
+            #    扫环境会把 pip 自身的 CVE 也算进来（本机 pip 24.3.1 有 12 个），
+            #    而 pip 不是项目依赖 ⇒ 噪音淹没信号。
+            "后端依赖安全扫描（pip-audit）",
+            [
+                PYTHON,
+                "-m",
+                "pip_audit",
+                "-r",
+                "backend/requirements.lock.txt",
+                "--progress-spinner",
+                "off",
+                "--desc",
+                "off",
+            ],
+            REPO_ROOT,
+            # ⚠️ **Windows 必须设 PYTHONUTF8=1** ——
+            #    pip-audit 按系统默认编码读文件，本机是 GBK，
+            #    读 UTF-8 的 requirements.lock.txt 会抛 UnicodeDecodeError。
+            #    CI 是 Ubuntu（UTF-8）所以没这问题，但本地脚本会踩。
+            {"PYTHONUTF8": "1"},
+        ),
     ]
 
 
@@ -167,6 +191,15 @@ def frontend_checks() -> list[Check]:
         Check(
             "TypeScript 类型检查（vue-tsc）",
             [NPM, "exec", "--", "vue-tsc", "--noEmit"],
+            REPO_ROOT / "frontend",
+        ),
+        Check(
+            # ⚠️ CI-6：依赖安全扫描。
+            #    门槛是 high —— moderate 及以下**故意不阻断**
+            #    （剩 3 个 moderate 全在 vue-tsc → minimatch 链上，
+            #     修它要破坏性升级 vue-tsc）。
+            "前端依赖安全扫描（npm audit，门槛 high）",
+            [NPM, "audit", "--audit-level=high"],
             REPO_ROOT / "frontend",
         ),
         Check(
