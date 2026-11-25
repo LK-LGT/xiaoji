@@ -86,6 +86,26 @@ jobs:
           # CI 无需真实模型与飞书凭据
           echo "MODEL_MODE=echo" >> "$GITHUB_ENV"
           echo "FEISHU_SYNC_ENABLED=false" >> "$GITHUB_ENV"
+          # ⚠️⚠️⚠️ **必须提供测试用认证密钥**（2026-11-25 修复 22 次连续 CI 红）
+          #
+          # ⚠️ **这是「CI 从来没绿过」的根因**
+          #   ``Settings._validate_auth_secret`` 要求
+          #   ``AUTH_TOKEN_SECRET`` 至少 32 位且不得是默认值
+          #   （默认 ``"change-me-in-production"`` 在弱密钥名单里）
+          #   ⇒ **CI 没有 .env** ⇒ 用默认值 ⇒ **validator 直接抛 ValidationError**
+          #   ⇒ ``from app.main import app`` 失败
+          #   ⇒ **凡是 import app 的步骤全挂**：
+          #      API 契约校验、生产姿态核对、后端测试、迁移、schema 校验……
+          #
+          # ⚠️ **为什么本地不复现**
+          #   本地有 ``backend/.env``（含合法密钥）⇒ 配置能通过校验
+          #   ⇒ 于是「本地全绿 / CI 全红」，且**查了 22 次 CI 都没定位到**。
+          #
+          # ⚠️ **为什么这个值可以写死在 CI 里**
+          #   它**只用于 CI 容器内**的签名自洽性检查，
+          #   不对应任何真实凭据、不出网、不进生产。
+          #   ⇒ 真正的密钥由部署环境的 Secret 管理系统注入。
+          echo "AUTH_TOKEN_SECRET=ci-test-only-secret-not-a-real-credential-0123456789" >> "$GITHUB_ENV"
 
       - name: API 契约校验（严格模式）
         # 前后端端点对不上即失败：这是防止契约脱节的第一道闸门

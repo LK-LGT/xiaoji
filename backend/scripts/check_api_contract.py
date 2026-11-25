@@ -157,10 +157,65 @@ def collect_frontend_endpoints() -> set[tuple[str, str]]:
             if raw is None:
                 continue
             raw = raw.split("?")[0]
+            raw = _resolve_template_consts(raw, text)
             if not raw.startswith("/"):
                 continue
             endpoints.add((method, normalize_path(raw)))
     return endpoints
+
+
+#: ⚠️ **模块级常量声明** —— ``const BASE = '/dept/workload'``
+_CONST_DECL_RE = re.compile(
+    r"^\s*(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*['\"]([^'\"]*)['\"]",
+    re.M,
+)
+
+
+def _resolve_template_consts(raw: str, text: str) -> str:
+    """把 ``${BASE}/xxx`` 里的 ``BASE`` 替换成它在同一文件里的字面量值。
+
+    ⚠️ **为什么必须做这一步（2026-11-25 修复的真实漏检）**
+    ------------------------------------------------------------------
+    前端 API 客户端普遍写成：
+
+        const BASE = '/baidu/workload'
+        ...
+        http.get(`${BASE}/summary`)
+
+    ⇒ 抽出来的路径是 ``${BASE}/summary`` —— **不以 ``/`` 开头**
+    ⇒ 旧逻辑直接 ``continue`` 跳过 ⇒ **整条调用被静默漏检**。
+
+    ⚠️ **漏检的后果**
+    ``panWorkload.ts``（23+ 处）与 ``deptWorkload.ts``（全部）
+    **一条都没进比对集合** ⇒ 后端把这些端点删了/改名了，契约校验**照样绿**。
+    ⇒ 也就是说「前后端契约校验」这条闸门，**恰好对最集中的一块前端 API 失明了**。
+
+    ⚠️ **为什么不在前端统一改成字符串拼接**
+    那是业务代码的写法偏好问题，不该由校验脚本去驱动。
+    ⇒ 校验脚本必须**读懂**前端已有的写法。
+
+    ⚠️ **只替换「本文件里能找到字面量声明」的常量**
+    找不到就保持原样（后续仍会被 ``startswith('/')`` 过滤掉）
+    ⇒ 宁可漏检，也不**猜**一个错的路径造成误报。
+    """
+    if "${" not in raw:
+        return raw
+
+    consts = {name: value for name, value in _CONST_DECL_RE.findall(text)}
+    if not consts:
+        return raw
+
+    def _sub(match: re.Match[str]) -> str:
+        name = match.group(1)
+        return consts.get(name, match.group(0))
+
+    # ⚠️ 最多替换 3 轮 —— 防止 ``${A}`` 里 A 又是 ``${B}`` 时死循环。
+    for _ in range(3):
+        new_raw = re.sub(r"\$\{([A-Za-z_$][A-Za-z0-9_$]*)\}", _sub, raw)
+        if new_raw == raw:
+            break
+        raw = new_raw
+    return raw
 
 
 def normalize_path(path: str) -> str:
@@ -240,12 +295,63 @@ def group_of(path: str) -> str:
     return "/".join(parts[:2]) if len(parts) > 1 else parts[0]
 
 
+def _matches_dynamic_tail(frontend_path: str, backend_paths: set[str]) -> bool:
+    """前端路径的**最后一段是动态的**时，能否由后端的静态路由覆盖。
+
+    ⚠️ **为什么需要这条（2026-11-25 修复的误报）**
+    ------------------------------------------------------------------
+    前端把「动作」也做成了路径段：
+
+        const root = '/performance'
+        export const schemeAction = (id, action) =>
+          http.post(`${root}/scheme-versions/${id}/${action}`)
+
+    ⇒ 归一化后是 ``/performance/scheme-versions/{id}/{id}``。
+
+    而后端是**三个静态路由**：
+
+        POST /performance/scheme-versions/{version_id}/publish
+        POST /performance/scheme-versions/{version_id}/copy
+        POST /performance/scheme-versions/{version_id}/retire
+
+    ⇒ 逐条比对时 ``{id}/{id}`` 匹配不上任何一个 ⇒ **误报「前端有后端无」**。
+    ⇒ 而这三个静态路由在「后端有前端未用」里也匹配不上（前端只有一个泛化调用）
+    ⇒ **同一个接口被同时报成「缺失」和「未用」** —— 噪声掩盖真问题。
+
+    ⇒ 这里放宽规则：**前端最后一段是动态的** ⇒ 只要后端存在
+      **同前缀 + 同方法**的路由，就算对齐。
+    ⇒ 前端传的动作值由调用点决定，**契约上确实是同一个接口**。
+
+    ⚠️ **只放宽「最后一段」**
+    中间段动态（如 ``/a/${id}/b``）不放宽 —— 那种必须逐条对上，
+    否则会漏掉真正的契约缺口。
+    """
+    if not frontend_path.endswith("/{id}"):
+        return False
+    prefix = frontend_path[: -len("/{id}")]
+    return any(p.startswith(prefix + "/") for p in backend_paths)
+
+
 def build_report() -> dict:
     backend = collect_backend_endpoints()
     frontend = collect_frontend_endpoints()
 
-    matched = frontend & backend
-    missing = sorted(frontend - backend)
+    backend_by_method: dict[str, set[str]] = {}
+    for method, path in backend:
+        backend_by_method.setdefault(method, set()).add(path)
+
+    matched: set[tuple[str, str]] = set()
+    missing: list[tuple[str, str]] = []
+    for method, path in sorted(frontend):
+        if (method, path) in backend:
+            matched.add((method, path))
+            continue
+        if _matches_dynamic_tail(path, backend_by_method.get(method, set())):
+            matched.add((method, path))
+            continue
+        missing.append((method, path))
+
+    missing.sort()
     unused = sorted(backend - frontend)
 
     groups: dict[str, list[str]] = {}

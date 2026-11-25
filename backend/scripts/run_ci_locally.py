@@ -90,6 +90,30 @@ def backend_checks() -> list[Check]:
         "AUTO_CREATE_TABLES": "false",
         "MODEL_MODE": "echo",
         "FEISHU_SYNC_ENABLED": "false",
+        # ⚠️⚠️ **必须提供测试用认证密钥**（2026-11-25）
+        #
+        # ⚠️ **这是「CI 从来没绿过」的根因**
+        #   ``Settings._validate_auth_secret`` 要求
+        #   ``AUTH_TOKEN_SECRET`` 至少 32 位且不得是默认值
+        #   （默认 ``"change-me-in-production"`` 在弱密钥名单里）
+        #   ⇒ **CI 没有 .env** ⇒ 用默认值 ⇒ **validator 直接抛 ValidationError**
+        #   ⇒ ``from app.main import app`` 失败
+        #   ⇒ **凡是 import app 的步骤全挂**：契约校验、生产姿态核对、
+        #      后端测试、迁移、schema 校验、E2E 全挂。
+        #
+        # ⚠️ **为什么本地不复现**
+        #   本地有 ``backend/.env``（含合法密钥）⇒ 配置能过校验
+        #   ⇒ 「本地全绿 / CI 全红」，且连续 22 次 CI 没定位到。
+        #
+        # ⚠️ **为什么本地 CI 也要设**
+        #   不设的话，本地 CI 依赖开发者本机 ``.env`` ⇒
+        #   「有 .env 的机器绿 / 没有的机器红」⇒ 又是同一种坑。
+        #   ⇒ 这里显式注入，**让本地 CI 与 CI 完全同口径**。
+        #
+        # ⚠️ **这个值安全吗**
+        #   只用于 CI/本地 CI 容器的签名自洽性检查，
+        #   不对应任何真实凭据、不出网、不进生产。
+        "AUTH_TOKEN_SECRET": "ci-test-only-secret-not-a-real-credential-0123456789",
     }
     return [
         Check(
