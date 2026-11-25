@@ -61,7 +61,22 @@ def _record(
     status: str = "sent",
     error: str = "",
 ) -> None:
-    """写一条推送记录（**幂等**）。"""
+    """写一条推送记录（**幂等**）。
+
+    ⚠️ **为什么用 SAVEPOINT 而不是直接 ``db.rollback()``**
+    --------------------------------------------------------
+    唯一约束 ``uq_feishu_daily_push_record_day_kind`` 冲突 = 「已经推过了」
+    ⇒ 不算错误，忽略即可。
+
+    但**直接 ``db.rollback()`` 会把整个会话的未提交改动一起丢掉** ——
+    包括同一轮推送里：
+    - 前面几个人的 ``_record`` 行（⇒ 幂等锚点丢了 ⇒ 下次又推一遍）；
+    - ``bot_session.last_message_id = generation``
+      （⇒ **旧卡片提交不失效** ⇒ 剪辑用上一张卡还能提交）。
+
+    ⇒ 用 ``begin_nested()``（SAVEPOINT）把冲突**隔离在这一条 INSERT 上**，
+    回滚只影响它自己。
+    """
     row = FeishuDailyPushRecord(
         push_day=day,
         kind=kind,
@@ -69,12 +84,24 @@ def _record(
         status=status,
         error=error[:512],
     )
-    db.add(row)
     try:
-        db.flush()
+        # ⚠️ **SAVEPOINT** —— 把唯一约束冲突隔离在这一条 INSERT 上，
+        #    回滚**只**影响它自己，不牵连会话里的其它改动。
+        with db.begin_nested():
+            db.add(row)
+            db.flush()
     except Exception:
         # ⚠️ **唯一约束冲突 = 已经推过了** —— 不算错误。
-        db.rollback()
+        #
+        # ⚠️⚠️ **不要 expunge** ——
+        #    SAVEPOINT 回滚后 SQLAlchemy **已经把 row 移出 session**
+        #    ⇒ 再调 `db.expunge(row)` 会抛
+        #    `InvalidRequestError: Instance ... is not present in this Session`。
+        #
+        #    ⚠️ 而且**不需要** expunge：SAVEPOINT 回滚已经把它摘干净了，
+        #    下一次 flush 不会再拿它去 INSERT。
+        logger.debug("每日推送记录已存在（%s/%s/%s），忽略", day, kind, target_id)
+
 
 
 def leaders_of(db: Session, employee: Employee) -> list[Employee]:
@@ -181,6 +208,25 @@ def push_daily_metrics(db: Session, day: str) -> dict[str, Any]:
     sent_leaders = 0
     skipped = 0
 
+    # ⚠️ **当天已推过的人要跳过**（2026-11-24 修）
+    # ------------------------------------------------------------------
+    # 之前只靠**唯一约束**兜底：先发出去，插入记录时才撞约束。
+    # ⇒ 后果：**消息发出去了，幂等锚点却没写进去**
+    #   （`_record` 里的异常被吞掉）⇒ 重复推送不会被拦，
+    #   员工会**收到两张一样的卡**。
+    #
+    # ⇒ 改成**发送前先查**：已推过就跳过，真的做到「一天只推一次」。
+    #    （多实例并发仍由唯一约束兜底 —— 那种情况下宁可重推也不漏推。）
+    already_sent = {
+        row.target_id
+        for row in db.execute(
+            select(FeishuDailyPushRecord).where(
+                FeishuDailyPushRecord.push_day == day,
+                FeishuDailyPushRecord.status == "sent",
+            )
+        ).scalars().all()
+    }
+
     try:
         # ── ① 剪辑本人 ────────────────────────────────
         for employee in editors:
@@ -193,6 +239,10 @@ def push_daily_metrics(db: Session, day: str) -> dict[str, Any]:
             metric_pairs = tuple(
                 (code, METRIC_LABELS.get(code, code)) for code in metrics
             )
+            if employee.id in already_sent:
+                logger.info("每日填报推送跳过（今天已推过）：%s", employee.name)
+                skipped += 1
+                continue
             pending = missing_metrics(db, employee.id, day, metric_pairs)
             if not pending:
                 # ⚠️ **已填完就不推** —— 骚扰比漏提醒更招人烦。
@@ -249,7 +299,7 @@ def push_daily_metrics(db: Session, day: str) -> dict[str, Any]:
 
         # ── ② 主管汇总 ─────────────────────────────────
         sent_leaders = _push_leader_summary(
-            db, client, editors, day, day_text
+            db, client, editors, day, day_text, already_sent=already_sent
         )
     finally:
         client.close()
@@ -268,8 +318,13 @@ def _push_leader_summary(
     editors: list[Employee],
     day: str,
     day_text: str,
+    already_sent: set[str] | None = None,
 ) -> int:
-    """给主管推「谁还没填」汇总。"""
+    """给主管推「谁还没填」汇总。
+
+    ⚠️ ``already_sent`` —— 当天已推过的主管要**跳过**，
+    否则重复触发会给主管发两张一样的汇总卡。
+    """
     from . import pan_workload_policy as policy
     from .feishu_card import build_leader_daily_status_card
     from .feishu_daily_metric_push import (
@@ -277,6 +332,8 @@ def _push_leader_summary(
         build_leader_status_rows,
         missing_metrics,
     )
+
+    already_sent = already_sent or set()
 
     # ⚠️ **按主管聚合** —— 同一个主管管多个剪辑时只推一张卡。
     by_leader: dict[str, list[Employee]] = {}
@@ -286,6 +343,9 @@ def _push_leader_summary(
 
     sent = 0
     for leader_id, members in by_leader.items():
+        if leader_id in already_sent:
+            logger.info("每日填报汇总推送跳过（今天已推过）：%s", leader_id)
+            continue
         leader = db.get(Employee, leader_id)
         if leader is None:
             continue

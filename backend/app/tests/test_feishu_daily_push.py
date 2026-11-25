@@ -1358,6 +1358,91 @@ class TestPushEndToEnd:
         assert ("editor", "E_EDITOR") in kinds
         assert ("leader", "E_LEADER") in kinds
 
+    # ───────────────────────────────────────────────────────────────────
+    # ⚠️⚠️ **重复推送（2026-11-24 修）**
+    # ------------------------------------------------------------------
+    # 之前只靠**唯一约束**兜底：先发消息，插入记录时才撞约束。
+    # ⇒ 后果：消息**已经发出去了**，幂等锚点却没写进去
+    #   （`_record` 里的异常被吞掉）⇒ 重复触发**拦不住**
+    #   ⇒ 员工会**收到两张一样的卡**。
+    #
+    # ⇒ 修法：① 发送**前**先查「当天已推过」→ 跳过；
+    #         ② `_record` 用 SAVEPOINT ⇒ 撞约束不牵连会话里的其它改动。
+
+    def test_重复推送不重发(self, db, org, push_env):
+        """⚠️ **一天只推一次** —— 第二次调用必须一条都不发。"""
+        from backend.app.services.feishu_daily_push import push_daily_metrics
+
+        push_daily_metrics(db, "2026-11-23")
+        db.commit()
+        first_count = len(push_env)
+        assert first_count > 0, "第一次应该发出去了"
+
+        result = push_daily_metrics(db, "2026-11-23")
+        db.commit()
+
+        assert len(push_env) == first_count, "重复推送**不应该**再发消息"
+        assert result["editors"] == 0
+        assert result["leaders"] == 0
+
+    def test_重复推送后幂等锚点仍在(self, db, org, push_env):
+        """
+        ⚠️⚠️ **这条是本轮修复的核心**
+
+        旧实现里 ``_record`` 撞唯一约束时调的是 ``db.rollback()``
+        ⇒ 把**整个会话**的未提交改动一起丢了：
+        - 前面几个人的幂等锚点（⇒ 下次又推一遍）；
+        - ``bot_session.last_message_id = generation``
+          （⇒ **旧卡片提交不失效** ⇒ 剪辑用上一张卡还能提交）。
+
+        ⇒ 修法：用 SAVEPOINT（``begin_nested()``）把冲突隔离在这一条 INSERT 上。
+
+        ⚠️ **怎么构造「撞约束」而不被前置的 skip 挡掉**
+        ------------------------------------------------------
+        新实现会在**发送前**就跳过「当天已推过」的人 ⇒ 根本走不到 ``_record``。
+        ⇒ 要测 SAVEPOINT 这条路径，得**直接调 ``_record``** 制造冲突。
+        """
+        from backend.app.domain.pan_workload_models import FeishuDailyPushRecord as R
+        from backend.app.services.feishu_daily_push import _record
+
+        editor, _, _ = org
+        # 先插一条（模拟「另一个实例已经推过」）
+        db.add(R(push_day="2026-11-23", kind="editor", target_id=editor.id))
+        db.commit()
+
+        # ⚠️ **会话里先挂一个别的改动** ——
+        #    旧实现（db.rollback()）会把它一起丢掉；
+        #    新实现（SAVEPOINT）必须保住它。
+        marker = R(push_day="2026-11-23", kind="leader", target_id=editor.id)
+        db.add(marker)
+
+        # 再写一条冲突的 ⇒ 撞唯一约束
+        _record(db, day="2026-11-23", kind="editor", target_id=editor.id)
+
+        # ⚠️ **关键断言**：先前那个改动**必须还在**
+        db.flush()
+        db.commit()
+
+        rows = db.scalars(select(R)).all()
+        kinds = {(r.kind, r.target_id) for r in rows}
+        assert ("leader", editor.id) in kinds, (
+            "⚠️ 幂等锚点被 rollback 掉了 ⇒ 下次推送会重复打扰员工"
+        )
+
+    def test_主管汇总也不重发(self, db, org, push_env):
+        """⚠️ 主管汇总同样不能重发 —— 否则主管一天收好几张一样的卡。"""
+        from backend.app.services.feishu_daily_push import push_daily_metrics
+
+        push_daily_metrics(db, "2026-11-23")
+        db.commit()
+        leader_cards = [c for c in push_env if c["receive_id"] == "ou_leader"]
+        assert leader_cards, "第一次应该给主管发了汇总"
+
+        push_daily_metrics(db, "2026-11-23")
+        db.commit()
+
+        assert len([c for c in push_env if c["receive_id"] == "ou_leader"]) == len(leader_cards)
+
     def test_失败的不算已推送(self, db, org, monkeypatch):
         """⚠️ **推失败了下次还要推** —— 否则提醒永久丢失。"""
         from backend.app.core.config import settings
