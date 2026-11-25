@@ -183,6 +183,27 @@ def backend_checks() -> list[Check]:
             env,
         ),
         Check(
+            # ⚠️ **权限隔离 E2E（CI-5 阶段 3）** —— 验 V1–V8。
+            #    ⚠️ **为什么必须单独一个脚本**
+            #    「管理员不是万能模拟账号」这条规则横跨**两个板块**
+            #    （剪辑 ``/v1/baidu/workload`` + 部门 ``/v1/dept/workload``）。
+            #    ⚠️ **实测抓到的真实漂移（2026-11-25）**
+            #    部门板块的 ``_scope_employee_ids`` 多写了一个
+            #    ``or is_system_admin(db, user)``
+            #    ⇒ **管理员在部门板块能看全公司，在剪辑板块不能**
+            #    ⇒ 共享服务 ``pan_workload_scope`` 已经实现了正确口径，
+            #      路由层却**又加了一次**管理员放行 ⇒ 覆盖了共享服务的口径。
+            #    ⇒ 这正是「抽成共享服务」也会漂移的实例
+            #      （抽出来 ≠ 大家都会用）。
+            #    ⇒ 本脚本**同时打两个板块** ⇒ 行为不一致必挂。
+            #
+            # ⚠️ **同样必须放在 Alembic 迁移之后**。
+            "权限隔离 E2E（V1–V8 · 两个板块口径一致）",
+            [PYTHON, "backend/scripts/verify_permission_isolation_e2e.py"],
+            REPO_ROOT,
+            env,
+        ),
+        Check(
             "Python 静态检查（ruff）",
             # ⚠️ R22：不再传 `--select E9,F63,F7,F82`（只查致命错误）。
             #    规则集统一由 pyproject.toml 的 [tool.ruff.lint] 提供：

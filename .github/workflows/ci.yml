@@ -152,6 +152,19 @@ jobs:
         # ⚠️ **同样必须放在 Alembic 迁移之后**。
         run: python backend/scripts/verify_performance_dispute_branch_e2e.py
 
+      - name: 权限隔离 E2E（V1–V8 · 两个板块口径一致）
+        # ⚠️ **验「管理员不是万能模拟账号」这条规则**
+        # 这条规则横跨**两个板块**：
+        #   剪辑 /v1/baidu/workload/* + 部门 /v1/dept/workload/*
+        #
+        # ⚠️ **实测抓到的真实漂移（2026-11-25）**
+        # 部门板块多写了一个 `or is_system_admin(db, user)`
+        # ⇒ 管理员在部门板块能看全公司，在剪辑板块不能
+        # ⇒ 共享服务已实现正确口径，路由层却又加了一次放行
+        #
+        # ⇒ 本脚本**同时打两个板块** ⇒ 行为不一致必挂。
+        run: python backend/scripts/verify_permission_isolation_e2e.py
+
       - name: Schema 漂移检测（ORM 模型 ↔ 迁移）
         # ⚠️ 为什么需要这一步：
         #   本仓库有两条建库路径 —— alembic upgrade head（按迁移建）

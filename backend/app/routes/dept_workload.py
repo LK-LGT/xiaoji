@@ -96,21 +96,39 @@ router = APIRouter(
 def _scope_employee_ids(db: Session, user: Employee) -> set[str] | None:
     """这个用户**能看谁的数据**。
 
-    ⚠️ **返回 ``None`` = 不限**（HR / 管理员）。
+    ⚠️ **返回 ``None`` = 不限**（**仅 HR**）。
 
-    ⚠️ **口径与剪辑板块一致**
-    --------------------------------------------------
-    - 员工 ⇒ 只看自己
-    - 主管 ⇒ 看**直属下属**（汇报线）
-    - 部门负责人 ⇒ 看**管辖树**
-    - HR / 管理员 ⇒ 不限
+    ⚠️🔴 **口径必须与剪辑板块完全一致**（2026-11-25 修正）
+    ------------------------------------------------------------
+    业务规则：「**管理员不是万能模拟账号**」——
+    系统管理员是**真实员工账号**，只是被授予了【绩效配置管理员】权限
+    ⇒ 它的**数据范围**按真实身份（部门/汇报线）判定，
+    **不因是管理员就放行**。
+
+    ⚠️⚠️ **这里原本多了一个 ``or is_system_admin(db, user)``**
+    ⇒ 导致**同一个规则、两个板块两种行为**：
+
+        剪辑板块 ``/v1/baidu/workload/*``
+            ⇒ 管理员**看不到**外部门数据（正确）
+        部门板块 ``/v1/dept/workload/*``
+            ⇒ 管理员**能看全公司**（错误）
+
+    ⇒ **这就是「照抄两份实现」的经典后果** ——
+      共享服务 ``pan_workload_scope.scope_employee_ids``
+      明明已经实现了正确口径（``None`` 只给 HR），
+      本文件却在校验层**又加了一次管理员放行**。
+
+    ⇒ 修正：**直接用共享服务**，不再二次加工。
+    ⇒ 共享服务内部已经处理了 HR（``None``）与管理员（按真实身份）。
+
+    ⚠️ **管理员仍能做配置动作**（读绑定、开板块、同步组织）
+    ⇒ 那走的是 ``_require_admin``，与**数据范围**是两回事
+    ⇒ 收窄数据范围**不会**让管理员变成不能配置（否则会死锁）。
     """
-    from ..services.hr_admin_roles import is_hr, is_system_admin
     from ..services.pan_workload_scope import scope_employee_ids
 
-    if is_hr(db, user) or is_system_admin(db, user):
-        return None
-    return scope_employee_ids(db, user)
+    allowed = scope_employee_ids(db, user)
+    return set(allowed) if allowed is not None else None
 
 
 def _serialize_manual_metric(row: PanManualMetric) -> dict[str, Any]:
