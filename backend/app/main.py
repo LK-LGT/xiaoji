@@ -175,6 +175,19 @@ except Exception as e:
     traceback.print_exc()
 
 try:
+    # ★ 部门工作量（2026-11-25）—— 各部门通用的填报板块
+    # ⚠️ **独立 router + 独立板块守卫**（``dept_workload``）
+    # ⇒ 各部门与短视频**互不影响**，
+    #    也**不会**让别的部门碰到百度网盘那套接口。
+    from .routes import dept_workload as dept_workload_routes
+    app.include_router(dept_workload_routes.router)
+    print("[APP] Dept workload router registered successfully")
+except Exception as e:
+    print(f"[APP] WARNING: Failed to register dept workload router: {e}")
+    import traceback
+    traceback.print_exc()
+
+try:
     # ★ 飞书表格填报（2026-11-21）——「剪辑以表格形式填写」
     # ⚠️ **挂在 ``/v1/baidu/workload`` 前缀下** ⇒ 自动继承该板块的守卫
     # （部门没开通「剪辑工作量」⇒ 这个 API 也 403）

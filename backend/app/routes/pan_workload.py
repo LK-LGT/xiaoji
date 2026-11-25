@@ -179,11 +179,36 @@ class ItemResolveRequest(BaseModel):
 
 
 class ManualMetricRequest(BaseModel):
-    """人工填报。"""
+    """人工填报。
+
+    ⚠️⚠️ **量纲必须放宽（2026-11-24 修复的真实 bug）**
+    -----------------------------------------------
+    过去这里写的是 ``metric_value: float = Field(ge=0.0, le=1.0)``
+    ⇒ **只允许 0~1** ⇒ 那是**比率**的值域。
+
+    但业务在 2026-11-23 做了「角色倒转」：
+    - 剪辑填**数量**（普通视频 8 条 / OOTD 2 条 / 智能体 1 条）
+    - 主管填**比率**（完播率 0.35 / 留存率 0.62）
+
+    ⇒ 网页端剪辑**根本填不了数**：
+    「8 条」在 pydantic 层就被 ``le=1.0`` 拒掉（422）
+    ⇒ 平台变成「只有飞书能填，网页填不了」。
+
+    ⚠️ **为什么不改成 ``le=10000``**
+    那会让**比率**也能填 5000 ⇒ 服务层会拒（量纲校验在服务层）
+    ⇒ 但请求层不该给「比率」开数量的大门。
+
+    ⇒ **请求层只做「非负 + 上限宽松」的粗校验**，
+    **精确的值域校验交给服务层**
+    （服务层已经按 ``COUNT_METRIC_CODES`` 分量纲校验，见
+    ``pan_manual_metric_service.submit``）
+    ⇒ 两层职责清晰：请求层挡畸形值，服务层挡业务越界。
+    """
 
     metric_date: str = Field(min_length=10, max_length=10)
     metric_code: str = Field(min_length=1, max_length=64)
-    metric_value: float = Field(ge=0.0, le=1.0)
+    #: ⚠️ **比率 0~1、数量 0~10000** ⇒ 这里只挡「负数」与「离谱大」
+    metric_value: float = Field(ge=0.0, le=10000.0)
     #: 填报粒度：``day`` / ``file``
     scope: str = Field(default="day", pattern="^(day|file)$")
     target_key: str = Field(default="", max_length=64)
@@ -244,57 +269,60 @@ def _require_leader(db: Session, user: Employee) -> None:
         raise HTTPException(status_code=403, detail="无权查看该范围的工作量数据")
 
 
+def _require_review_in_scope(db: Session, user: Employee, review_id: str) -> None:
+    """🔴 确认当前主管**有权裁定这一个工单**（2026-11-24 修的真实漏洞）。
+
+    ⚠️ **为什么光靠 ``_require_leader`` 不够**
+    ``_require_leader`` 判定的是「你是不是**某个**主管」
+    ⇒ 部门 A 的主管对部门 B 的工单**同样通过**。
+
+    ⚠️ **实测复现（修复前）**
+    部门 A 主管调 ``POST /reviews/REV_B/resolve``
+    ⇒ HTTP 200，部门 B 员工的工单 ``final_count`` 被改成 **99**（原本 6）
+    ⇒ **跨部门篡改他人绩效工作量数据**。
+
+    ⇒ 必须再问一层：「这个工单的**当事人**在你的管辖范围内吗？」
+    判定口径 = ``_scope_employee_ids``（与面板/列表端点**同一套**）
+    ⇒ 主管看到的面板里没有这单，就裁定不了这单（**口径一致**）。
+
+    ⚠️ **HR 例外**
+    HR 允许跨部门看数据（业务口径确认，2026-11-24）⇒ ``None``（不限）时放过。
+
+    ⚠️ **为什么用 403 而不是 404**
+    工单**确实存在**，只是不该被这人裁定
+    ⇒ 403 + 明确文案更利于排查（404 会让人以为是「工单没了」）。
+    """
+    allowed = _scope_employee_ids(db, user)
+    if allowed is None:
+        # ⚠️ HR（不限范围）⇒ 允许裁定任何工单。
+        return
+
+    review = db.get(PanWorkloadReview, review_id)
+    if review is None:
+        # ⚠️ 工单不存在 ⇒ 交给下游抛 404（保持既有语义）。
+        return
+
+    if review.employee_id not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="无权裁定该员工的工作量工单（不在你的管辖范围内）",
+        )
+
+
 def _scope_employee_ids(db: Session, user: Employee) -> list[str] | None:
     """算出**当前用户能看谁的数据**。
 
+    ⚠️ **2026-11-25：已抽到共享服务** `services.pan_workload_scope`。
+    ⇒ 通用板块 `/v1/dept/workload` 用**同一套**判定
+    ⇒ 两边**不会漂移**（照抄两份实现是权限漏洞的温床）。
+
     Returns:
-        ``None`` = 不限（HR / 管理员）；
+        `None` = 不限（**仅 HR**）；
         列表 = 只能看这些人。
-
-    ⚠️ **员工只看自己** —— 绝不能让人看到同事的条数。
-
-    ⚠️⚠️ **必须含「直属下属 + 汇报线全链下属」**
-    真实组织（2026-11-21 查库）：
-
-        运营中心 (leader=杨飞)
-        └── 短视频 (leader=刘旭)
-            ├── 张洁  编导   ← ★ 两位剪辑的**直属上级**
-            │   ├── 李婵雨 剪辑
-            │   └── 佟瑶   剪辑
-
-    张洁**不是**部门 leader（leader 是刘旭）⇒ 旧逻辑只查
-    ``managed_department_ids`` ⇒ 她**看不到自己的下属** ⇒
-    「主管核对下属工作量」这条主链路**根本走不通**。
-
-    ⇒ 这里必须并上 ``direct_report_ids`` 与 ``reporting_line_ids``
-      （汇报线全链闭包，主管要能查到「下属的下属」）。
     """
-    ctx = _ctx(db, user)
-    if {"hr", "admin"} & set(ctx.roles):
-        return None
+    from ..services.pan_workload_scope import scope_employee_ids
 
-    allowed: set[str] = {user.id}
-
-    # ⚠️ ① 直属下属 + 汇报线全链下属
-    allowed.update(getattr(ctx, "direct_report_ids", None) or set())
-    allowed.update(getattr(ctx, "reporting_line_ids", None) or set())
-
-    # ⚠️ ② 部门负责人：所管部门（含下级部门）全员
-    managed = set(getattr(ctx, "managed_department_ids", None) or [])
-    if "department_leader" in ctx.roles and managed:
-        rows = db.scalars(
-            select(Employee.id).where(Employee.department_id.in_(managed))
-        ).all()
-        allowed.update(rows)
-
-    # ⚠️ ③ 代理授权范围
-    allowed.update(getattr(ctx, "delegated_employee_ids", None) or set())
-
-    # ⚠️ **普通员工 ⇒ 只看自己**
-    #   上面加的都是「有下属/有管理权」才有的集合 ⇒ 无管理权者为空。
-    if allowed == {user.id}:
-        return [user.id]
-    return sorted(allowed)
+    return scope_employee_ids(db, user)
 
 
 def _check_visible(db: Session, user: Employee, employee_id: str) -> None:
@@ -607,10 +635,96 @@ def list_bindings(
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """目录绑定列表。"""
-    _require_leader(db, user)
+    """目录绑定列表。
+
+    ⚠️ **2026-11-24（B3）：从 ``_require_leader`` 收紧为 ``_require_admin``**
+
+    ⚠️ **为什么收紧**
+    ① **读写口径必须一致** —— 同一个「目录绑定」资源，
+       ``POST /bindings``（维护）用的是 ``_require_admin``，
+       而这个 GET 原来用的是 ``_require_leader``
+       ⇒ 出现了「**能读不能写**」的不对称。
+    ② **它是配置数据，不是业务数据** ——
+       ``PanAccountBinding`` 是「网盘目录 → 员工」的映射表，
+       由 HR/管理员维护（写端点已限定），
+       **不属于**「谁的工作量」这类业务数据
+       ⇒ 不该随管辖范围展开。
+    ③ **原来能读到的是全公司映射** ——
+       ``_require_leader`` 只问「你是不是某个主管」，
+       过了之后 ``select(PanAccountBinding)`` **不带任何范围过滤**
+       ⇒ 任意主管（含外部门主管）都能拿到**全公司**的目录→人员对照表。
+
+    ⚠️ **为什么不是「按管辖范围过滤」而是「直接要管理员」**
+    绑定表是**配置**：一个目录绑给谁，是**公司级决策**
+    （改错了全公司的工作量都算错）。
+    ⇒ 主管**看自己范围内的绑定**没有业务价值，
+       只会让人误以为「改一下就能把工作量算到自己名下」。
+    ⇒ 与同模块的 ``POST /collect`` / ``POST /aggregate`` 口径保持一致。
+
+    ⚠️ **HR / 管理员不受影响** —— 他们是配置的实际维护者。
+    """
+    _require_admin(db, user)
     rows = list(db.scalars(select(PanAccountBinding).order_by(PanAccountBinding.folder_path)))
     return {"items": [_serialize_binding(r) for r in rows]}
+
+
+@router.get("/my-scope")
+def get_my_scope(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_user),
+) -> dict[str, Any]:
+    """★ **我在这块业务里的身份与填报口径**（2026-11-24）。
+
+    ⚠️ **为什么需要这个端点**
+    --------------------------
+    菜单层已经按板块 + 岗位角色过滤了，但**页面内部**还要知道：
+    - 我是 ``reporter``（要填报）还是 ``reviewer``（只审）？
+    - 我**具体能填哪些指标**？（数量 vs 比率，量纲不同）
+
+    ⇒ 前端不能自己猜 ⇒ 必须由后端下发
+    （口径表 ``pan_workload_policy`` 是唯一事实源）。
+
+    ⚠️ **为什么口径是「指标码 + 展示元数据」一起下发**
+    前端要渲染输入框（条数用整数输入 + 条单位，比率用百分比输入）
+    ⇒ 只给指标码，前端还得自己维护一份「哪些是数量」⇒ 两份真相。
+
+    Returns:
+        ``role`` —— ``reporter`` / ``reviewer`` / ``none``
+        ``metricCodes`` —— 我能填的指标码
+        ``metrics`` —— 每个指标码的展示元数据（含 ``kind``：count / rate）
+    """
+    from ..services.daily_metric_specs import specs_for_codes
+    from ..services.department_modules import module_role_for_employee
+    from ..services.pan_workload_policy import (
+        reporter_metric_codes,
+        reviewer_metric_codes,
+    )
+
+    role = module_role_for_employee(db, user, PAN_WORKLOAD_MODULE)
+
+    codes: tuple[str, ...] = ()
+    if role == "reporter":
+        codes = reporter_metric_codes(db, user)
+    elif role == "reviewer":
+        codes = reviewer_metric_codes(db, user)
+
+    # ⚠️ HR / 管理员恒为 reviewer，但**没有岗位口径**
+    #   ⇒ codes 为空 ⇒ 页面不显示填报表单（他们只看别人的数据）
+    specs = specs_for_codes(codes)
+    return {
+        "role": role,
+        "metricCodes": list(codes),
+        "metrics": [
+            {
+                "code": spec.code,
+                "label": spec.label,
+                "kind": spec.kind,
+                "placeholder": spec.placeholder,
+                "required": spec.required,
+            }
+            for spec in specs
+        ],
+    }
 
 
 @router.get("/manual-metrics")
@@ -741,7 +855,60 @@ def submit_manual_metric(
     """人工填报（**前端上传通路**）。
 
     ⚠️ **只能填自己的** —— 不允许替别人填。
+
+    ⚠️⚠️ **必须按岗位口径收敛（2026-11-24）**
+    --------------------------------------------
+    飞书端**已经**这么做了（``feishu_bot`` 里按 ``reporter_metric_codes``
+    / ``reviewer_metric_codes`` 过滤）
+    ⇒ 网页端**也必须**一样，否则同一个业务两条通路口径不同：
+
+        剪辑（reporter）  → 只能填**数量**（普通视频/OOTD/智能体）
+        主管（reviewer）  → 只能填**比率**（完播率/视频留存率）
+        主播（none）      → **不能填**
+
+    ⚠️ **为什么主播也要拦**
+    主播的菜单入口**已经**被角色过滤挡掉了（``build_module_menu``）
+    ⇒ 但他仍可能直接敲 URL 调这个端点
+    ⇒ **后端必须独立拦**（前端隐藏只是表象）。
     """
+    from ..services.pan_manual_metric_service import ALLOWED_METRIC_CODES
+    from ..services.pan_workload_policy import (
+        reporter_metric_codes,
+        reviewer_metric_codes,
+    )
+
+    # ⚠️ **先判「指标本身存不存在」**（400）
+    #   ⇒ 「salary」这种根本不存在的指标，是**参数错误**而不是**越权**
+    #   ⇒ 顺序不能反：先判口径会把它误报成 403「不在你的填报口径内」。
+    if payload.metric_code not in ALLOWED_METRIC_CODES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"不支持的指标：{payload.metric_code}"
+                f"（仅允许 {', '.join(ALLOWED_METRIC_CODES)}）"
+            ),
+        )
+
+    # ⚠️ **再判「能不能填」** —— 再判「能填哪些指标」
+    reporter_codes = reporter_metric_codes(db, user)
+    reviewer_codes = reviewer_metric_codes(db, user)
+    allowed_codes = reporter_codes or reviewer_codes
+    if not allowed_codes:
+        raise HTTPException(
+            status_code=403,
+            detail="你的岗位在这块业务里没有填报项（不参与该板块的填报）",
+        )
+
+    # ⚠️ **再判「填的是不是我的指标」** —— 剪辑不能填比率，反之亦然
+    if payload.metric_code not in allowed_codes:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"指标 {payload.metric_code} 不在你的填报口径内"
+                f"（你只能填：{', '.join(allowed_codes)}）"
+            ),
+        )
+
     svc = PanManualMetricService(db)
     try:
         row = svc.submit(
@@ -986,6 +1153,8 @@ def resolve_review_item(
 ) -> dict[str, Any]:
     """裁定单个争议项 —— **主管专属**。"""
     _require_leader(db, user)
+    # 🔴 **范围校验** —— 光「是主管」不够，还得是「这单的主管」（2026-11-24）。
+    _require_review_in_scope(db, user, review_id)
     svc = PanWorkloadReviewService(db)
     # ⚠️ **先确认工单存在** —— 不存在直接 404（而不是等 item 找不到时报 404）。
     svc.get_review(review_id)
@@ -1023,8 +1192,11 @@ def resolve_review(
     """裁定工单 —— **主管专属**。
 
     ⚠️ 员工**不能**自己裁定自己的工单。
+
+    🔴 **范围校验** —— 光「是主管」不够，还得是「这单的主管」（2026-11-24）。
     """
     _require_leader(db, user)
+    _require_review_in_scope(db, user, review_id)
     svc = PanWorkloadReviewService(db)
     try:
         review = svc.resolve_review(

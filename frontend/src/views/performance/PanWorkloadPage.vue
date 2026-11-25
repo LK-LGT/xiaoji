@@ -1,8 +1,17 @@
 <template>
   <div class="pan-workload-page">
-    <!-- ⚠️ **权限决定看哪个面板** ——
-         员工：我的工作量 + 填报 + 提异议
-         主管/HR：按人汇总 + 待裁定工单 -->
+    <!--
+      ⚠️ **按角色渲染**（2026-11-24）
+
+      ⚠️ **为什么不能只按权限位切**
+      过去的切法是「有没有 `pan:workload:resolve`」⇒ 有就显示主管面板。
+      ⇒ 但：
+      - **剪辑**（reporter）该看到的是「我的填报 + 我的数据」
+      - **主管**（reviewer）该看到的是「按人汇总 + 待裁定工单」+ **自己也要填比率**
+      - **主播**（none）根本不该进这个页面（菜单已被过滤）
+
+      ⇒ 现在按**后端下发的岗位角色**切 ⇒ 与飞书端口径完全一致。
+    -->
     <template v-if="canResolve">
       <PanWorkloadPanel :period="period" can-resolve @employee-selected="onEmployeeSelected" />
       <el-divider content-position="left">

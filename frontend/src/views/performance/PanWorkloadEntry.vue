@@ -41,8 +41,16 @@
     <section class="section">
       <h4 class="section-title">
         人工填报
-        <span class="section-hint">完播率 / 留存率</span>
-      </h4>      <el-form :inline="true" :model="metricForm" class="metric-form">
+        <span class="section-hint">{{ scopeHint }}</span>
+      </h4>
+      <!--
+        ⚠️ **2026-11-24** —— 填报项**按岗位口径**渲染。
+        过去这里写死了「完播率 / 留存率」两个比率 ⇒
+        ① 剪辑（该填**数量**）根本填不了自己的指标
+        ② 主管（该填**比率**）看到的却是剪辑的字段
+        ⇒ 现在从 `/my-scope` 取后端下发的口径。
+      -->
+      <el-form v-if="myMetrics.length" :inline="true" :model="metricForm" class="metric-form">
         <el-form-item label="日期">
           <el-date-picker
             v-model="metricForm.metric_date"
@@ -52,17 +60,33 @@
           />
         </el-form-item>
         <el-form-item label="指标">
-          <el-select v-model="metricForm.metric_code" style="width: 130px">
+          <el-select v-model="metricForm.metric_code" style="width: 150px">
             <el-option
-              v-for="(label, code) in MANUAL_METRIC_LABELS"
-              :key="code"
-              :label="label"
-              :value="code"
+              v-for="spec in myMetrics"
+              :key="spec.code"
+              :label="spec.label"
+              :value="spec.code"
             />
           </el-select>
         </el-form-item>
         <el-form-item label="数值">
+          <!--
+            ⚠️ **量纲不同 ⇒ 输入控件也不同**（2026-11-24）
+            - `count`（条数）→ **整数**输入，步长 1，范围 0~10000
+            - `rate`（比率）  → 0~1，步长 0.01，保留 4 位
+            ⇒ 过去统一用 0~1 + 步长 0.01 ⇒ 填「8 条」会被前端自己夹成 1
+          -->
           <el-input-number
+            v-if="currentMetricKind === 'count'"
+            v-model="metricForm.metric_value"
+            :min="0"
+            :max="10000"
+            :step="1"
+            :precision="0"
+            style="width: 120px"
+          />
+          <el-input-number
+            v-else
             v-model="metricForm.metric_value"
             :min="0"
             :max="1"
@@ -75,9 +99,21 @@
           <el-button type="primary" @click="submitMetric" :loading="submitting">提交</el-button>
         </el-form-item>
       </el-form>
-      <el-alert type="info" :closable="false" class="ratio-note">
-        比率用 0~1 表示：35% 填 0.35。
-      </el-alert>
+      <el-alert
+        v-if="myMetrics.length"
+        type="info"
+        :closable="false"
+        class="ratio-note"
+        :title="currentKindHint"
+      />
+      <el-alert
+        v-else
+        type="warning"
+        :closable="false"
+        class="ratio-note"
+        title="你的岗位在这块业务里没有填报项。"
+        description="你只查看与裁定，不填报指标。如需填报，请让 HR 在「部门功能板块 → 岗位口径」里把你的岗位设为「要填报」。"
+      />
 
       <el-table :data="metrics" size="small" border stripe class="metric-table">
         <el-table-column prop="metricDate" label="日期" width="120" />
@@ -87,7 +123,11 @@
           </template>
         </el-table-column>
         <el-table-column label="数值" width="100" align="right">
-          <template #default="{ row }">{{ (row.metricValue * 100).toFixed(1) }}%</template>
+          <template #default="{ row }">
+            <!-- ⚠️ **条数不能按比率格式化** —— 否则「8 条」显示成「800.0%」 -->
+            <span v-if="metricKind(row.metricCode) === 'count'">{{ row.metricValue }}</span>
+            <span v-else>{{ (row.metricValue * 100).toFixed(1) }}%</span>
+          </template>
         </el-table-column>
         <el-table-column label="来源" width="100">
           <template #default="{ row }">
@@ -224,10 +264,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, type UploadFile } from 'element-plus'
 import {
   MANUAL_METRIC_LABELS,
+  MANUAL_METRIC_KINDS,
   panWorkloadActions,
   panWorkloadApi,
   type DisputeType,
@@ -235,6 +276,7 @@ import {
   type PanManualMetric,
   type PanWorkloadDaily,
   type PanWorkloadFile,
+  type PanWorkloadMetricSpec,
 } from '@/api/panWorkload'
 import PanFeishuTableBinding from './PanFeishuTableBinding.vue'
 
@@ -274,6 +316,52 @@ const metricForm = reactive({
   metric_value: 0.35,
 })
 
+/**
+ * ★ **我的填报口径**（2026-11-24，后端下发）。
+ *
+ * ⚠️ **为什么不自己写死指标列表**
+ * 岗位口径表（部门 × 岗位 → 角色 / 指标）在**后端**
+ * ⇒ 前端写死 ⇒ 加指标要发版 ⇒ 且与飞书端口径漂移。
+ */
+const myMetrics = ref<PanWorkloadMetricSpec[]>([])
+const myRole = ref<'reporter' | 'reviewer' | 'none'>('none')
+
+/** 当前选中指标的量纲。 */
+const currentMetricKind = computed(
+  () => metricKind(metricForm.metric_code),
+)
+
+/** 表单标题旁的一句说明。 */
+const scopeHint = computed(() => {
+  if (myRole.value === 'reporter') return '按岗位口径 · 要填报'
+  if (myRole.value === 'reviewer') return '按岗位口径 · 审阅'
+  return '不参与填报'
+})
+
+/** 量纲提示。 */
+const currentKindHint = computed(() =>
+  currentMetricKind.value === 'count'
+    ? '条数用整数：剪了 8 条就填 8。'
+    : '比率用 0~1 表示：35% 填 0.35。',
+)
+
+/** 指标码 → 量纲（后端下发的优先，兜底用静态表）。 */
+function metricKind(code: string): 'count' | 'rate' {
+  const fromServer = myMetrics.value.find((m) => m.code === code)
+  if (fromServer) return fromServer.kind === 'count' ? 'count' : 'rate'
+  return MANUAL_METRIC_KINDS[code] ?? 'rate'
+}
+
+/**
+ * ⚠️ **切换指标时重置数值**（2026-11-24）。
+ *
+ * 过去切指标不清零 ⇒ 从「完播率 0.35」切到「普通视频」
+ * ⇒ 数值 0.35 被当成「0 条」提交 ⇒ 数据错。
+ */
+watch(() => metricForm.metric_code, (code) => {
+  metricForm.metric_value = metricKind(code) === 'count' ? 0 : 0.35
+})
+
 const disputeForm = reactive({
   scope: 'day' as 'day' | 'file',
   claimed_count: 0,
@@ -288,12 +376,22 @@ const tableBindingRef = ref<InstanceType<typeof PanFeishuTableBinding> | null>(n
 async function loadAll() {
   loading.value = true
   try {
-    const [daily, manual] = await Promise.all([
+    const [daily, manual, scope] = await Promise.all([
       panWorkloadApi.getDaily(),
       panWorkloadApi.getManualMetrics(),
+      panWorkloadApi.getMyScope(),
     ])
     dailies.value = daily.items
     metrics.value = manual.items
+    myRole.value = scope.role
+    myMetrics.value = scope.metrics
+
+    // ⚠️ **默认选中第一个指标** —— 别让下拉停在「不在我口径里」的指标上
+    const first = scope.metrics[0]
+    if (first && !scope.metrics.some((m) => m.code === metricForm.metric_code)) {
+      metricForm.metric_code = first.code as ManualMetricCode
+      metricForm.metric_value = first.kind === 'count' ? 0 : 0.35
+    }
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '加载失败')
   } finally {

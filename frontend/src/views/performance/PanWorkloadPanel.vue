@@ -138,7 +138,7 @@
             </template>
           </el-table-column>
           <el-table-column label="数值" width="90" align="right">
-            <template #default="{ row }">{{ formatRate(row.metricValue) }}</template>
+            <template #default="{ row }">{{ formatMetricValue(row.metricCode, row.metricValue) }}</template>
           </el-table-column>
           <el-table-column label="来源" width="100">
             <template #default="{ row }">
@@ -337,6 +337,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { EditPen, Link, Picture } from '@element-plus/icons-vue'
 import {
+  MANUAL_METRIC_KINDS,
   MANUAL_METRIC_LABELS,
   panWorkloadActions,
   panWorkloadApi,
@@ -534,6 +535,22 @@ async function downloadArtifact(a: PanWorkloadArtifact) {
 /** 比率格式化 —— 0.35 ⇒ 35.0%。 */
 function formatRate(v: number) {
   return `${(v * 100).toFixed(1)}%`
+}
+
+/**
+ * ⚠️ **按量纲格式化**（2026-11-24）。
+ *
+ * ⚠️ **为什么不能一律用 ``formatRate``**
+ * 角色倒转后，剪辑填的是**数量**（普通视频 8 条）
+ * ⇒ 一律按比率格式化会显示成「800.0%」⇒ **数据看起来是错的**。
+ *
+ * ⇒ 条数显示成「8 条」，比率才显示成百分比。
+ */
+function formatMetricValue(code: string, value: number) {
+  if (MANUAL_METRIC_KINDS[code] === 'count') {
+    return `${value} 条`
+  }
+  return formatRate(value)
 }
 
 /** 文件大小格式化。 */

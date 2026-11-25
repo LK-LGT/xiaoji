@@ -41,13 +41,65 @@ export type ItemResolution = 'pending' | 'upheld' | 'rejected' | 'need_more'
  * （名称「留任率」、`data_source=hr_system`、`owner=HR`），
  * 语义是**员工留存率**，与短视频的**视频留存率**不是一回事。
  * ⇒ 同名会写进同一条 `MetricValue`，两个业务互相覆写。
+ *
+ * ⚠️ **2026-11-24 角色倒转后有 5 个** ——
+ * 数量类（剪辑填）：普通视频 / OOTD / 智能体
+ * 比率类（主管填）：完播率 / 视频留存率
  */
-export type ManualMetricCode = 'video_completion_rate' | 'video_retention_rate'
+export type ManualMetricCode =
+  | 'video_completion_rate'
+  | 'video_retention_rate'
+  | 'video_normal_count'
+  | 'video_ootd_count'
+  | 'video_agent_count'
 
 /** 人工指标中文名。 */
 export const MANUAL_METRIC_LABELS: Record<string, string> = {
   video_completion_rate: '完播率',
   video_retention_rate: '视频留存率',
+  video_normal_count: '普通视频',
+  video_ootd_count: 'OOTD',
+  video_agent_count: '智能体',
+}
+
+/**
+ * ⚠️ **量纲**（2026-11-24）—— 决定输入框与校验规则。
+ *
+ * - `count` —— 条数（整数，0~10000），显示成「8 条」
+ * - `rate`  —— 比率（0~1），显示成「35.0%」
+ *
+ * ⇒ **前端不能一律当比率处理**（那会把「8 条」显示成「800.0%」）。
+ */
+export const MANUAL_METRIC_KINDS: Record<string, 'count' | 'rate'> = {
+  video_completion_rate: 'rate',
+  video_retention_rate: 'rate',
+  video_normal_count: 'count',
+  video_ootd_count: 'count',
+  video_agent_count: 'count',
+}
+
+/**
+ * ★ **我在剪辑工作量里的身份**（后端下发）。
+ *
+ * ⚠️ **口径表是唯一事实源** —— 前端不猜。
+ */
+export interface PanWorkloadMyScope {
+  /** `reporter`（要填报）/ `reviewer`（只审）/ `none`（不参与）。 */
+  role: 'reporter' | 'reviewer' | 'none'
+  /** 我能填的指标码。 */
+  metricCodes: string[]
+  /** 每个指标的展示元数据。 */
+  metrics: PanWorkloadMetricSpec[]
+}
+
+/** 一个指标的展示元数据（后端下发）。 */
+export interface PanWorkloadMetricSpec {
+  code: string
+  label: string
+  /** `count`（条数）/ `rate`（比率）。 */
+  kind: string
+  placeholder: string
+  required: boolean
 }
 
 /** 日汇总项。 */
@@ -231,7 +283,23 @@ export const panWorkloadApi = {
     metric_code?: string
   }) => http.get<{ items: PanManualMetric[] }, { items: PanManualMetric[] }>(`${BASE}/manual-metrics`, { params }),
 
-  /** 目录绑定。 */
+  /**
+   * ★ **我在这块业务里的身份与填报口径**（2026-11-24）。
+   *
+   * ⚠️ **为什么页面要问后端**
+   * 口径表（部门 × 岗位 → 角色 / 指标）在**后端** ⇒
+   * 前端要知道自己该渲染「条数表单」还是「比率表单」，
+   * **不能自己猜** ⇒ 否则两条通路口径会漂移。
+   */
+  getMyScope: () =>
+    http.get<PanWorkloadMyScope, PanWorkloadMyScope>(`${BASE}/my-scope`),
+
+  /**
+   * 目录绑定。
+   *
+   * ⚠️ **仅 HR / 系统管理员**（2026-11-24 B3 收紧）——
+   *    与 `createBinding` 同口径（绑定表是**配置数据**，不是业务数据）。
+   */
   getBindings: () => http.get<{ items: PanAccountBinding[] }, { items: PanAccountBinding[] }>(`${BASE}/bindings`),
 
   /** 工单列表。 */

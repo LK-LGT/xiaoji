@@ -130,6 +130,41 @@ def org(db):
 
 
 @pytest.fixture()
+def policies(db, org):
+    """★ **部门 × 岗位 口径**（2026-11-24 真实业务口径）。
+
+    ⚠️ **为什么必须有这个 fixture**
+    网页端填报现在**按岗位口径收敛**（与飞书端同口径）：
+    - 剪辑（reporter）→ 只能填**数量**（普通视频 / OOTD / 智能体）
+    - 编导 / 运营（reviewer）→ 只能填**比率**（完播率 / 视频留存率）
+
+    ⇒ 没有这张表 ⇒ 没人能填 ⇒ 填报相关测试全部 403。
+
+    ⚠️ **与真实库一致**（``data/perf.db``）：
+    短视频部的口径就是「剪辑=reporter、编导=reviewer、运营=reviewer」。
+    """
+    from backend.app.domain.pan_workload_models import PanWorkloadPolicy
+
+    db.add_all([
+        PanWorkloadPolicy(
+            department_id="D_VIDEO", position="剪辑", role="reporter",
+            metric_codes="video_normal_count,video_ootd_count,video_agent_count",
+            active=True,
+        ),
+        PanWorkloadPolicy(
+            department_id="D_VIDEO", position="编导", role="reviewer",
+            metric_codes="", active=True,
+        ),
+        PanWorkloadPolicy(
+            department_id="D_VIDEO", position="运营", role="reviewer",
+            metric_codes="", active=True,
+        ),
+    ])
+    db.commit()
+    return policies
+
+
+@pytest.fixture()
 def modules(db, org):
     """★ **部门板块开通表**（2026-11-21 用户投诉后的隔离基础）。
 
@@ -454,15 +489,15 @@ class TestActionPermissions:
         resp = client.post(f"{PREFIX}/aggregate", json={"period": "2026-11"})
         assert resp.status_code == 403
 
-    def test_员工不能替别人填指标(self, client, db, org, modules, as_user):
+    def test_员工不能替别人填指标(self, client, db, org, modules, policies, as_user):
         """⚠️ 指标是**按人**的 —— 不能替别人填。"""
         as_user("E_LCY")
         resp = client.post(
             f"{PREFIX}/manual-metrics",
             json={
                 "metric_date": "2026-11-19",
-                "metric_code": "video_completion_rate",
-                "metric_value": 0.35,
+                "metric_code": "video_normal_count",
+                "metric_value": 8,
             },
         )
         assert resp.status_code == 200
@@ -603,12 +638,12 @@ class TestReviewFlow:
         assert resp.status_code == 200
         assert len(resp.json()["items"]) == 2
 
-    def test_人工指标按区间查询用字符串(self, client, db, org, modules, as_user):
+    def test_人工指标按区间查询用字符串(self, client, db, org, modules, policies, as_user):
         as_user("E_LCY")
         client.post(
             f"{PREFIX}/manual-metrics",
             json={"metric_date": "2026-11-19",
-                  "metric_code": "video_completion_rate", "metric_value": 0.35},
+                  "metric_code": "video_normal_count", "metric_value": 8},
         )
         resp = client.get(f"{PREFIX}/manual-metrics?start=2026-11-01&end=2026-11-30")
         assert resp.status_code == 200
@@ -811,7 +846,43 @@ class TestBindings:
 
 
 class TestManualMetrics:
-    def test_填报(self, client, db, org, modules, as_user):
+    def test_填报(self, client, db, org, modules, policies, as_user):
+        """⚠️ **剪辑填数量**（2026-11-23 角色倒转）—— 8 条，不是 0.35。"""
+        as_user("E_LCY")
+        resp = client.post(
+            f"{PREFIX}/manual-metrics",
+            json={"metric_date": "2026-11-19",
+                  "metric_code": "video_normal_count",
+                  "metric_value": 8},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["item"]["metricValue"] == 8
+
+    def test_剪辑能填多条数量指标(self, client, db, org, modules, policies, as_user):
+        """⚠️ **剪辑的口径有三条** —— 普通视频 / OOTD / 智能体。"""
+        as_user("E_LCY")
+        for code, value in [
+            ("video_normal_count", 8),
+            ("video_ootd_count", 2),
+            ("video_agent_count", 1),
+        ]:
+            resp = client.post(
+                f"{PREFIX}/manual-metrics",
+                json={"metric_date": "2026-11-19",
+                      "metric_code": code, "metric_value": value},
+            )
+            assert resp.status_code == 200, f"{code} 应可填：{resp.text}"
+
+    def test_剪辑不能填比率(self, client, db, org, modules, policies, as_user):
+        """⚠️⚠️ **角色倒转的核心断言**（2026-11-24）。
+
+        剪辑填**数量**，比率是**主管**填的
+        ⇒ 剪辑填 ``video_completion_rate`` 必须被拒。
+
+        ⚠️ **为什么这条很重要**
+        过去网页端对所有岗位开放**全部**指标 ⇒ 剪辑能填主管的比率
+        ⇒ 月度聚合时两类指标混在一起 ⇒ **算分口径就错了**。
+        """
         as_user("E_LCY")
         resp = client.post(
             f"{PREFIX}/manual-metrics",
@@ -819,10 +890,51 @@ class TestManualMetrics:
                   "metric_code": "video_completion_rate",
                   "metric_value": 0.35},
         )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["item"]["metricValue"] == 0.35
+        assert resp.status_code == 403, resp.text
+        assert "口径" in resp.json()["detail"]
 
-    def test_非法指标被拒(self, client, db, org, modules, as_user):
+    def test_主管能填比率(self, client, db, org, modules, policies, as_user):
+        """⚠️ **主管（reviewer）填比率** —— 与剪辑互补。"""
+        as_user("E_ZJ")
+        resp = client.post(
+            f"{PREFIX}/manual-metrics",
+            json={"metric_date": "2026-11-19",
+                  "metric_code": "video_completion_rate",
+                  "metric_value": 0.35},
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_主管不能填数量(self, client, db, org, modules, policies, as_user):
+        """⚠️ **反向也成立** —— 主管不能替下属填条数。"""
+        as_user("E_ZJ")
+        resp = client.post(
+            f"{PREFIX}/manual-metrics",
+            json={"metric_date": "2026-11-19",
+                  "metric_code": "video_normal_count",
+                  "metric_value": 8},
+        )
+        assert resp.status_code == 403, resp.text
+
+    def test_岗位口径为none则不能填(self, client, db, org, modules, policies, as_user):
+        """⚠️ **不参与的岗位不能填** —— 与飞书端同口径。
+
+        ⚠️ **构造**：「外部门员工」在**已开通板块的部门**，但岗位无口径
+        ⇒ 板块守卫放行 ⇒ **岗位口径**拦住他。
+        """
+        # ⚠️ 把人挪到短视频（板块已开通），但他的岗位没配口径 ⇒ none
+        db.get(Employee, "E_OTHER").department_id = "D_VIDEO"
+        db.commit()
+        as_user("E_OTHER")
+        resp = client.post(
+            f"{PREFIX}/manual-metrics",
+            json={"metric_date": "2026-11-19",
+                  "metric_code": "video_normal_count",
+                  "metric_value": 8},
+        )
+        assert resp.status_code == 403, resp.text
+        assert "没有填报项" in resp.json()["detail"]
+
+    def test_非法指标被拒(self, client, db, org, modules, policies, as_user):
         as_user("E_LCY")
         resp = client.post(
             f"{PREFIX}/manual-metrics",
@@ -831,20 +943,32 @@ class TestManualMetrics:
         )
         assert resp.status_code == 400
 
-    def test_值域超限被拒(self, client, db, org, modules, as_user):
-        """⚠️ 422 = pydantic 请求体校验拦截（比 400 更准确）。
+    def test_值域超限被拒(self, client, db, org, modules, policies, as_user):
+        """⚠️ **服务层按量纲校验**（请求层已放宽到 0~10000，2026-11-24）。
 
-        ⚠️ **服务层还有第二道** —— 见
-        ``test_pan_manual_metric.py::TestSubmit::test_值域校验``。
-        两道都要有：pydantic 拦请求，服务层拦**绕过 API 的内部调用**。
+        ⚠️ **为什么从 422 变成 400**
+        过去请求模型写死 ``le=1.0`` ⇒ 比率超 1 被 pydantic 拦（422）
+        ⇒ 但那条规则**顺带拦掉了条数**（8 条 > 1）⇒ 剪辑根本填不了
+        ⇒ 现在请求层只挡「负数 / 离谱大」，**精确值域由服务层按量纲校验**。
         """
         as_user("E_LCY")
         resp = client.post(
             f"{PREFIX}/manual-metrics",
             json={"metric_date": "2026-11-19",
+                  "metric_code": "video_normal_count", "metric_value": 1.5},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "整数" in resp.json()["detail"]
+
+    def test_比率超限被拒(self, client, db, org, modules, policies, as_user):
+        """⚠️ **比率仍是 0~1** —— 服务层按量纲分别校验。"""
+        as_user("E_ZJ")
+        resp = client.post(
+            f"{PREFIX}/manual-metrics",
+            json={"metric_date": "2026-11-19",
                   "metric_code": "video_completion_rate", "metric_value": 1.5},
         )
-        assert resp.status_code == 422
+        assert resp.status_code == 400, resp.text
 
     def test_HR跑聚合(self, client, db, org, modules, as_user):
         _daily(db, "E_LCY", "2026-11-19", 6)
@@ -853,12 +977,12 @@ class TestManualMetrics:
         assert resp.status_code == 200, resp.text
         assert resp.json()["written"] >= 1
 
-    def test_上传指标证据(self, client, db, org, modules, as_user):
+    def test_上传指标证据(self, client, db, org, modules, policies, as_user):
         as_user("E_LCY")
         resp = client.post(
             f"{PREFIX}/manual-metrics",
             json={"metric_date": "2026-11-19",
-                  "metric_code": "video_completion_rate", "metric_value": 0.35},
+                  "metric_code": "video_normal_count", "metric_value": 8},
         )
         metric_id = resp.json()["item"]["id"]
         resp = client.post(
@@ -950,12 +1074,43 @@ class TestDepartmentModuleIsolation:
         resp = client.get(f"{PREFIX}/summary")
         assert resp.status_code == 200, resp.text
 
-    def test_下级开通不等于上级开通(self, client, db, org, modules, as_user):
-        """⚠️⚠️ **继承是单向的** —— 短视频开通 ⇒ 运营中心**不能**用。
+    def test_下级开通_上级部门负责人可访问(self, client, db, org, modules, as_user):
+        """⚠️⚠️ **规则修订（2026-11-24）** —— 继承**不再是**单向的。
 
-        这是上一条的反向断言。两条合起来才锁住方向。
+        旧规则：短视频开通 ⇒ 运营中心**不能**用（挡住上级部门 leader）。
+        ⇒ 业务反馈：「**是负责人可以看到**，杨飞也有一个模块可以看」。
+
+        真实场景：
+
+            运营中心 (leader=杨飞)
+            └── 短视频 (leader=刘旭)  ← 只有这里开通了 pan_workload
+
+        杨飞是**短视频的负责人上级**，他必须能看到下属剪辑的工作量
+        ⇒ 否则只能去问刘旭要数据。
+
+        ⇒ 新规则：**管辖树**里有部门开通了板块 ⇒ 该负责人也能用。
+
+        ⚠️ **注意这不违反「板块隔离」**
+        「上级开通 ⇒ 下级继承」仍然成立；
+        新增的是「**负责人管辖的部门**开通 ⇒ 负责人本人可用」
+        ⇒ 范围仍然**严格限定在负责人自己的管辖树内**。
         """
-        as_user("E_TOP")  # 运营中心的 leader
+        as_user("E_TOP")  # 运营中心的 leader（= 杨飞的位置）
+        resp = client.get(f"{PREFIX}/summary")
+        assert resp.status_code == 200, resp.text
+
+    def test_非负责人的上级部门员工仍被拒(self, client, db, org, modules, as_user):
+        """⚠️ **新规则的边界** —— 只有**负责人**能下钻板块。
+
+        「上级部门的**普通员工**」（不是 leader）仍然看不到
+        ⇒ 否则「上级开通 ⇒ 下级继承」就变成了「上级部门全员可见」，
+        板块隔离会被打破。
+        """
+        db.add(Employee(id="E_CENTER_STAFF", name="运营中心普通员工",
+                        department_id="D_CENTER", employment_status="active",
+                        account_status="enabled"))
+        db.commit()
+        as_user("E_CENTER_STAFF")
         resp = client.get(f"{PREFIX}/summary")
         assert resp.status_code == 403, resp.text
 
