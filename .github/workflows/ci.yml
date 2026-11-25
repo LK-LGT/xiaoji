@@ -122,6 +122,23 @@ jobs:
       - name: 数据库 schema 校验（阶段三 9 张新表）
         run: python backend/scripts/verify_phase3_schema.py "${{ github.workspace }}/data/_ci_backend.db"
 
+      - name: 绩效闭环 E2E（真实库跑完整链路）
+        # ⚠️ **为什么单元测试不够**
+        # 真实库里曾出现 23 个考核任务里 **22 个 snapshot_id 为 NULL**、
+        # 21 条记录卡在 manager_review_submitted、score 表一条都没有
+        # ⇒ **代码全绿，业务却断在中间**。
+        # ⇒ 单元测试全是「内存 SQLite + dependency_overrides」，
+        # 覆盖不到事务提交、真实路由装配、跨表落库这些环节。
+        #
+        # ⚠️ **这道检查跑什么**
+        # 真实库跑完整 9 步闭环（发起 → 填报 → 评分 → 面谈 → 确认 → 定稿 → 归档），
+        # 定量方案 + 混合方案各一条，**每一步都断言库内状态**，
+        # 外加 4 组「该拒绝的确实被拒绝」的反向校验。
+        #
+        # ⚠️ **必须放在 Alembic 迁移之后** —— 它要往真实库里建表数据，
+        #    schema 还没建好会直接报表不存在。
+        run: python backend/scripts/verify_performance_closed_loop_e2e.py
+
       - name: Schema 漂移检测（ORM 模型 ↔ 迁移）
         # ⚠️ 为什么需要这一步：
         #   本仓库有两条建库路径 —— alembic upgrade head（按迁移建）

@@ -147,6 +147,24 @@ def backend_checks() -> list[Check]:
             env,
         ),
         Check(
+            # ⚠️ **绩效闭环 E2E（CI-5 阶段 3）** —— 真实库跑完整条链路。
+            #    ⚠️ **为什么单元测试不够**
+            #    真实库里曾出现 23 个考核任务里 **22 个 snapshot_id 为 NULL**、
+            #    21 条记录卡在 manager_review_submitted、score 表一条都没有
+            #    ⇒ **代码全绿，业务却断在中间**。
+            #    ⇒ 单元测试全是「内存 SQLite + dependency_overrides」，
+            #    覆盖不到事务提交、真实路由装配、跨表落库这些环节。
+            #    ⇒ 这道检查跑的是**完整 9 步闭环**（发起 → 填报 → 评分 →
+            #    面谈 → 确认 → 定稿 → 归档），每步都断言**库内状态**。
+            #
+            # ⚠️ **必须放在 Alembic 迁移之后** —— 它要往真实库里建表数据，
+            #    schema 还没建好会直接报表不存在。
+            "绩效闭环 E2E（真实库跑完整链路）",
+            [PYTHON, "backend/scripts/verify_performance_closed_loop_e2e.py"],
+            REPO_ROOT,
+            env,
+        ),
+        Check(
             "Python 静态检查（ruff）",
             # ⚠️ R22：不再传 `--select E9,F63,F7,F82`（只查致命错误）。
             #    规则集统一由 pyproject.toml 的 [tool.ruff.lint] 提供：
