@@ -15,6 +15,15 @@
   避免任务堆积 —— 与人工触发共用同一把分布式锁。
 - **可观测**：``get_scheduler_status()`` 暴露运行态、下次执行时间、
   连续失败次数，供前端与运维查看。
+
+每日固定时刻模式（2026-11-25）
+------------------------------
+``feishu_sync_daily_time = "08:00"`` ⇒ **每天早上 8 点**自动同步。
+
+⚠️ **不能用「间隔 = 86400 秒」代替** —— 间隔模式的触发时刻是
+「上次跑完 + 间隔」，会随服务重启**漂移**（今天 8:00 跑过，
+明天服务 9 点重启 ⇒ 变成明天 9:00，之后永远 9:00）。
+需求「每天早上 8 点」是**业务时刻**，必须按日历算。
 """
 
 from __future__ import annotations
@@ -62,6 +71,67 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+#: 每日模式的轮询间隔（秒）—— 每分钟检查一次「到点没到」。
+#:
+#: ⚠️ 为什么不是「睡到 8:00 再醒」：
+#:    ``Event.wait(长睡眠)`` 一旦进程被挂起/时钟跳变就可能错过，
+#:    而且没法优雅停机。轮询式更简单可靠（与每日推送调度器一致）。
+_DAILY_TICK_SECONDS = 60
+
+
+def _parse_daily_time() -> tuple[int, int] | None:
+    """解析 ``feishu_sync_daily_time`` → ``(时, 分)``；未配置则返回 ``None``。
+
+    ⚠️ **配错了退回间隔模式**，而不是让调度器死掉。
+    （格式错误已在 ``Settings`` 校验层拦掉，这里只兜语义越界。）
+    """
+    raw = (settings.feishu_sync_daily_time or "").strip()
+    if not raw:
+        return None
+    try:
+        hour_text, minute_text = raw.split(":", 1)
+        hour, minute = int(hour_text), int(minute_text)
+    except (ValueError, AttributeError):
+        logger.warning("FEISHU_SYNC_DAILY_TIME 格式无效, 退回间隔模式: %r", raw)
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        logger.warning("FEISHU_SYNC_DAILY_TIME 越界, 退回间隔模式: %r", raw)
+        return None
+    return (hour, minute)
+
+
+def _daily_window(now: datetime) -> tuple[datetime, datetime]:
+    """返回今天的「到点窗口」起止时刻。
+
+    ⚠️ **不是「8:00:00 那一刻」而是「8:00 ~ 8:10」** ——
+    服务在 8:00 之后才启动、或调度线程那一刻刚好卡住，
+    都不会漏跑当天同步。
+    """
+    hour, minute = _parse_daily_time() or (8, 0)
+    start = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    window = max(1, int(settings.feishu_sync_daily_window_minutes or 10))
+    return start, start + timedelta(minutes=window)
+
+
+def _is_daily_window(now: datetime) -> bool:
+    """当前时刻是否落在今天的到点窗口内。"""
+    start, end = _daily_window(now)
+    return start <= now < end
+
+
+def _next_daily_run(now: datetime) -> datetime:
+    """下一个到点时刻（严格晚于 ``now``）。
+
+    ⚠️ 若当前正好在窗口内 ⇒ 返回**明天**的到点时刻，
+    否则今天这一轮已经跑过了，再跑就是重复。
+    """
+    hour, minute = _parse_daily_time() or (8, 0)
+    today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now < today:
+        return today
+    return today + timedelta(days=1)
+
+
 def _set_state(**kwargs: Any) -> None:
     with _state_lock:
         _state.update(kwargs)
@@ -80,9 +150,14 @@ def get_scheduler_status() -> dict[str, Any]:
     current = _get_state()
     running = bool(_scheduler_thread and _scheduler_thread.is_alive())
     next_run = current.get("next_run_at")
+    daily = _parse_daily_time()
     return {
         "enabled": bool(settings.feishu_sync_enabled),
         "running": running,
+        # ⚠️ **显式暴露当前模式** —— 否则运维看到「nextRunAt」无从判断
+        # 到底是「每天 8 点」还是「每 N 小时」。配置漂移一眼可见。
+        "mode": "daily" if daily is not None else "interval",
+        "dailyTime": f"{daily[0]:02d}:{daily[1]:02d}" if daily else None,
         "intervalSeconds": max(60, settings.feishu_sync_interval_seconds),
         "started": bool(current.get("started")),
         "lastRunAt": current.get("last_run_at").isoformat() if current.get("last_run_at") else None,
@@ -135,7 +210,7 @@ def run_scheduled_sync() -> bool:
 
 
 def _loop(interval_seconds: int) -> None:
-    """调度主循环。
+    """调度主循环（**间隔模式**）。
 
     ⚠️ **首次执行放在启动时**（而不是等一个完整周期）：
     服务重启/扩缩容后，组织架构应尽快收敛到最新，
@@ -148,10 +223,64 @@ def _loop(interval_seconds: int) -> None:
         _run_once(interval_seconds)
 
 
-def _run_once(interval_seconds: int, *, initial: bool = False) -> None:
-    """跑一轮定时同步，并更新运行态。"""
+def _daily_loop() -> None:
+    """调度主循环（**每日固定时刻模式**）。
+
+    ⚠️ **与间隔模式的关键差异**：触发时刻按**日历**算，不是「上次 + 间隔」。
+    ⇒ 服务什么时候重启都不会改变「每天 8:00」这个业务语义。
+
+    ⚠️ **同一天只跑一次**：用 ``last_daily_run_date`` 记录当天已跑的日期，
+    避免轮询命中窗口时重复触发（窗口有 10 分钟宽，轮询每分钟一次）。
+    """
+    # 启动即跑一次 —— 保持与间隔模式一致的行为（服务起来就收敛一次）。
+    now = _now()
+    # ⚠️ **「启动即跑一次」必须尊重「当天只跑一次」这道闸** ——
+    # 否则服务在 8:05 重启 ⇒ 首轮又跑一次 ⇒ 当天同步了两次。
+    # 与间隔模式的差异：间隔模式的「启动即跑」是**收敛**语义（多跑一次无害，
+    # 只是提前把数据拉齐）；每日模式的重复同步是**浪费 + 打接口**。
+    #
+    # ⇒ 只有「今天还没跑过」时才跑首轮；已经跑过就只更新 next_run_at。
+    if _get_state().get("last_daily_run_date") != now.date().isoformat():
+        _run_once(_DAILY_TICK_SECONDS, initial=True, next_run_at=_next_daily_run(now))
+
+    while not _stop_event.wait(_DAILY_TICK_SECONDS):
+        now = _now()
+        if not _is_daily_window(now):
+            continue
+        current = _get_state()
+        today = now.date().isoformat()
+        if current.get("last_daily_run_date") == today:
+            # 今天已经跑过了 —— 窗口还没过，但不该重复跑。
+            _set_state(next_run_at=_next_daily_run(now))
+            continue
+        _set_state(last_daily_run_date=today)
+        _run_once(_DAILY_TICK_SECONDS, next_run_at=_next_daily_run(now))
+
+
+def _run_once(
+    interval_seconds: int,
+    *,
+    initial: bool = False,
+    next_run_at: datetime | None = None,
+) -> None:
+    """跑一轮定时同步，并更新运行态。
+
+    Args:
+        interval_seconds: 间隔模式下「距上次跑完」的秒数（每日模式下仅用于
+            兜底计算下次执行时间）。
+        initial: 是否是启动后的首轮（首轮不计入连续失败）。
+        next_run_at: **下一次执行的绝对时刻**（每日模式按日历算出来的）。
+            传了就用它覆盖「上次跑完 + 间隔」的算法。
+    """
     started_at = _now()
     _set_state(last_run_at=started_at)
+    # ⚠️ **每日模式下，轮次一开跑就锁上「当天只跑一次」的闸** ——
+    # 否则「启动即跑一次」的那轮不会留下痕迹，调度线程重启后
+    # 会以为今天还没跑过 ⇒ 同一天跑第二遍。
+    # 锁闸时机取「开跑」而非「成功」：失败也要算今天跑过，
+    # 否则失败 + 重启 ⇒ 无限重试打爆飞书接口。
+    if _parse_daily_time() is not None:
+        _set_state(last_daily_run_date=started_at.date().isoformat())
     try:
         with _lock:
             submitted = run_scheduled_sync()
@@ -160,7 +289,7 @@ def _run_once(interval_seconds: int, *, initial: bool = False) -> None:
         submitted = False
 
     finished_at = _now()
-    next_run = finished_at + timedelta(seconds=interval_seconds)
+    next_run = next_run_at or (finished_at + timedelta(seconds=interval_seconds))
     current = _get_state()
 
     if submitted:
@@ -231,6 +360,34 @@ def start_scheduler() -> None:
         logger.info("飞书定时同步未启用")
         _set_state(started=False, next_run_at=None)
         return
+
+    # ⚠️ **模式分派：每日固定时刻 vs 间隔** ——
+    # 配了 ``FEISHU_SYNC_DAILY_TIME`` 就必须走每日模式，
+    # 否则用户会以为「每天 8 点自动同步」生效了，实际跑的是间隔模式
+    # （触发时刻会随服务重启漂移）—— 那种「看起来生效其实没生效」的坑
+    # 比启动失败难查得多。
+    daily = _parse_daily_time()
+    if daily is not None:
+        hour, minute = daily
+        _stop_event.clear()
+        _set_state(
+            started=True,
+            next_run_at=_next_daily_run(_now()),
+        )
+        _scheduler_thread = threading.Thread(
+            target=_daily_loop,
+            name="feishu-organization-sync-daily",
+            daemon=True,
+        )
+        _scheduler_thread.start()
+        logger.info(
+            "飞书组织架构定时同步已启动, 模式=每日固定时刻, 每日时间=%02d:%02d, 窗口=%s 分钟",
+            hour,
+            minute,
+            settings.feishu_sync_daily_window_minutes,
+        )
+        return
+
     interval = max(60, settings.feishu_sync_interval_seconds)
     _stop_event.clear()
     _set_state(started=True, next_run_at=_now() + timedelta(seconds=interval))

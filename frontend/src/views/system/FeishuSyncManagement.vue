@@ -570,7 +570,14 @@ const schedulerSummary = computed(() => {
   if (!s.enabled) return '定时同步未开启'
   if (!s.running) return '定时同步已配置，但调度线程未运行'
 
-  const parts = [`每 ${Math.round((s.intervalSeconds || 0) / 60)} 分钟`]
+  // ⚠️ **每日模式不能显示成「每 N 分钟」** ——
+  // 每日模式按日历触发（每天 8:00），与「间隔」语义完全不同；
+  // 显示错会让运维以为触发时刻会随服务重启漂移。
+  const parts = [
+    s.mode === 'daily'
+      ? `每天 ${s.dailyTime || '--:--'}`
+      : `每 ${Math.round((s.intervalSeconds || 0) / 60)} 分钟`,
+  ]
   if (s.nextRunAt) parts.push(`下次 ${formatTime(s.nextRunAt)}`)
   if (s.consecutiveFailures > 0) parts.push(`连续失败 ${s.consecutiveFailures} 次`)
   return `定时同步运行中（${parts.join(' · ')}）`

@@ -155,6 +155,18 @@ export interface SchedulerStatus {
   enabled: boolean
   /** 调度线程当前是否存活。 */
   running: boolean
+  /**
+   * 实际生效的调度模式。
+   *
+   * - `daily` —— 每天固定时刻触发（按**日历**算，不随服务重启漂移）
+   * - `interval` —— 固定间隔触发（上次跑完 + 间隔）
+   *
+   * ⚠️ 老版本后端不返回这个字段（undefined）⇒ 视为 `interval`，
+   *    保持向后兼容。
+   */
+  mode?: 'daily' | 'interval'
+  /** 每日模式的触发时刻（HH:MM）；间隔模式为 null。 */
+  dailyTime?: string | null
   /** 实际生效的间隔（秒），最小 60。 */
   intervalSeconds: number
   /** 是否已经启动过（进程内状态）。 */

@@ -124,6 +124,21 @@ class Settings(BaseSettings):
     # 定时组织架构同步
     feishu_sync_enabled: bool = False
     feishu_sync_interval_seconds: int = 3600
+    # ⚠️ **每日固定时刻同步**（2026-11-25）—— 「每天早上 8 点自动同步」。
+    #
+    # ❌ **为什么不能用「间隔 = 86400 秒」代替**：
+    #    间隔模式的触发时刻是**上次跑完的时刻 + 间隔**，会随服务重启漂移 ——
+    #    今天 8:00 跑过，明天服务 9 点重启就变成明天 9:00，
+    #    之后永远是 9:00，永远等不到「早上 8 点」。
+    #    需求是**业务时刻**（「每天早上」），不是「每 24 小时一次」。
+    #
+    # ✅ **配置格式**：``HH:MM``（24 小时制，本地时间）。
+    #    留空 = 退回间隔模式（``feishu_sync_interval_seconds``）。
+    feishu_sync_daily_time: str = ""
+    # ⚠️ **每日模式的「到点窗口」宽度（分钟）** ——
+    #    不是「8:00:00 那一刻」而是「8:00 ~ 8:10」。
+    #    ⇒ 服务在 8:00 之后才启动、或调度线程那一刻卡住，都不会漏跑当天同步。
+    feishu_sync_daily_window_minutes: int = 10
     # 飞书审批 webhook 的 Verification Token。
     # 未配置时 `/v1/feishu/approval/events` 返回 503（不放行），
     # 避免出现任何人都能改审批状态的未鉴权写入入口。
@@ -469,6 +484,29 @@ class Settings(BaseSettings):
         """定时同步间隔不得低于 60 秒，避免打爆飞书接口。"""
         if self.feishu_sync_interval_seconds < 60:
             raise ValueError("FEISHU_SYNC_INTERVAL_SECONDS 不得小于 60 秒")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_sync_daily_time(self):
+        """每日固定时刻同步的配置校验。
+
+        ⚠️ **配错了不能让服务起不来** —— 这里只做**格式**校验，
+        语义校验（小时/分钟范围）在调度器里做，并退回间隔模式兜底。
+
+        为什么格式错误要直接报错：格式错误几乎一定是**配置笔误**
+        （写成「8点」「08:00:00」），静默忽略会让用户以为配好了、
+        实际却在跑另一个模式 —— 这种"看起来生效其实没生效"的坑
+        比启动失败难查得多。
+        """
+        raw = (self.feishu_sync_daily_time or "").strip()
+        if raw:
+            parts = raw.split(":")
+            if len(parts) != 2 or not all(p.strip().isdigit() for p in parts):
+                raise ValueError(
+                    "FEISHU_SYNC_DAILY_TIME 应为 HH:MM 格式（如 08:00），留空则用间隔模式"
+                )
+        if self.feishu_sync_daily_window_minutes < 1:
+            raise ValueError("FEISHU_SYNC_DAILY_WINDOW_MINUTES 不得小于 1 分钟")
         return self
 
     @model_validator(mode="after")
