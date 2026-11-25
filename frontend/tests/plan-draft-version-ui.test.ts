@@ -17,6 +17,9 @@ const week = source('../src/views/employee/EmployeeWeekPlanEdit.vue')
 const day = source('../src/views/employee/components/EmployeeDayPlanEditor.vue')
 const aiApi = source('../src/api/employeeAi.ts')
 const planAssistant = source('../src/views/employee/components/PlanAiAssistant.vue')
+// ⚠️ **CI-5 阶段 2 第五轮**：抽屉的分组 / 预览 / 时间格式化纯逻辑已抽到
+//    `@/utils/planDraftVersionDrawer`。
+const drawerUtils = source('../src/utils/planDraftVersionDrawer.ts')
 
 test('version rail provides a vertical desktop list and mobile selector', () => {
   assert.match(versionRail, /class="version-list"/)
@@ -76,11 +79,18 @@ test('shared draft drawer lists immutable sources and restores through a scoped 
 })
 
 test('draft history separates saved versions from AI generation records', () => {
-  assert.match(drawer, /已保存版本/)
-  assert.match(drawer, /AI 生成记录/)
-  assert.match(drawer, /savedVersions/)
-  assert.match(drawer, /aiVersions/)
-  assert.match(drawer, /visibleVersions/)
+  // ⚠️ **CI-5 阶段 2 第五轮**：分组计算**与分组文案**都已抽到
+  //    `@/utils/planDraftVersionDrawer`，组件只做委托。
+  assert.match(drawerUtils, /已保存版本/)
+  assert.match(drawerUtils, /AI 生成记录/)
+  assert.match(drawer, /selectVisiblePlanDraftVersions\(versions\.value, 'saved'\)/)
+  assert.match(drawer, /selectVisiblePlanDraftVersions\(versions\.value, 'ai'\)/)
+  assert.match(drawerUtils, /isSavedPlanDraftVersion/)
+  assert.match(drawerUtils, /isAiPlanDraftVersion/)
+  assert.match(drawerUtils, /MANUAL_SAVE/)
+  assert.match(drawerUtils, /RESTORED_SAVE/)
+  assert.match(drawerUtils, /AI_GENERATE/)
+  assert.match(drawerUtils, /AI_OPTIMIZE/)
   assert.match(drawer, /技术信息/)
   assert.doesNotMatch(drawer, /<pre>{{ formattedSnapshot }}<\/pre>/)
 })

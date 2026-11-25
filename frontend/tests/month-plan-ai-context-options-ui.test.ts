@@ -8,11 +8,14 @@ const workspacePath = fileURLToPath(new URL('../src/views/employee/EmployeeMonth
 const contextPopoverPath = fileURLToPath(new URL('../src/views/employee/components/MonthPlanAiContextPopover.vue', import.meta.url))
 const checkPanelPath = fileURLToPath(new URL('../src/views/employee/components/MonthPlanAiCheckPanel.vue', import.meta.url))
 const apiPath = fileURLToPath(new URL('../src/api/employeeAi.ts', import.meta.url))
+// ⚠️ **CI-5 阶段 2 第五轮**：展示行的纯逻辑已抽到 `@/utils/aiContextPopover`
+const aiContextPopoverPath = fileURLToPath(new URL('../src/utils/aiContextPopover.ts', import.meta.url))
 const editor = readFileSync(editorPath, 'utf8')
 const workspace = readFileSync(workspacePath, 'utf8')
 const contextPopover = readFileSync(contextPopoverPath, 'utf8')
 const checkPanel = readFileSync(checkPanelPath, 'utf8')
 const api = readFileSync(apiPath, 'utf8')
+const aiContextPopover = readFileSync(aiContextPopoverPath, 'utf8')
 
 test('month plan editor keeps default context for row optimization', () => {
   assert.match(editor, /selectedAiContextTypes\s*=\s*ref<MonthPlanContextType\[\]>\(\[\.\.\.MONTH_PLAN_CONTEXT_TYPES\]\)/)
@@ -34,8 +37,10 @@ test('workspace popover exposes compact reference options and sends a selection 
 
 test('reference options keep availability status and show available content summaries', () => {
   assert.match(api, /summary\?: string/)
+  // ⚠️ **CI-5 阶段 2 第五轮**：`option.summary` / `option.available` 的渲染留在组件里，
+  //    但「怎么算出来」的纯逻辑搬到了 `@/utils/aiContextPopover`。
   assert.match(contextPopover, /option\.summary/)
-  assert.match(contextPopover, /type === 'JOB_DESCRIPTION'[\s\S]*props\.jobDescription\.trim\(\)/)
+  assert.match(aiContextPopover, /type === 'JOB_DESCRIPTION'[\s\S]*?jobDescription\.trim\(\)/)
   assert.match(contextPopover, /option\.available \? '可用' : '暂无'/)
   assert.match(contextPopover, /暂无已审批计划/)
   assert.match(contextPopover, /暂无可引用文档/)

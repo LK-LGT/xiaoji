@@ -89,6 +89,20 @@ import {
 import { saveBlob } from '@/utils/download'
 import MonthPlanTaskContentView from '@/components/MonthPlanTaskContentView.vue'
 import { formatMonthPlanPeriod, formatMonthPlanStandard } from '@/utils/monthPlanPeriod'
+// ⚠️ **纯逻辑已抽到 `@/utils/monthPlanSupportActions`**（CI-5 阶段 2 第五轮）⇒ 这里只做转发。
+import {
+  buildMonthPlanPrintTitle,
+  buildMonthPlanTemplatePrintRows,
+  buildMonthPlanTemplateRows,
+  canAdjustMonthPlan,
+  escapeMonthPlanHtml,
+  formatMonthPlanCurrency,
+  formatMonthPlanPlainNumber,
+  renderMonthPlanEstimatedTotal,
+  renderMonthPlanStandard,
+  renderMonthPlanTaskContent,
+  splitMonthPlanTextLines,
+} from '@/utils/monthPlanSupportActions'
 
 const props = defineProps<{ detail: EmployeeMonthPlanDetailResp }>()
 const templateVisible = ref(false)
@@ -103,20 +117,8 @@ const adjustForm = reactive({
   impactText: '',
 })
 
-const canAdjust = computed(() => props.detail.status === 'submitted' || props.detail.status === 'approved')
-const templateRows = computed<EmployeeMonthPlanTemplatePreviewItem[]>(() => {
-  if (template.value?.items.length) return template.value.items
-  return Array.from({ length: 8 }, (_, index) => ({
-    rowNo: index + 1,
-    taskContent: '',
-    performanceWeight: 0,
-    deliverable: '',
-    quality: '',
-    estimatedStartDate: '',
-    estimatedEndDate: '',
-    estimatedValue: 0,
-  }))
-})
+const canAdjust = computed(() => canAdjustMonthPlan(props.detail.status))
+const templateRows = computed<EmployeeMonthPlanTemplatePreviewItem[]>(() => buildMonthPlanTemplateRows(template.value))
 
 async function openTemplate() {
   templateVisible.value = true
@@ -192,37 +194,25 @@ async function submitAdjustment() {
 }
 
 function planMonthTitle(planMonth: string) {
-  const [year, month] = String(planMonth || '').split('-')
-  const monthNumber = Number(month)
-  if (!year || !Number.isFinite(monthNumber)) return '        年      月个人目标制定'
-  return `${year} 年 ${String(monthNumber).padStart(2, '0')} 月个人目标制定`
+  return buildMonthPlanPrintTitle(planMonth)
 }
 
 function formatCurrency(value: number) {
-  return `¥${Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`
+  return formatMonthPlanCurrency(value)
 }
 
 function formatPlainNumber(value?: number | null) {
-  const numericValue = Number(value || 0)
-  if (!Number.isFinite(numericValue)) return ''
-  return numericValue.toLocaleString('zh-CN', { maximumFractionDigits: 2, useGrouping: false })
+  return formatMonthPlanPlainNumber(value)
 }
 
 function buildTemplatePrintHtml() {
   const current = template.value
   if (!current) return ''
   const title = escapeHtml(planMonthTitle(current.planMonth))
-  const rows = templateRows.value.map((row) => `
-    <tr class="template-print-item-row">
-      <td class="cell-center">${escapeHtml(row.rowNo)}</td>
-      <td>${renderTaskContent(row.taskContent)}</td>
-      <td class="cell-center">${row.performanceWeight || ''}</td>
-      <td>${renderStandard(row.deliverable, row.quality)}</td>
-      <td class="cell-center">${escapeHtml(formatMonthPlanPeriod(row.estimatedStartDate, row.estimatedEndDate, ''))}</td>
-      <td class="cell-center">${row.estimatedValue ? escapeHtml(formatPlainNumber(row.estimatedValue)) : ''}</td>
-    </tr>
-  `).join('')
-  const total = current.estimatedValueTotal ? escapeHtml(formatPlainNumber(current.estimatedValueTotal)) : ''
+  const rows = buildMonthPlanTemplatePrintRows(templateRows.value, {
+    formatPeriod: formatMonthPlanPeriod,
+  })
+  const total = renderMonthPlanEstimatedTotal(current.estimatedValueTotal)
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -345,33 +335,19 @@ function buildTemplatePrintHtml() {
 }
 
 function renderTaskContent(value?: string | null) {
-  const lines = linesOf(value)
-  if (!lines.length) return ''
-  if (lines.length === 1) return escapeHtml(lines[0])
-  const [title, ...rest] = lines
-  return `<span class="task-title">${escapeHtml(title)}</span>${rest.map((line) => `<span class="line">${escapeHtml(line)}</span>`).join('')}`
+  return renderMonthPlanTaskContent(value)
 }
 
 function renderStandard(deliverable?: string | null, quality?: string | null) {
-  const deliverableText = String(deliverable || '').trim()
-  const qualityText = String(quality || '').trim()
-  return [
-    deliverableText ? `<span class="standard-label">交付物：</span>${escapeHtml(deliverableText)}` : '',
-    qualityText ? `<span class="standard-label">质量：</span>${escapeHtml(qualityText)}` : '',
-  ].filter(Boolean).map((line) => `<span class="line">${line}</span>`).join('')
+  return renderMonthPlanStandard(deliverable, quality)
 }
 
 function linesOf(value?: string | null) {
-  return String(value || '').replace(/\r\n?/g, '\n').split('\n').map((line) => line.trim()).filter(Boolean)
+  return splitMonthPlanTextLines(value)
 }
 
 function escapeHtml(value: unknown) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
+  return escapeMonthPlanHtml(value)
 }
 </script>
 

@@ -121,7 +121,23 @@ import {
   type ResultWorkbenchData,
   type ResultWorkbenchPackage,
 } from '../resultWorkbenchModel'
-import { normalizeResultStatus, resultStatusCounts, type ResultStatusCounts } from '../resultStatus'
+import { type ResultStatusCounts } from '../resultStatus'
+// ⚠️ **纯逻辑已抽到 `@/utils/resultWorkbench`**（CI-5 阶段 2 第五轮）⇒ 这里只做转发。
+import {
+  countPendingResultTasks,
+  countResultStatuses,
+  filterResultPackages,
+  formatCompactResultDate,
+  resolveResultPackageActionLabel,
+  resolveResultPackageStateText,
+  resolveResultPackageTargetTask,
+  resolveResultPackageTitle,
+  resolveResultWeekTitle,
+  resolveResultWorkbenchEmptyHint,
+  resolveResultWorkbenchEmptyTitle,
+  shiftResultMonth,
+  sortResultPackagesByRejection,
+} from '@/utils/resultWorkbench'
 
 type ResultFilter = 'PENDING' | 'IN_REVIEW' | 'DONE'
 
@@ -136,70 +152,37 @@ const workbench = ref<ResultWorkbenchData | null>(null)
 const monthOptions = reactive<EmployeeResultSubmitOptionsResp>({ monthPlanOptions: [], monthPlanItemOptions: [], resultVersions: [], acceptedFileTypes: [], maxFileSizeMb: 20 })
 const weekOptions = reactive<WeekResultSubmitOptions>({ plans: [], acceptedFileTypes: [], maxFileSizeMb: 20 })
 
-const statusCounts = computed<ResultStatusCounts>(() => resultStatusCounts(workbench.value?.packages.flatMap((item) => item.tasks.map((task) => task.status)) || []))
-const pendingCount = computed(() => statusCounts.value.todo + statusCounts.value.returned)
-const visiblePackages = computed(() => {
-  const packages = (workbench.value?.packages || []).filter((item) => item.tasks.some((task) => taskMatchesFilter(task.status, activeFilter.value)))
-  if (activeFilter.value !== 'PENDING') return packages
-  return [...packages].sort((left, right) => Number(right.counts.rejected > 0) - Number(left.counts.rejected > 0))
-})
-const emptyTitle = computed(() => ({
-  PENDING: '当前月份没有待处理成果',
-  IN_REVIEW: '当前月份没有审批中的成果',
-  DONE: '当前月份没有已完成成果',
-})[activeFilter.value])
-const emptyHint = computed(() => {
-  if (!workbench.value?.totals.total) return '计划审批通过后，将自动生成对应成果任务。'
-  return '可切换上方状态查看其他成果。'
-})
-
-function taskMatchesFilter(status: string, filter: ResultFilter) {
-  const normalized = normalizeResultStatus(status)
-  if (filter === 'PENDING') return normalized === 'TODO' || normalized === 'RETURNED'
-  if (filter === 'IN_REVIEW') return normalized === 'IN_REVIEW'
-  return normalized === 'DONE'
-}
+const statusCounts = computed<ResultStatusCounts>(() => countResultStatuses(workbench.value?.packages.flatMap((item) => item.tasks.map((task) => task.status)) || []))
+const pendingCount = computed(() => countPendingResultTasks(statusCounts.value))
+const visiblePackages = computed(() => sortResultPackagesByRejection(
+  filterResultPackages(workbench.value?.packages || [], activeFilter.value),
+  activeFilter.value,
+))
+const emptyTitle = computed(() => resolveResultWorkbenchEmptyTitle(activeFilter.value))
+const emptyHint = computed(() => resolveResultWorkbenchEmptyHint(workbench.value?.totals.total ?? 0))
 
 function compactDate(value?: string) {
-  if (!value) return '--'
-  return value.length >= 10 ? value.slice(5, 10).replace('-', '.') : value
+  return formatCompactResultDate(value)
 }
 
 function weekTitle(item: ResultWorkbenchPackage) {
-  const start = item.startDate ? new Date(`${item.startDate}T00:00:00`) : null
-  if (!start || Number.isNaN(start.getTime())) return item.title
-  return `${start.getMonth() + 1}月第${Math.ceil(start.getDate() / 7)}周`
+  return resolveResultWeekTitle(item)
 }
 
 function packageTitle(item: ResultWorkbenchPackage) {
-  return item.type === 'MONTH' ? item.title : `${weekTitle(item)}执行成果`
+  return resolveResultPackageTitle(item)
 }
 
 function packageStateText(item: ResultWorkbenchPackage) {
-  if (activeFilter.value === 'IN_REVIEW') return `${item.counts.submitted}项审批中`
-  if (activeFilter.value === 'DONE') {
-    const completed = item.tasks.filter((task) => taskMatchesFilter(task.status, 'DONE')).length
-    return `${completed}项已完成`
-  }
-  const pending = item.counts.pending - item.counts.rejected
-  return [
-    item.counts.rejected ? `${item.counts.rejected}项被退回` : '',
-    pending ? `${pending}项待填写` : '',
-  ].filter(Boolean).join('，')
+  return resolveResultPackageStateText(item, activeFilter.value)
 }
 
 function packageActionLabel(item: ResultWorkbenchPackage) {
-  if (activeFilter.value === 'IN_REVIEW') return '查看进度'
-  if (activeFilter.value === 'DONE') return '查看成果'
-  if (item.counts.rejected) return '处理退回'
-  if (item.tasks.some((task) => task.status === 'DRAFT')) return '继续填写'
-  return '去填写'
+  return resolveResultPackageActionLabel(item, activeFilter.value)
 }
 
 function changeMonth(offset: number) {
-  const [year, month] = selectedMonth.value.split('-').map(Number)
-  const target = new Date(year, month - 1 + offset, 1)
-  selectedMonth.value = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, '0')}`
+  selectedMonth.value = shiftResultMonth(selectedMonth.value, offset)
   selectMonth()
 }
 
@@ -209,12 +192,7 @@ function selectMonth() {
 }
 
 function openPackage(item: ResultWorkbenchPackage, filter: ResultFilter) {
-  const preferred = filter === 'PENDING'
-    ? item.tasks.find((task) => task.status === 'REJECTED')
-      || item.tasks.find((task) => task.status === 'DRAFT')
-      || item.tasks.find((task) => taskMatchesFilter(task.status, filter))
-    : item.tasks.find((task) => taskMatchesFilter(task.status, filter))
-  const target = preferred || item.tasks[0]
+  const target = resolveResultPackageTargetTask(item, filter)
   void router.push({
     path: `${resultBasePath.value}/workspace/${item.type}/${item.planId}`,
     query: { month: selectedMonth.value, ...(target ? { taskId: String(target.taskId) } : {}) },

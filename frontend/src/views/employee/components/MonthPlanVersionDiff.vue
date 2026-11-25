@@ -144,6 +144,19 @@ import type {
   NormalizedMonthPlanItem,
 } from './planDraftVersionComparison'
 import { formatMonthPlanPeriod, formatMonthPlanStandard } from '@/utils/monthPlanPeriod'
+// ⚠️ **纯逻辑已抽到 `@/utils/monthPlanVersionDiff`**（CI-5 阶段 2 第五轮）⇒ 这里只做转发。
+import {
+  areAllVisibleMonthPlanDiffExpanded,
+  buildDefaultExpandedMonthPlanDiffKeys,
+  buildMonthPlanDiffFilterOptions,
+  buildMonthPlanDiffTaskDetailEntries,
+  isMonthPlanDiffExpanded,
+  MONTH_PLAN_DIFF_CHANGE_LABELS,
+  resolveMonthPlanDiffChangeSummary,
+  selectVisibleMonthPlanDiffChanges,
+  toggleAllVisibleMonthPlanDiffChanges,
+  toggleMonthPlanDiffChange,
+} from '@/utils/monthPlanVersionDiff'
 
 type DiffFilter = 'ALL' | MonthPlanItemChange['type']
 
@@ -162,70 +175,41 @@ const props = withDefaults(defineProps<{
 
 const activeFilter = ref<DiffFilter>('ALL')
 const expandedKeys = ref(new Set<string>())
-const changeLabels = { added: '新增', modified: '修改', removed: '删除' } as const
-const workTypeLabels: Record<string, string> = {
-  TASK: '任务', METRIC: '指标', DOCUMENT: '文档', PROJECT: '项目',
-  COMMUNICATION: '沟通协作', ROUTINE: '日常工作', UNKNOWN: '未分类',
-}
-
-const filterOptions = computed(() => [
-  { label: `全部 ${props.diff.items.length}`, value: 'ALL' },
-  { label: `修改 ${props.diff.counts.modified}`, value: 'modified' },
-  { label: `新增 ${props.diff.counts.added}`, value: 'added' },
-  { label: `删除 ${props.diff.counts.removed}`, value: 'removed' },
-])
-const visibleChanges = computed(() => activeFilter.value === 'ALL'
-  ? props.diff.items
-  : props.diff.items.filter((change) => change.type === activeFilter.value))
-const allVisibleExpanded = computed(() => visibleChanges.value.length > 0
-  && visibleChanges.value.every((change) => expandedKeys.value.has(change.key)))
+// ⚠️ **纯逻辑已抽到 `@/utils/monthPlanVersionDiff`**（CI-5 阶段 2 第五轮）⇒ 这里只做转发。
+const changeLabels = MONTH_PLAN_DIFF_CHANGE_LABELS
+const filterOptions = computed(() => buildMonthPlanDiffFilterOptions(props.diff))
+const visibleChanges = computed(() => selectVisibleMonthPlanDiffChanges(props.diff.items, activeFilter.value))
+const allVisibleExpanded = computed(() => areAllVisibleMonthPlanDiffExpanded(visibleChanges.value, expandedKeys.value))
 
 watch(() => props.diff, (diff) => {
   activeFilter.value = 'ALL'
-  expandedKeys.value = new Set(diff.items
-    .filter((change) => change.type === 'modified')
-    .map((change) => change.key))
+  expandedKeys.value = buildDefaultExpandedMonthPlanDiffKeys(diff)
 }, { immediate: true })
 
 function isExpanded(key: string) {
-  return expandedKeys.value.has(key)
+  return isMonthPlanDiffExpanded(expandedKeys.value, key)
 }
 
 function toggleChange(key: string) {
-  const next = new Set(expandedKeys.value)
-  if (next.has(key)) next.delete(key)
-  else next.add(key)
-  expandedKeys.value = next
+  expandedKeys.value = toggleMonthPlanDiffChange(expandedKeys.value, key)
 }
 
 function toggleAllVisible() {
-  const next = new Set(expandedKeys.value)
-  if (allVisibleExpanded.value) {
-    visibleChanges.value.forEach((change) => next.delete(change.key))
-  } else {
-    visibleChanges.value.forEach((change) => next.add(change.key))
-  }
-  expandedKeys.value = next
+  expandedKeys.value = toggleAllVisibleMonthPlanDiffChanges(visibleChanges.value, expandedKeys.value)
 }
 
 function changeSummary(change: MonthPlanItemChange) {
-  if (change.type === 'modified') {
-    return `已修改：${change.fields.map((field) => field.label).join('、')}`
-  }
-  const item = change.after ?? change.before
-  return item?.taskContent || item?.deliverable || `${change.type === 'added' ? props.afterLabel : props.beforeLabel}任务`
+  return resolveMonthPlanDiffChangeSummary(change, {
+    afterLabel: props.afterLabel,
+    beforeLabel: props.beforeLabel,
+  })
 }
 
-function taskDetailEntries(item?: NormalizedMonthPlanItem) {
-  if (!item) return []
-  return [
-    { label: '工作类型', value: workTypeLabels[item.workType] ?? item.workType ?? '未分类' },
-    { label: '任务内容', value: item.taskContent || '未填写' },
-    { label: '考核标准（交付物、质量）', value: formatMonthPlanStandard(item.deliverable, item.quality, '未填写') },
-    { label: '完成时间段', value: formatMonthPlanPeriod(item.estimatedStartDate, item.estimatedEndDate, '未填写') },
-    { label: '绩效权重', value: `${item.performanceWeight}%` },
-    { label: '预估价值', value: `¥${item.estimatedValue.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}` },
-  ]
+function taskDetailEntries(item?: NormalizedMonthPlanItem | null) {
+  return buildMonthPlanDiffTaskDetailEntries(item, {
+    formatStandard: formatMonthPlanStandard,
+    formatPeriod: formatMonthPlanPeriod,
+  })
 }
 </script>
 

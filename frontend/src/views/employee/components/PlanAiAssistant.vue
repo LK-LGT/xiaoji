@@ -74,6 +74,16 @@ import { ElMessage } from 'element-plus'
 import type { AiConversationMessage } from '@/api/aiConversations'
 import { adjustDayPlanAiApi, adjustWeekPlanAiApi, generateDayPlanAiApi, generateWeekPlanAiApi, getDayPlanAiContextApi, getWeekPlanAiContextApi, recordAiSuggestionActionApi, type AiContextResponse, type AiGenerationExample, type DayPlanAiDraft, type DayPlanAiForm, type WeekPlanAiDraft, type WeekPlanAiItem } from '@/api/employeeAi'
 import { useCancelableAiRequest } from '@/composables/useCancelableAiRequest'
+// ⚠️ **纯逻辑已抽到 `@/utils/planAiAssistant`**（CI-5 阶段 2 第五轮）⇒ 这里只做转发。
+import {
+  buildDayPlanAiDraft,
+  buildWeekPlanAiDraft,
+  resolveAiAssistantEmptyDescription,
+  resolveAiComposerPlaceholder,
+  resolveAiComposerSendLabel,
+  resolveAiDraftMissingMessage,
+  resolveWeekEndDate,
+} from '@/utils/planAiAssistant'
 import PlanAiConversationPanel from './PlanAiConversationPanel.vue'
 import PlanAiExampleInput from './PlanAiExampleInput.vue'
 
@@ -91,14 +101,13 @@ const conversationId = ref<string>()
 const generationExample = ref<AiGenerationExample>()
 const conciseOutput = ref(false)
 const hasDraft = computed(() => props.mode === 'week' ? Boolean(weekDraft.value) : Boolean(dayDraft.value))
-const emptyDescription = computed(() => props.mode === 'week' ? '描述本周工作重点和交付要求，生成周计划建议' : '描述今日工作重点和交付要求，生成日计划建议')
-const composerPlaceholder = computed(() => hasDraft.value ? '继续补充要求或调整当前建议' : (props.mode === 'week' ? '描述本周工作重点和交付要求' : '描述今日工作重点和交付要求'))
-const composerSendLabel = computed(() => hasDraft.value ? '继续调整' : (props.mode === 'week' ? '生成周计划' : '生成日计划'))
+// ⚠️ **纯逻辑已抽到 `@/utils/planAiAssistant`**（CI-5 阶段 2 第五轮）⇒ 这里只做转发。
+const emptyDescription = computed(() => resolveAiAssistantEmptyDescription(props.mode))
+const composerPlaceholder = computed(() => resolveAiComposerPlaceholder(props.mode, hasDraft.value))
+const composerSendLabel = computed(() => resolveAiComposerSendLabel(props.mode, hasDraft.value))
 
 function weekEnd(value: string) {
-  const dateValue = new Date(`${value}T00:00:00`)
-  dateValue.setDate(dateValue.getDate() + 6)
-  return `${dateValue.getFullYear()}-${String(dateValue.getMonth() + 1).padStart(2, '0')}-${String(dateValue.getDate()).padStart(2, '0')}`
+  return resolveWeekEndDate(value)
 }
 
 async function load() {
@@ -157,67 +166,24 @@ function sendConversationMessage(message: string) {
 }
 
 function previewConversationResult(message: AiConversationMessage) {
-  const payload = message.payload || {}
   if (props.mode === 'week') {
-    const items = Array.isArray(payload.items) ? payload.items.map(normalizeWeekItem).filter(Boolean) as WeekPlanAiItem[] : []
-    if (!items.length) {
-      ElMessage.warning('这条 AI 消息没有可应用的周计划建议')
+    const draft = buildWeekPlanAiDraft(message, weekEnd(props.date))
+    if (!draft) {
+      ElMessage.warning(resolveAiDraftMissingMessage('week'))
       return
     }
-    weekDraft.value = {
-      suggestionId: message.suggestionId || String(payload.suggestionId || ''),
-      items,
-      warnings: stringArray(payload.warnings),
-      missingContext: stringArray(payload.missingContext),
-      notice: String(payload.notice || ''),
-      draftVersionId: Number(payload.draftVersionId || 0),
-      draftVersionNo: Number(payload.draftVersionNo || 0),
-    }
-    selected.value = items.map(() => true)
+    weekDraft.value = draft
+    selected.value = draft.items.map(() => true)
   } else {
-    if (typeof payload.content !== 'string') {
-      ElMessage.warning('这条 AI 消息没有可应用的日计划建议')
+    const draft = buildDayPlanAiDraft(message)
+    if (!draft) {
+      ElMessage.warning(resolveAiDraftMissingMessage('day'))
       return
     }
-    dayDraft.value = {
-      suggestionId: message.suggestionId || String(payload.suggestionId || ''),
-      // BUG-R6-14：周计划条目主键是字符串 UUID，禁止 `Number(...)` 归一化。
-      relatedWeekPlanItemIds: Array.isArray(payload.relatedWeekPlanItemIds)
-        ? payload.relatedWeekPlanItemIds.map((item) => String(item).trim()).filter(Boolean)
-        : [],
-      content: payload.content,
-      remark: typeof payload.remark === 'string' ? payload.remark : '',
-      warnings: stringArray(payload.warnings),
-      missingContext: stringArray(payload.missingContext),
-      notice: String(payload.notice || ''),
-      draftVersionId: Number(payload.draftVersionId || 0),
-      draftVersionNo: Number(payload.draftVersionNo || 0),
-    }
+    dayDraft.value = draft
   }
   instruction.value = ''
   visible.value = true
-}
-
-function normalizeWeekItem(raw: unknown): WeekPlanAiItem | null {
-  if (!raw || typeof raw !== 'object') return null
-  const item = raw as Record<string, unknown>
-  // BUG-R6-14：条目主键是字符串 UUID，禁止 `Number(...)` 归一化。
-  const rawMonthPlanItemId = item.monthPlanItemId
-  const monthPlanItemId = rawMonthPlanItemId === null || rawMonthPlanItemId === undefined
-    ? ''
-    : String(rawMonthPlanItemId).trim()
-  return {
-    id: item.id === null || item.id === undefined ? undefined : String(item.id),
-    monthPlanItemId: monthPlanItemId || null,
-    content: String(item.content || ''),
-    deliverable: String(item.deliverable || ''),
-    quality: String(item.quality || ''),
-    plannedFinishDate: String(item.plannedFinishDate || weekEnd(props.date)),
-  }
-}
-
-function stringArray(value: unknown) {
-  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : []
 }
 function updateConversationId(value: string) {
   if (conversationId.value !== value) {

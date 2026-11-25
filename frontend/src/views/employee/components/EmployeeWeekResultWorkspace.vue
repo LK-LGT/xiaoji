@@ -100,6 +100,21 @@ import { getWeekResultSubmitOptionsApi, submitWeekResultApi, type WeekResultReco
 import { groupRowsByMonth, paginateMonthGroups } from '@/utils/monthGroups'
 import { buildFileAcceptAttribute, fileExtension as fileExtensionUtil, isAcceptedFile } from '@/utils/fileUpload'
 import { periodMonthKey } from '@/utils/period'
+// ⚠️ **纯逻辑已抽到 `@/utils/weekResultWorkspace`**（CI-5 阶段 2 第五轮）⇒ 这里只做转发。
+import {
+  buildEditableWeekResultRow,
+  formatWeekResultPeriod,
+  isWeekResultRowLocked,
+  resolveFocusWeekResultRow,
+  resolveMonthEditableWeekResultRow,
+  resolveWeekMonthFromQuery,
+  resolveWeekPlanIdFromQuery,
+  resolveWeekResultCompletion,
+  resolveWeekResultDeliverable,
+  resolveWeekResultStatusMeta,
+  resolveWeekResultValidationMessage,
+  validateWeekResultRow,
+} from '@/utils/weekResultWorkspace'
 
 const monthPageSize = 10
 
@@ -132,10 +147,7 @@ const activeRowKey = ref('')
 // ⚠️ BUG-R6-19：默认值必须与后端 `ACCEPTED_FILE_EXTENSIONS` 一致（扩展名，不是 MIME）。
 const options = reactive({ plans: [] as WeekResultSubmitOption[], acceptedFileTypes: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'png', 'jpg', 'jpeg'], maxFileSizeMb: 20 })
 
-const focusWeekMonth = computed(() => {
-  const raw = Array.isArray(route.query.weekMonth) ? route.query.weekMonth[0] : route.query.weekMonth
-  return typeof raw === 'string' && /^\d{4}-\d{2}$/.test(raw) ? raw : ''
-})
+const focusWeekMonth = computed(() => resolveWeekMonthFromQuery(route.query))
 const uploadAccept = computed(() => buildFileAcceptAttribute(options.acceptedFileTypes))
 const rows = computed<WeekResultRow[]>(() => options.plans.map((plan) => ({
   ...plan,
@@ -151,47 +163,32 @@ const pagedMonthGroups = computed(() => paginateMonthGroups(monthGroups.value, m
 function toggleMonth(key: string) { expandedMonthKeys.has(key) ? expandedMonthKeys.delete(key) : expandedMonthKeys.add(key) }
 function expandMonthForEdit(key: string) {
   expandedMonthKeys.add(key)
-  const firstEditableRow = editableRows.value.find((row) => row.planMonth === key && !rowLocked(row))
-    || editableRows.value.find((row) => row.planMonth === key)
+  const firstEditableRow = resolveMonthEditableWeekResultRow(editableRows.value, key)
   activeRowKey.value = firstEditableRow?.key || activeRowKey.value
 }
-function periodText(start: string, end: string) { return `${start} 至 ${end}` }
+function periodText(start: string, end: string) { return formatWeekResultPeriod(start, end) }
 function resultCompletion(result?: WeekResultRecord | null) {
-  return result?.completionStatus === 'COMPLETED' ? result.content || '已完成' : result?.completionStatus || result?.content || ''
+  return resolveWeekResultCompletion(result)
 }
-function resultDeliverable(row: WeekResultRow) { return row.latestResult?.deliverable || row.task.deliverable || '' }
+function resultDeliverable(row: WeekResultRow) { return resolveWeekResultDeliverable(row) }
 function statusMeta(status: string) {
-  return ({
-    SUBMITTED: { label: '待审批', type: 'warning' as const },
-    APPROVED: { label: '已通过', type: 'success' as const },
-    REJECTED: { label: '已驳回', type: 'danger' as const },
-    NOT_SUBMITTED: { label: '未提交', type: 'info' as const },
-  }[status] ?? { label: status || '未提交', type: 'info' as const })
+  return resolveWeekResultStatusMeta(status)
 }
-function rowLocked(row: EditableWeekResultRow) { return row.status === 'SUBMITTED' || row.status === 'APPROVED' }
+function rowLocked(row: EditableWeekResultRow) { return isWeekResultRowLocked(row) }
 
 function rebuildEditableRows() {
-  editableRows.value = rows.value.map((row) => ({
-    ...row,
-    completionStatus: resultCompletion(row.latestResult),
-    deliverable: resultDeliverable(row),
-    remark: row.latestResult?.remark || '',
-    hasEvidence: Boolean(row.latestResult?.evidences.length),
-    file: null,
-  }))
+  editableRows.value = rows.value.map((row) => buildEditableWeekResultRow(row))
   // BUG-R6-14：周计划 ID 是字符串主键，不能用 `Number(...)` 强转
   // （NaN 永远匹配不到行）。
-  const focusPlanId = String(Array.isArray(route.query.weekPlanId) ? route.query.weekPlanId[0] : route.query.weekPlanId ?? '')
-  const focusRow = editableRows.value.find((row) => row.weekPlanId === focusPlanId)
-    || editableRows.value.find((row) => !rowLocked(row))
-    || editableRows.value[0]
+  const focusPlanId = resolveWeekPlanIdFromQuery(route.query)
+  const focusRow = resolveFocusWeekResultRow(editableRows.value, focusPlanId)
   activeRowKey.value = focusRow?.key || ''
 }
 
 function resetMonthView() {
   monthPage.value = 1
   expandedMonthKeys.clear()
-  const focusPlanId = String(Array.isArray(route.query.weekPlanId) ? route.query.weekPlanId[0] : route.query.weekPlanId ?? '')
+  const focusPlanId = resolveWeekPlanIdFromQuery(route.query)
   const focusRow = editableRows.value.find((row) => row.weekPlanId === focusPlanId)
   const monthToOpen = focusWeekMonth.value || focusRow?.planMonth || ''
   if (!monthToOpen) return
@@ -223,9 +220,8 @@ function handleFileChange(row: EditableWeekResultRow, event: Event) {
   activeRowKey.value = row.key
 }
 function validateRow(row: EditableWeekResultRow) {
-  if (rowLocked(row)) { ElMessage.warning('该周成果已提交，不能重复提交'); return false }
-  if (!row.completionStatus.trim()) { ElMessage.warning('请填写完成情况'); return false }
-  if (!row.deliverable.trim()) { ElMessage.warning('请填写交付物'); return false }
+  const error = validateWeekResultRow(row)
+  if (error) { ElMessage.warning(resolveWeekResultValidationMessage(error)); return false }
   return !row.file || validateFile(row.file)
 }
 async function submitRow(row: EditableWeekResultRow) {

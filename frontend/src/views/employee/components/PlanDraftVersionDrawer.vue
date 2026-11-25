@@ -122,6 +122,16 @@ import { getPlanDraftVersionApi, listPlanDraftVersionsApi, restorePlanDraftVersi
 import MonthPlanVersionDiff from './MonthPlanVersionDiff.vue'
 import PlanDraftVersionRail from './PlanDraftVersionRail.vue'
 import { arePlanSnapshotsEqual, compareMonthPlanSnapshots, type MonthPlanDiff } from './planDraftVersionComparison'
+// ⚠️ **纯逻辑已抽到 `@/utils/planDraftVersionDrawer`**（CI-5 阶段 2 第五轮）⇒ 这里只做转发。
+import {
+  buildPlanDraftPreviewEntries,
+  buildPlanDraftVersionGroupOptions,
+  findPlanDraftVersionById,
+  formatPlanDraftFullTime,
+  formatPlanDraftSnapshot,
+  isPlanDraftChanged,
+  selectVisiblePlanDraftVersions,
+} from '@/utils/planDraftVersionDrawer'
 
 const props = defineProps<{
   modelValue: boolean
@@ -153,40 +163,28 @@ const sourceLabels: Record<PlanDraftVersionSource, string> = {
   MANUAL_SAVE: '手动保存',
   RESTORED_SAVE: '恢复后保存',
 }
-const savedVersions = computed(() => versions.value.filter((item) => item.sourceType === 'MANUAL_SAVE' || item.sourceType === 'RESTORED_SAVE'))
-const aiVersions = computed(() => versions.value.filter((item) => item.sourceType === 'AI_GENERATE' || item.sourceType === 'AI_OPTIMIZE'))
+// ⚠️ **纯逻辑已抽到 `@/utils/planDraftVersionDrawer`**（CI-5 阶段 2 第五轮）⇒ 这里只做转发。
+const savedVersions = computed(() => selectVisiblePlanDraftVersions(versions.value, 'saved'))
+const aiVersions = computed(() => selectVisiblePlanDraftVersions(versions.value, 'ai'))
 const visibleVersions = computed(() => activeGroup.value === 'saved' ? savedVersions.value : aiVersions.value)
-const selectedVersionSummary = computed(() => visibleVersions.value.find((version) => version.id === selectedVersionId.value))
-const versionGroups = computed<Array<{ label: string; value: 'saved' | 'ai' }>>(() => [
-  { label: `已保存版本 ${savedVersions.value.length}`, value: 'saved' },
-  { label: `AI 生成记录 ${aiVersions.value.length}`, value: 'ai' },
-])
+const selectedVersionSummary = computed(() => findPlanDraftVersionById(visibleVersions.value, selectedVersionId.value))
+const versionGroups = computed<Array<{ label: string; value: 'saved' | 'ai' }>>(() => buildPlanDraftVersionGroupOptions(versions.value))
 const emptyMonthDiff: MonthPlanDiff = {
   items: [],
   counts: { added: 0, modified: 0, removed: 0 },
   unchanged: true,
 }
-const formattedSnapshot = computed(() => selected.value ? JSON.stringify(selected.value.snapshot, null, 2) : '')
+const formattedSnapshot = computed(() => formatPlanDraftSnapshot(selected.value?.snapshot))
 const monthDiff = computed(() => selected.value
   ? compareMonthPlanSnapshots(selected.value.snapshot, props.currentSnapshot)
   : emptyMonthDiff)
-const changed = computed(() => selected.value
-  ? props.planType === 'MONTH'
-    ? !monthDiff.value.unchanged
-    : !arePlanSnapshotsEqual(props.planType, selected.value.snapshot, props.currentSnapshot)
-  : false)
-const previewEntries = computed(() => {
-  const snapshot = selected.value?.snapshot ?? {}
-  if (props.planType === 'WEEK') return [
-    { label: '周开始日', value: String(snapshot.weekStart ?? '-') },
-    { label: '任务数量', value: `${Array.isArray(snapshot.items) ? snapshot.items.length : 0} 项` },
-  ]
-  return [
-    { label: '计划日期', value: String(snapshot.planDate ?? '-') },
-    { label: '关联周任务', value: `${Array.isArray(snapshot.relatedWeekPlanItemIds) ? snapshot.relatedWeekPlanItemIds.length : 0} 项` },
-    { label: '工作内容', value: String(snapshot.content ?? '未填写') },
-  ]
-})
+const changed = computed(() => isPlanDraftChanged({
+  planType: props.planType,
+  hasSnapshot: Boolean(selected.value),
+  monthDiffUnchanged: monthDiff.value.unchanged,
+  snapshotsEqual: arePlanSnapshotsEqual(props.planType, selected.value?.snapshot ?? {}, props.currentSnapshot),
+}))
+const previewEntries = computed(() => buildPlanDraftPreviewEntries(props.planType, selected.value?.snapshot))
 
 async function loadHistory() {
   if (!props.periodKey || loading.value) return
@@ -253,7 +251,7 @@ async function restoreSelected() {
 }
 
 function formatFullTime(value: string) {
-  return value ? value.slice(0, 16).replace('T', ' ') : '-'
+  return formatPlanDraftFullTime(value)
 }
 
 watch(activeGroup, () => {

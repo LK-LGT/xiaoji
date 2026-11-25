@@ -120,6 +120,25 @@ import {
   type AiContextResponse,
   type MonthPlanContextType,
 } from '@/api/employeeAi'
+// ⚠️ **纯逻辑已抽到 `@/utils/aiContextPopover`**（CI-5 阶段 2 第五轮）⇒ 这里只做转发。
+import {
+  buildAiContextOptionRows,
+  isAiContextChecked,
+  isAiContextIndeterminate,
+  isAllAiContextSelected,
+  isAiContextSelectionIndeterminate,
+  isGroupedAiContextType,
+  resolveAiBindingLabel,
+  resolveAiChildToggle,
+  resolveAiContextGroupState,
+  resolveAiGroupToggle,
+  resolveAiToggleAll,
+  selectAiContextTypes,
+  selectAiKnowledgeReferences,
+  selectAvailableHistoryMonths,
+  selectAvailableKnowledgeTypes,
+  updateAiContextTypeSelection,
+} from '@/utils/aiContextPopover'
 
 const props = withDefaults(defineProps<{
   contextInfo?: AiContextResponse
@@ -141,70 +160,72 @@ const emit = defineEmits<{
 
 const historyExpanded = ref(true)
 const knowledgeExpanded = ref(true)
+// ⚠️ **纯逻辑已抽到 `@/utils/aiContextPopover`**（CI-5 阶段 2 第五轮）⇒ 这里只做转发。
 const historyMonthOptions = computed(() => props.contextInfo?.historyMonthOptions || [])
 const knowledgeTypeOptions = computed(() => props.contextInfo?.knowledgeTypeOptions || [])
-const availableHistoryMonths = computed(() => historyMonthOptions.value.filter((item) => item.available).map((item) => item.month))
-const availableKnowledgeTypes = computed(() => knowledgeTypeOptions.value.filter((item) => item.available).map((item) => item.type))
-const selectableContextTypes = computed(() => MONTH_PLAN_CONTEXT_TYPES.filter((type) => {
-  if (type === 'HISTORY_PLANS') return availableHistoryMonths.value.length > 0
-  if (type === 'ENTERPRISE_KNOWLEDGE') return availableKnowledgeTypes.value.length > 0
-  return true
-}))
+const availableHistoryMonths = computed(() => selectAvailableHistoryMonths(historyMonthOptions.value))
+const availableKnowledgeTypes = computed(() => selectAvailableKnowledgeTypes(knowledgeTypeOptions.value))
+const selectableContextTypes = computed(() => selectAiContextTypes(
+  MONTH_PLAN_CONTEXT_TYPES,
+  availableHistoryMonths.value,
+  availableKnowledgeTypes.value,
+))
 const selectedCount = computed(() => props.selectedContextTypes.length)
-const allSelected = computed(() => selectableContextTypes.value.every((type) => props.selectedContextTypes.includes(type)))
-const selectionIndeterminate = computed(() => selectedCount.value > 0 && !allSelected.value)
+const allSelected = computed(() => isAllAiContextSelected(selectableContextTypes.value, props.selectedContextTypes))
+const selectionIndeterminate = computed(() => isAiContextSelectionIndeterminate(selectableContextTypes.value, props.selectedContextTypes))
 const enterpriseKnowledgeSelected = computed(() => props.selectedContextTypes.includes('ENTERPRISE_KNOWLEDGE'))
-const knowledgeReferences = computed(() => (props.contextInfo?.knowledgeReferences || [])
-  .filter((item) => props.selectedKnowledgeTypes.includes(item.knowledgeType)))
-const contextOptions = computed(() => MONTH_PLAN_CONTEXT_TYPES.map((type) => {
-  const remote = props.contextInfo?.contextOptions?.find((item) => item.type === type)
-  const jobSummary = props.jobDescription.trim()
-  const group = groupState(type)
-  return {
-    type,
-    label: remote?.label || MONTH_PLAN_CONTEXT_LABELS[type],
-    available: group ? group.available.length > 0 : type === 'JOB_DESCRIPTION'
-      ? Boolean(jobSummary)
-      : remote?.available ?? Boolean(props.contextInfo?.availableContext.includes(MONTH_PLAN_CONTEXT_LABELS[type])),
-    summary: group
-      ? `已选 ${group.selected.length}/${group.total} ${type === 'HISTORY_PLANS' ? '个月' : '类'}`
-      : type === 'JOB_DESCRIPTION' ? props.jobDescription.trim() : String(remote?.summary || '').trim(),
-  }
-}))
+const knowledgeReferences = computed(() => selectAiKnowledgeReferences(
+  props.contextInfo?.knowledgeReferences,
+  props.selectedKnowledgeTypes,
+))
+const contextOptions = computed(() => buildAiContextOptionRows(
+  MONTH_PLAN_CONTEXT_TYPES,
+  props.contextInfo,
+  props.jobDescription,
+  MONTH_PLAN_CONTEXT_LABELS,
+  {
+    availableHistoryMonths: availableHistoryMonths.value,
+    selectedHistoryMonths: props.selectedHistoryMonths,
+    historyMonthTotal: historyMonthOptions.value.length,
+    availableKnowledgeTypes: availableKnowledgeTypes.value,
+    selectedKnowledgeTypes: props.selectedKnowledgeTypes,
+    knowledgeTypeTotal: knowledgeTypeOptions.value.length,
+  },
+))
 
 function toggleAll(value: boolean | string | number) {
-  const selected = Boolean(value)
-  emit('update:selectedContextTypes', selected ? [...selectableContextTypes.value] : [])
-  emit('update:selectedHistoryMonths', selected ? [...availableHistoryMonths.value] : [])
-  emit('update:selectedKnowledgeTypes', selected ? [...availableKnowledgeTypes.value] : [])
+  const result = resolveAiToggleAll(
+    value,
+    selectableContextTypes.value,
+    availableHistoryMonths.value,
+    availableKnowledgeTypes.value,
+  )
+  emit('update:selectedContextTypes', result.contextTypes)
+  emit('update:selectedHistoryMonths', result.historyMonths)
+  emit('update:selectedKnowledgeTypes', result.knowledgeTypes)
 }
 
 function isGrouped(type: MonthPlanContextType) {
-  return type === 'HISTORY_PLANS' || type === 'ENTERPRISE_KNOWLEDGE'
+  return isGroupedAiContextType(type)
 }
 
 function groupState(type: MonthPlanContextType) {
-  if (type === 'HISTORY_PLANS') {
-    return { available: availableHistoryMonths.value, selected: props.selectedHistoryMonths, total: historyMonthOptions.value.length }
-  }
-  if (type === 'ENTERPRISE_KNOWLEDGE') {
-    return { available: availableKnowledgeTypes.value, selected: props.selectedKnowledgeTypes, total: knowledgeTypeOptions.value.length }
-  }
-  return undefined
+  return resolveAiContextGroupState(type, {
+    availableHistoryMonths: availableHistoryMonths.value,
+    selectedHistoryMonths: props.selectedHistoryMonths,
+    historyMonthTotal: historyMonthOptions.value.length,
+    availableKnowledgeTypes: availableKnowledgeTypes.value,
+    selectedKnowledgeTypes: props.selectedKnowledgeTypes,
+    knowledgeTypeTotal: knowledgeTypeOptions.value.length,
+  })
 }
 
 function contextChecked(type: MonthPlanContextType) {
-  const group = groupState(type)
-  return group
-    ? group.available.length > 0 && group.available.every((value) => group.selected.includes(value))
-    : props.selectedContextTypes.includes(type)
+  return isAiContextChecked(type, groupState(type), props.selectedContextTypes)
 }
 
 function contextIndeterminate(type: MonthPlanContextType) {
-  const group = groupState(type)
-  if (!group) return false
-  const selected = group.available.filter((value) => group.selected.includes(value)).length
-  return selected > 0 && selected < group.available.length
+  return isAiContextIndeterminate(groupState(type))
 }
 
 function toggleContext(type: MonthPlanContextType, value: boolean | string | number) {
@@ -220,40 +241,31 @@ function toggleContext(type: MonthPlanContextType, value: boolean | string | num
 }
 
 function toggleHistoryGroup(selected: boolean) {
-  const values = selected ? [...availableHistoryMonths.value] : []
-  emit('update:selectedHistoryMonths', values)
-  setParentContext('HISTORY_PLANS', values.length > 0)
+  const result = resolveAiGroupToggle('HISTORY_PLANS', selected, availableHistoryMonths.value, availableKnowledgeTypes.value)
+  emit('update:selectedHistoryMonths', result.values)
+  setParentContext('HISTORY_PLANS', result.parentSelected)
 }
 
 function toggleKnowledgeGroup(selected: boolean) {
-  const values = selected ? [...availableKnowledgeTypes.value] : []
-  emit('update:selectedKnowledgeTypes', values)
-  setParentContext('ENTERPRISE_KNOWLEDGE', values.length > 0)
+  const result = resolveAiGroupToggle('ENTERPRISE_KNOWLEDGE', selected, availableHistoryMonths.value, availableKnowledgeTypes.value)
+  emit('update:selectedKnowledgeTypes', result.values)
+  setParentContext('ENTERPRISE_KNOWLEDGE', result.parentSelected)
 }
 
 function toggleHistoryMonth(month: string, value: boolean | string | number) {
-  const selected = updateSelection(props.selectedHistoryMonths, month, Boolean(value))
-  emit('update:selectedHistoryMonths', selected)
-  setParentContext('HISTORY_PLANS', selected.length > 0)
+  const result = resolveAiChildToggle('HISTORY_PLANS', props.selectedHistoryMonths, month, Boolean(value))
+  emit('update:selectedHistoryMonths', result.values)
+  setParentContext('HISTORY_PLANS', result.parentSelected)
 }
 
 function toggleKnowledgeType(type: string, value: boolean | string | number) {
-  const selected = updateSelection(props.selectedKnowledgeTypes, type, Boolean(value))
-  emit('update:selectedKnowledgeTypes', selected)
-  setParentContext('ENTERPRISE_KNOWLEDGE', selected.length > 0)
-}
-
-function updateSelection(values: string[], value: string, selected: boolean) {
-  const next = new Set(values)
-  if (selected) next.add(value)
-  else next.delete(value)
-  return [...next]
+  const result = resolveAiChildToggle('ENTERPRISE_KNOWLEDGE', props.selectedKnowledgeTypes, type, Boolean(value))
+  emit('update:selectedKnowledgeTypes', result.values)
+  setParentContext('ENTERPRISE_KNOWLEDGE', result.parentSelected)
 }
 
 function setParentContext(type: MonthPlanContextType, selected: boolean) {
-  const next = new Set(props.selectedContextTypes)
-  if (selected) next.add(type)
-  else next.delete(type)
+  const next = new Set(updateAiContextTypeSelection(props.selectedContextTypes, type, selected))
   emit('update:selectedContextTypes', MONTH_PLAN_CONTEXT_TYPES.filter((item) => next.has(item)))
 }
 
@@ -267,7 +279,7 @@ function toggleExpanded(type: MonthPlanContextType) {
 }
 
 function bindingLabel(value: string) {
-  return ({ NORMATIVE: '正式规范', REFERENCE: '参考资料', EXAMPLE: '示例案例' } as Record<string, string>)[value] || value || '知识资料'
+  return resolveAiBindingLabel(value)
 }
 </script>
 
