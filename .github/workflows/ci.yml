@@ -135,8 +135,16 @@ jobs:
         #   ⇒ 成功时不产生噪音日志。
         #   ⇒ 失败时把每个失败用例的 message + traceback 打到 job log
         #     （不需要 admin 权限就能看）。
+        #
+        # ⚠️ **为什么先 ``head -60`` 打一份短的**
+        #   完整 traceback 可能几十 KB ⇒ GitHub 会折叠日志，
+        #   反而看不见。⇒ 先打一份**摘要**（每个失败用例的头几行），
+        #   完整版放在诊断分支里。
         if: failure()
-        run: python backend/scripts/print_pytest_failures.py data/_pytest_report.xml
+        run: |
+          echo "::group::pytest 失败摘要"
+          python backend/scripts/print_pytest_failures.py data/_pytest_report.xml | head -80
+          echo "::endgroup::"
 
       - name: Alembic 迁移 —— 升级到 head
         working-directory: backend
@@ -260,6 +268,27 @@ jobs:
             data/_pytest_test.db
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: 把失败报告推到诊断分支（仅失败时）
+        # ⚠️ **为什么需要这一步**（2026-11-25）
+        #   artifact 下载需要 **登录态**；job log 需要 **admin 权限**
+        #   ⇒ 排查时常常两边都拿不到。
+        #   ⇒ 把失败报告提交到一个**专用分支**，用 git 拉下来
+        #     （git 凭据是有的）⇒ 任何人都能看。
+        #
+        # ⚠️ **不碰 develop** —— 只推到独立的诊断分支，
+        #   避免把失败产物混进开发分支。
+        if: failure()
+        run: |
+          git config user.name "ci-diagnostics"
+          git config user.email "ci-diagnostics@localhost"
+          mkdir -p ci-diagnostics
+          cp data/_pytest_report.xml ci-diagnostics/ 2>/dev/null || true
+          python backend/scripts/print_pytest_failures.py data/_pytest_report.xml > ci-diagnostics/failures.txt 2>&1 || true
+          git checkout -B ci-diagnostics/failure-report
+          git add ci-diagnostics/
+          git commit -m "ci: 后端测试失败报告 $(date -u +%Y%m%dT%H%M%SZ)" || echo "（没有可提交的内容）"
+          git push --force origin ci-diagnostics/failure-report || echo "（推送失败，不影响主流程）"
 
   # ───────────────────────────────────────────────────────────
   # 智能体服务：独立 FastAPI 服务，单独测试
