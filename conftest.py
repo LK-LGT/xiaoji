@@ -38,6 +38,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent
 AGENT_SERVICE = ROOT / "agent-service"
 
@@ -109,6 +111,50 @@ for _key, _value in _TEST_SCHEDULER_OFF.items():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ★ 测试数据库隔离（2026-11-25，CI 22 连红修复的最后一环）
+#
+# ⚠️⚠️ **为什么必须做（一个真实的 CI 失败）**
+#
+#   现象：CI 的「后端单元与集成测试」这一步挂了，报
+#         ``sqlite3.OperationalError: no such table: employee``。
+#   根因链条：
+#     1. CI 里**没有** ``backend/.env`` ⇒ ``Settings.database_url``
+#        走代码默认值（或 CI 注入的 ``DATABASE_URL``）。
+#     2. CI 把 ``AUTO_CREATE_TABLES=false`` ⇒ 运行时**不建表**。
+#     3. CI 的步骤顺序是「**先跑测试、后跑 Alembic 迁移**」
+#        ⇒ 测试跑的时候，真实库文件**一张表都没有**。
+#     4. 大部分测试用 ``dependency_overrides[get_db]`` 换成内存库 ⇒ 不受影响。
+#        但**少数**测试（如 ``test_login_entry_gate.py`` 的
+#        「开启后测试账号仍能登录」）**直接打真实端点、没覆盖 get_db**
+#        ⇒ 撞上真实空库 ⇒ ``no such table`` ⇒ 整步挂掉。
+#
+# ⚠️ **为什么「本地不复现」**
+#   本地有 ``backend/.env``（``AUTO_CREATE_TABLES=true`` 或库已建好）
+#   ⇒ 真实库里有表 ⇒ 碰巧能过。
+#   ⇒ 又是「本地全绿 / CI 全红」，且**错在测试而不是在业务代码**。
+#
+# ⚠️ **为什么不能靠「把 Alembic 迁移挪到测试前面」来修**
+#   那样确实能建表，但会引入另一个问题：
+#   测试会往**真实库**里写数据（登录会落 token_version、审计日志……）
+#   ⇒ 测试之间互相污染 ⇒ 「跑一次绿、跑两次红」的顺序依赖。
+#   ⇒ 单元测试的**正确做法**是每个用例自带隔离库。
+#
+# ✅ **本文件的做法**：把 ``DATABASE_URL`` 强制指向
+#    **测试专用**的 SQLite 文件（不是内存库 —— 内存库每个连接独立，
+#    而这里需要「多个连接看到同一份数据」，因为 app 自己的
+#    ``get_sessionmaker()`` 与测试的连接不是同一个）。
+#    ⇒ 这样「没覆盖 get_db」的测试也不会碰到真实库。
+#
+# ⚠️ **为什么用「直接赋值」而不是 setdefault**
+#   同上 —— 必须**强制**覆盖，否则 CI 注入的 DATABASE_URL 会赢。
+_TEST_DB_PATH = ROOT / "data" / "_pytest_test.db"
+os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH}"
+# ⚠️ **测试库要能自己建表** —— 否则又回到「no such table」。
+#    （这只影响**测试进程**，与生产的 Alembic 路线不冲突。）
+os.environ["AUTO_CREATE_TABLES"] = "true"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ★ 登录入口开关（2026-11-24，B1）
 #
 # ⚠️ **为什么测试进程要打开口令登录**
@@ -148,3 +194,28 @@ os.environ.setdefault(
     '{"admin": "admin123", "yangfei": "yangfei123", '
     '"biyumi": "biyumi123", "employee": "employee123"}',
 )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ★ 测试库生命周期（隔离的另一半）
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠️ **为什么要删旧库**
+#   上一次跑测试留下的数据会被这一轮读到 ⇒
+#   「跑一次绿、跑两次红」的**顺序依赖**，
+#   而这种 flaky 在 CI 上表现为「有时红有时绿」，极难查。
+#   ⇒ 每个会话开始前删掉旧文件 ⇒ 每次跑测试都是**干净起点**。
+#
+# ⚠️ **为什么用 session 级 autouse fixture 而不是模块级语句**
+#   模块级语句在 import 时执行 —— 此时 pytest 还没开始收集，
+#   万一 import 失败旧库还在，下次跑又会带着脏数据。
+#   放进 fixture ⇒ 与「本轮测试真的开始」绑定。
+@pytest.fixture(autouse=True, scope="session")
+def _reset_test_database():
+    """每个测试会话开始前删掉上一次的测试库残留。"""
+    # ⚠️ 先删再留空目录 —— SQLite 要求父目录存在才能建文件。
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(f"{_TEST_DB_PATH}{suffix}")
+        if candidate.exists():
+            candidate.unlink()
+    _TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    yield
