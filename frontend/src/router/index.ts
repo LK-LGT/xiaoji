@@ -95,6 +95,7 @@ import ManagerReview from '@/views/performance/ManagerReview.vue'
 import PanWorkloadPanel from '@/views/performance/PanWorkloadPanel.vue'
 import PanWorkloadEntry from '@/views/performance/PanWorkloadEntry.vue'
 import PanWorkloadPage from '@/views/performance/PanWorkloadPage.vue'
+import DeptWorkloadPage from '@/views/performance/DeptWorkloadPage.vue'
 import QaPanel from '@/views/qa/QaPanel.vue'
 
 import ReviewCenter from '@/views/dispute/ReviewCenter.vue'
@@ -231,7 +232,23 @@ const router = createRouter({
     //    员工进来看到「我的工作量 + 填报 + 提异议」，
     //    主管进来看到「按人汇总 + 待裁定工单」。
     //    ⇒ 页面内部按权限切换组件，避免两套路由两套菜单。
-    withAppShell('/performance/pan-workload', PanWorkloadPage, { permission: 'pan:workload:view' }, '/performance/dashboard'),
+    //
+    // ⚠️⚠️ **2026-11-24：这里曾经重复挂 alias `/performance/dashboard`**（BUG）
+    //    `/performance/dashboard` 已经是上面 `/performance` 那条的 alias，
+    //    两条路由抢同一个 alias ⇒ **谁先注册谁生效**
+    //    ⇒ 一旦有人调整路由顺序，绩效工作台就会渲染成「剪辑工作量」页，
+    //       或反过来（用户看到的「点一下跳到另一个页面」）。
+    //    ⇒ 这里**不再挂 alias**：`/performance/dashboard` 仍由 `/performance` 提供。
+    withAppShell('/performance/pan-workload', PanWorkloadPage, { permission: 'pan:workload:view' }),
+
+    // --- ★ 部门工作量（2026-11-25）---
+    // ⚠️ **与剪辑工作量是两个独立板块**（`dept_workload` / `pan_workload`）
+    // ⇒ 侧边栏菜单由**后端下发的 moduleMenus** 决定谁能看到哪个
+    // ⇒ 这里只是**路由挂载**（后端说谁能进，前端才渲染得出来）。
+    //
+    // ⚠️ **权限串与剪辑板块共用**（`pan:workload:view`）
+    // ⇒ 两者是同一套填报机制，区别只在「哪个部门开通」+「填什么指标」。
+    withAppShell('/performance/dept-workload', DeptWorkloadPage, { permission: 'pan:workload:view' }),
 
     // --- 问答 ---
     // ⚠️ 全角色可见：问答的数据范围由**后端**按权限收敛
@@ -296,7 +313,10 @@ router.beforeEach(async (to) => {
   // ⚠️ 为什么放在权限检查**之后**：没权限的人看到的应该是「无权访问」，
   //    而不是「你的部门没开通这个板块」—— 后者会误导用户。
   const modules = authStore.user?.modules || []
-  if (!canAccessPath(to.path, permissions, modules)) {
+  // ⚠️ **2026-11-24** —— 板块子模块的路径不再写死在 ``workspaces.ts`` 里
+  //   ⇒ 守卫要靠后端下发的 ``moduleMenus`` 才知道「这个路径属于哪个板块」
+  const moduleMenus = authStore.user?.moduleMenus || []
+  if (!canAccessPath(to.path, permissions, modules, moduleMenus)) {
     ElMessage.warning('当前部门未开通该功能板块')
     return home || '/no-access'
   }

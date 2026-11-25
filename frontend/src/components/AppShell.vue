@@ -69,6 +69,41 @@
               <span class="nav-icon">{{ item.icon }}</span><span>{{ item.label }}</span>
               <span v-if="menuBadge(item.path)" class="nav-badge">{{ badgeText(menuBadge(item.path)) }}</span>
             </router-link>
+
+            <!--
+              ★ **动态板块菜单**（2026-11-24）
+
+              ⚠️ **为什么这块是「后端下发」而不是「写死」**
+              用户诉求：「侧边栏菜单**不是写死固定**，是**动态渲染**：
+                - 系统读取当前登录人的部门；
+                - 读取这个部门绑定了哪些功能子模块；
+                - 只有这个部门的人员，侧边栏才会加载出【短视频 → 剪辑工作量】；
+                - 其他部门的账号，侧边栏**根本不会出现这个入口**」
+
+              ⇒ 后端 `/auth/me` 下发 `moduleMenus`（已按**板块 + 岗位角色 + 权限**过滤）
+              ⇒ 前端**只渲染**，不定义。
+
+              ⚠️ **为什么画成「板块分组」**
+              用户的描述是「短视频 → 剪辑工作量」，**有层级**
+              ⇒ 板块名做分组标题，子模块才是可点击的入口。
+            -->
+            <div
+              v-for="group in visibleModuleGroups"
+              :key="group.code"
+              class="nav-group nav-group--module"
+            >
+              <div class="nav-title nav-title--module">{{ group.label }}</div>
+              <router-link
+                v-for="item in group.children"
+                :key="item.path"
+                class="nav-link nav-link--module"
+                :to="item.path"
+                @click="sidebarOpen = false"
+              >
+                <span class="nav-icon">{{ item.icon }}</span><span>{{ item.label }}</span>
+                <span v-if="menuBadge(item.path)" class="nav-badge">{{ badgeText(menuBadge(item.path)) }}</span>
+              </router-link>
+            </div>
           </div>
         </nav>
 
@@ -190,8 +225,11 @@ import { getHealth } from '@/api/system'
 import { resolveBreadcrumbNavigation } from '@/navigation/breadcrumbs'
 import {
   availableWorkspaces,
+  hasPermission,
+  isModuleSubmodulePath,
+  resolveActiveWorkspace,
   visibleWorkspaceItems,
-  workspaceForPath,
+  type WorkspaceId,
 } from '@/navigation/workspaces'
 import { useAuthStore } from '@/stores/auth'
 import { useMessageStore } from '@/stores/messages'
@@ -233,13 +271,66 @@ const userPermissions = computed(() => authStore.user?.permissions || [])
  */
 const userModules = computed(() => authStore.user?.modules || [])
 const userWorkspaces = computed(() => availableWorkspaces(userPermissions.value))
-const activeWorkspace = computed(() => workspaceForPath(route.value.path) || userWorkspaces.value[0])
+
+/**
+ * ⚠️⚠️ **「来源工作区」记忆**（2026-11-24）—— 修复「点板块内容就跳到另一个层级」。
+ *
+ * ⚠️ **问题复现**
+ * 管理员在「系统管理端」点侧边栏的【短视频 → 剪辑工作量】
+ * ⇒ 子模块路径是 ``/performance/pan-workload``
+ * ⇒ 纯前缀匹配会把它判成「绩效管理」工作区
+ * ⇒ 侧边栏标题、菜单、面包屑**整体跳到另一个层级**。
+ *
+ * ⚠️ **为什么需要「记忆」而不是每次都算**
+ * 板块子模块的路径**带** ``/performance`` 前缀，
+ * 所以**光看当前路径无法知道**用户是从哪个工作区点进来的
+ * ⇒ 进入板块页面前，把当前工作区记下来。
+ *
+ * ⚠️ **记忆什么时候被更新**
+ * 只有在**离开板块子模块**、进入普通工作区路径时才刷新
+ * ⇒ 在板块页面之间来回跳时不会丢。
+ */
+const rememberedWorkspaceId = ref<WorkspaceId | undefined>(undefined)
+
+const activeWorkspace = computed(() => resolveActiveWorkspace(
+  route.value.path,
+  authStore.user?.moduleMenus || [],
+  userWorkspaces.value,
+  rememberedWorkspaceId.value,
+))
+
 const activeItems = computed(() => activeWorkspace.value
   ? visibleWorkspaceItems(activeWorkspace.value, userPermissions.value, userModules.value)
   : [])
+
+/**
+ * ★ **动态板块菜单分组**（2026-11-24）。
+ *
+ * ⚠️ **数据来源**
+ * 后端 `/auth/me` 下发的 `moduleMenus` —— 已按
+ * **板块（部门维度）+ 岗位角色（reporter/reviewer/none）+ 权限**过滤。
+ *
+ * ⚠️ **前端还要再过一道权限（纵深防御）**
+ * 后端漏过滤时，前端不会把它放出来。
+ *
+ * ⚠️ **为什么剔除空分组**
+ * 一个子模块都看不到的板块不该显示标题（否则点开是空的）。
+ */
+const visibleModuleGroups = computed(() => {
+  const groups = authStore.user?.moduleMenus || []
+  return groups
+    .map((group) => ({
+      ...group,
+      children: (group.children || []).filter((item) =>
+        !item.permission || hasPermission(userPermissions.value, item.permission),
+      ),
+    }))
+    .filter((group) => group.children.length > 0)
+})
 const breadcrumbNavigation = computed(() => resolveBreadcrumbNavigation(
   { path: route.value.path, query: route.value.query },
   activeWorkspace.value?.homePath,
+  authStore.user?.moduleMenus || [],
 ))
 const canGoBack = computed(() => Boolean(breadcrumbNavigation.value.parentPath))
 const healthLabel = computed(() => systemHealthy.value ? '系统运行正常' : '服务连接异常')
@@ -281,6 +372,22 @@ watch(() => authStore.token, async (token) => {
 watch(() => route.value.fullPath, () => {
   sidebarOpen.value = false
 })
+
+/**
+ * ⚠️ **维护「来源工作区」记忆**（2026-11-24）。
+ *
+ * ⚠️ **规则**
+ * - 路径**命中板块子模块** ⇒ **不动记忆**（在板块页之间跳也要记得来路）
+ * - 其它路径 ⇒ 把当前工作区**记下来**（下次进板块页时回到这里）
+ */
+watch(
+  () => [route.value.path, activeWorkspace.value?.id] as const,
+  ([path, workspaceId]) => {
+    if (isModuleSubmodulePath(path, authStore.user?.moduleMenus || [])) return
+    if (workspaceId) rememberedWorkspaceId.value = workspaceId
+  },
+  { immediate: true },
+)
 
 onMounted(() => {
   document.addEventListener('click', closeNotificationOnOutsideClick)

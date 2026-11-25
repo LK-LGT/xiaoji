@@ -22,6 +22,48 @@ export interface LoginResp {
    * ⇒ 2026-11-21 用户投诉「别的部门为什么会有剪辑板块」的根因修复点。
    */
   modules?: string[]
+  /**
+   * ⚠️ **板块菜单目录**（板块 → 子模块，两级）。
+   *
+   * ⚠️ **为什么菜单要由后端下发（2026-11-24）**
+   * 用户诉求：「侧边栏菜单**不是写死固定**，是**动态渲染**」——
+   * 系统读取登录人的部门 → 读取该部门绑定了哪些功能子模块
+   * ⇒ 只有该部门的人员才加载出「短视频 → 剪辑工作量」
+   * ⇒ 别的部门**根本不会出现**这个入口（从源头隐藏）。
+   *
+   * ⇒ 前端**只渲染**不**定义** ⇒ 新增板块不用改前端代码。
+   */
+  moduleMenus?: ModuleMenuGroup[]
+}
+
+/** 一个板块分组（例：短视频）。 */
+export interface ModuleMenuGroup {
+  /** 板块编码。 */
+  code: string
+  /** 板块中文名。 */
+  label: string
+  /**
+   * ⚠️ **我在这个板块里的岗位角色**。
+   *
+   * - `reporter` —— 要填报（剪辑）
+   * - `reviewer` —— 只审（编导 / 部门 leader）
+   * - `none` —— 不参与（**不会出现这个分组**）
+   */
+  role: 'reporter' | 'reviewer' | 'none'
+  /** 该板块下的子模块（可点击的侧边栏入口）。 */
+  children: ModuleMenuItem[]
+}
+
+/** 一个子模块入口。 */
+export interface ModuleMenuItem {
+  code: string
+  label: string
+  /** 路由路径。 */
+  path: string
+  icon: string
+  permission: string
+  /** 归属的板块编码。 */
+  moduleCode: string
 }
 
 export interface AuthUser {
@@ -43,6 +85,8 @@ export interface AuthUser {
   permissions: string[]
   /** ⚠️ **部门可用的功能板块** —— 见 `LoginResp.modules` */
   modules?: string[]
+  /** ⚠️ **板块菜单目录**（板块 → 子模块）—— 见 `LoginResp.moduleMenus` */
+  moduleMenus?: ModuleMenuGroup[]
 }
 
 export function loginApi(username: string, password: string) {

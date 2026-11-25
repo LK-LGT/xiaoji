@@ -1,3 +1,5 @@
+import { WORKSPACES } from './workspaces.ts'
+
 export interface BreadcrumbRouteLike {
   path: string
   query?: Record<string, unknown>
@@ -26,6 +28,30 @@ const ROOT_NODES: Record<string, NavigationNode> = {
   '/leader/workbench': { title: '直属领导工作台', path: '/leader/workbench' },
   '/employee/dashboard': { title: '员工工作台', path: '/employee/dashboard' },
   '/dispute/dashboard': { title: '裁决工作台', path: '/dispute/dashboard' },
+}
+
+/**
+ * ⚠️ **工作区首页的显示名**（2026-11-24）。
+ *
+ * 板块子模块的面包屑第一级是「当前工作区首页」
+ * ⇒ 需要一个「路径 → 中文名」的映射。
+ *
+ * ⚠️ **为什么不复用 ``ROOT_NODES``**
+ * ``ROOT_NODES`` 里的 title 是「管理工作台」这种**页面**名，
+ * 而面包屑这里想表达的是「**系统管理端**」这种**工作区**名
+ * ⇒ 用户诉求：「HR 在自己工作区就能直接看到，不用切」
+ * ⇒ 面包屑要让他一眼看出自己还在原来的工作区里。
+ *
+ * ⚠️ **为什么不另写一份映射表**
+ * ``WORKSPACES`` 才是工作区名的**唯一事实源**
+ * ⇒ 这里直接从它派生，避免两处改名不同步。
+ */
+const WORKSPACE_HOME_TITLES: Record<string, string> = Object.fromEntries(
+  WORKSPACES.map((workspace) => [workspace.homePath, workspace.title]),
+)
+
+function workspaceTitleForPath(homePath: string): string | undefined {
+  return WORKSPACE_HOME_TITLES[homePath]
 }
 
 const SECTION_TITLES: Record<string, string> = {
@@ -220,6 +246,43 @@ function dynamicNode(path: string, query: Record<string, unknown> = {}): Navigat
   return undefined
 }
 
+/**
+ * ⚠️ **板块子模块的面包屑**（2026-11-24）。
+ *
+ * ⚠️ **为什么需要**
+ * 板块子模块的路径由**后端**下发（``moduleMenus``），
+ * 前端写死的 ``SECTION_TITLES`` 里没有它们
+ * ⇒ 以前只能落到兜底的「成果计划」，层级完全看不出来。
+ *
+ * ⚠️ **面包屑长什么样**
+ *   工作区首页 / 板块名 / 子模块名
+ *   例：系统管理端 / 剪辑工作量 / 剪辑工作量
+ */
+export interface ModuleBreadcrumbGroup {
+  label: string
+  children: Array<{ path: string; label: string }>
+}
+
+/**
+ * 找出当前路径命中的**板块子模块**。
+ *
+ * @returns ``{ groupLabel, itemLabel }``，没命中返回 ``undefined``
+ */
+export function findModuleSubmodule(
+  path: string,
+  moduleMenus: readonly ModuleBreadcrumbGroup[] = [],
+): { groupLabel: string; itemLabel: string } | undefined {
+  for (const group of moduleMenus) {
+    for (const item of group.children ?? []) {
+      if (!item.path) continue
+      if (path === item.path || path.startsWith(`${item.path}/`)) {
+        return { groupLabel: group.label, itemLabel: item.label }
+      }
+    }
+  }
+  return undefined
+}
+
 function resolveNode(path: string, query?: Record<string, unknown>, workspaceHome?: string) {
   const canonicalPath = EXACT_ALIASES[path] || path
   const resolved = dynamicNode(canonicalPath, query) || EXACT_NODES[canonicalPath]
@@ -239,7 +302,39 @@ function resolveNode(path: string, query?: Record<string, unknown>, workspaceHom
 export function resolveBreadcrumbNavigation(
   route: BreadcrumbRouteLike,
   workspaceHome?: string,
+  moduleMenus: readonly ModuleBreadcrumbGroup[] = [],
 ): BreadcrumbNavigation {
+  /**
+   * ⚠️ **板块子模块优先**（2026-11-24）。
+   *
+   * 子模块的路径由后端下发 ⇒ 写死的 ``SECTION_TITLES`` 里没有
+   * ⇒ 不先处理的话会落到兜底的「成果计划」，层级完全看不出来。
+   *
+   * ⚠️ **面包屑结构**：工作区首页 / 板块名 / 子模块名
+   *   - 「工作区首页」和「板块名」都**不是页面** ⇒ 不能给 ``path``
+   *     ⇒ 只有「子模块名」是当前页（不给 path）。
+   */
+  const moduleHit = findModuleSubmodule(route.path, moduleMenus)
+  if (moduleHit) {
+    const crumbs: BreadcrumbItem[] = []
+    if (workspaceHome) {
+      const homeTitle = workspaceTitleForPath(workspaceHome) ?? '首页'
+      crumbs.push({ title: homeTitle, path: workspaceHome })
+    }
+    // ⚠️ 板块名与子模块名同名时（如「剪辑工作量」板块下的「剪辑工作量」子模块）
+    //    不重复显示两遍。
+    if (moduleHit.groupLabel !== moduleHit.itemLabel) {
+      crumbs.push({ title: moduleHit.groupLabel })
+    }
+    crumbs.push({ title: moduleHit.itemLabel })
+
+    return {
+      title: moduleHit.itemLabel,
+      breadcrumbs: crumbs,
+      parentPath: crumbs.length > 1 ? crumbs[crumbs.length - 2].path : undefined,
+    }
+  }
+
   const currentNode = resolveNode(route.path, route.query, workspaceHome)
   if (!currentNode) {
     return { title: '成果计划', breadcrumbs: [{ title: '成果计划' }] }

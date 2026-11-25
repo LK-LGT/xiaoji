@@ -65,6 +65,20 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgb(216 137 53 / 38%)
 .sidebar-nav { margin-top: 20px; }
 .nav-group { display: grid; gap: 3px; margin-top: 18px; }
 .nav-title { padding: 0 11px 7px; color: #7798ae; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+
+/*
+ * ★ **动态板块分组**（2026-11-24）
+ *
+ * ⚠️ **为什么板块名要做成分组标题**
+ * 用户诉求：「在短视频板块下面，挂载子模块：剪辑工作量」
+ * ⇒ 侧边栏要体现「板块 → 子模块」的层级
+ * ⇒ 板块名做小标题，子模块缩进一级。
+ */
+.nav-group--module { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgb(219 236 247 / 9%); }
+.nav-title--module { color: #f0ac5c; letter-spacing: .06em; }
+.nav-link--module { padding-left: 22px; font-size: 12.5px; }
+.nav-link--module .nav-icon { width: 16px; font-size: 13px; }
+
 .nav-link { display: flex; align-items: center; gap: 11px; min-height: 39px; padding: 9px 11px; border: 1px solid transparent; border-radius: 9px; color: #b9cbd7; text-decoration: none; font-size: 13px; transition: .18s ease; }
 .nav-link:hover { color: #fff; background: rgb(120 175 210 / 10%); }
 .nav-link.router-link-active { color: #fff; border-color: rgb(216 137 53 / 25%); background: linear-gradient(90deg, rgb(216 137 53 / 20%), rgb(216 137 53 / 5%)); }
