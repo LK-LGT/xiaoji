@@ -165,6 +165,24 @@ def backend_checks() -> list[Check]:
             env,
         ),
         Check(
+            # ⚠️ **绩效异议分支 E2E（CI-5 阶段 3）** —— 验「回退 + 重算」这条路径。
+            #    ⚠️ **为什么正向闭环脚本不够**
+            #    顺利路径（填报 → 评分 → 面谈 → 确认 → 定稿 → 归档）里**没有回退动作**。
+            #    而员工提异议后链路会**绕回去**：
+            #        dispute → reopen（**删 score 行**、**清 confirmed_rating**、
+            #                             **旧分数存进 previous_results**）
+            #              → 主管重新评分 → 面谈 → 确认 → 定稿
+            #    ⇒ 这条路径上有 4 个「删除/回退」动作，任一出错都会**静默丢分**。
+            #    ⇒ 尤其 `review_score_version` 是 **append-only** 的，
+            #      删 score 会不会连带触发历史表保护？必须真跑一次才知道。
+            #
+            # ⚠️ **同样必须放在 Alembic 迁移之后**。
+            "绩效异议分支 E2E（真实库跑回退链路）",
+            [PYTHON, "backend/scripts/verify_performance_dispute_branch_e2e.py"],
+            REPO_ROOT,
+            env,
+        ),
+        Check(
             "Python 静态检查（ruff）",
             # ⚠️ R22：不再传 `--select E9,F63,F7,F82`（只查致命错误）。
             #    规则集统一由 pyproject.toml 的 [tool.ruff.lint] 提供：

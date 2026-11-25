@@ -139,6 +139,19 @@ jobs:
         #    schema 还没建好会直接报表不存在。
         run: python backend/scripts/verify_performance_closed_loop_e2e.py
 
+      - name: 绩效异议分支 E2E（真实库跑回退链路）
+        # ⚠️ **为什么上一道不够**
+        # 顺利路径里**没有回退动作**，但员工提异议后链路会**绕回去**：
+        #   dispute → reopen（**删 score 行**、**清 confirmed_rating**、
+        #                        **旧分数存进 previous_results**）
+        #         → 主管重新评分 → 面谈 → 确认 → 定稿
+        # ⇒ 这条路径有 4 个「删除/回退」动作，任一出错都会**静默丢分**。
+        # ⇒ 尤其 `review_score_version` 是 **append-only** 的，
+        #   删 score 会不会连带触发历史表保护？必须真跑一次才知道。
+        #
+        # ⚠️ **同样必须放在 Alembic 迁移之后**。
+        run: python backend/scripts/verify_performance_dispute_branch_e2e.py
+
       - name: Schema 漂移检测（ORM 模型 ↔ 迁移）
         # ⚠️ 为什么需要这一步：
         #   本仓库有两条建库路径 —— alembic upgrade head（按迁移建）
