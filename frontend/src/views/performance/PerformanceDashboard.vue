@@ -27,7 +27,7 @@
           <p class="page-subtitle">完整的考核流程：任务发起 → 自评 → 主管评分 → 最终确认</p>
         </div>
         <div class="header-actions">
-          <el-button type="primary" @click="showCreateTaskDialog = true">
+          <el-button type="primary" @click="openCreateTask">
             <span>✚</span> 发起考核任务
           </el-button>
         </div>
@@ -90,13 +90,10 @@
           />
         </div>
 
-        <el-table :data="filteredTasks" stripe style="width: 100%">
-          <el-table-column prop="id" label="任务ID" width="120" />
+        <el-table :data="filteredTasks" stripe style="width: 100%" empty-text="暂无考核任务">
+          <el-table-column prop="task_id" label="任务ID" width="140" show-overflow-tooltip />
           <el-table-column prop="name" label="任务名称" min-width="200" />
-          <el-table-column prop="startDate" label="开始日期" width="120" />
-          <el-table-column prop="endDate" label="结束日期" width="120" />
-          <el-table-column prop="selfReviewDeadline" label="自评截止" width="120" />
-          <el-table-column prop="managerReviewDeadline" label="评分截止" width="120" />
+          <el-table-column prop="period" label="周期" width="100" />
           <el-table-column label="状态" width="100">
             <template #default="{ row }">
               <el-tag :type="getTaskStatusType(row.status)">
@@ -110,7 +107,7 @@
                 link
                 type="primary"
                 size="small"
-                @click="viewTaskDetails(row.id)"
+                @click="viewTaskDetails(row.task_id)"
               >
                 查看详情
               </el-button>
@@ -119,7 +116,7 @@
                 link
                 type="success"
                 size="small"
-                @click="confirmTask(row.id)"
+                @click="confirmTask(row.task_id)"
               >
                 确认成绩
               </el-button>
@@ -132,7 +129,7 @@
                 link
                 type="warning"
                 size="small"
-                @click="openExecTool('exec_remind', row.id)"
+                @click="openExecTool('exec_remind', row.task_id)"
               >
                 催办
               </el-button>
@@ -140,7 +137,7 @@
                 link
                 type="warning"
                 size="small"
-                @click="openExecTool('exec_export', row.id)"
+                @click="openExecTool('exec_export', row.task_id)"
               >
                 导出
               </el-button>
@@ -148,7 +145,7 @@
                 link
                 type="danger"
                 size="small"
-                @click="deleteTask(row.id)"
+                @click="deleteTask(row.task_id)"
               >
                 删除
               </el-button>
@@ -164,38 +161,29 @@
             <h2>最近的考核记录</h2>
             <p>查看员工的最新考核结果和评分</p>
           </div>
-          <el-button text type="primary" @click="router.push('/performance/records')">
+          <el-button text type="primary" @click="router.push('/performance/scheme-filling')">
             查看全部
           </el-button>
         </div>
 
         <el-table :data="recentRecords" stripe empty-text="暂无考核记录">
-          <el-table-column prop="employeeName" label="员工" width="150" />
-          <el-table-column prop="departmentName" label="部门" width="150" />
-          <el-table-column prop="taskName" label="考核任务" min-width="200" />
-          <el-table-column label="自评状态" width="120">
+          <el-table-column prop="employee_name" label="员工" width="150" />
+          <el-table-column prop="name" label="考核任务" min-width="200" />
+          <el-table-column prop="period" label="周期" width="100" />
+          <el-table-column label="状态" width="140">
             <template #default="{ row }">
-              <el-tag :type="getRecordStatusType(row.selfReviewStatus)">
-                {{ getRecordStatusLabel(row.selfReviewStatus) }}
+              <el-tag :type="getRecordStatusType(row.status)">
+                {{ getRecordStatusLabel(row.status) }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="评分状态" width="120">
+          <el-table-column label="归属" width="90">
             <template #default="{ row }">
-              <el-tag :type="getRecordStatusType(row.managerReviewStatus)">
-                {{ getRecordStatusLabel(row.managerReviewStatus) }}
-              </el-tag>
+              <el-tag v-if="row.is_own" type="info" effect="plain">本人</el-tag>
+              <span v-else class="muted">下属</span>
             </template>
           </el-table-column>
-          <el-table-column label="最终等级" width="100">
-            <template #default="{ row }">
-              <span v-if="row.finalGrade" class="grade-badge" :class="`grade-${row.finalGrade}`">
-                {{ row.finalGrade }}
-              </span>
-              <span v-else class="grade-badge grade-pending">待评</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="180" fixed="right">
+          <el-table-column label="操作" width="120" fixed="right">
             <template #default="{ row }">
               <el-button
                 link
@@ -213,6 +201,12 @@
 
     <!-- 发起任务对话框 -->
     <el-dialog v-model="showCreateTaskDialog" title="发起考核任务" width="600px">
+      <el-alert
+        title="考核任务需绑定员工，并按方案冻结配置快照，否则主管提交评分时会失败。"
+        type="info"
+        :closable="false"
+        class="mb12"
+      />
       <el-form :model="createTaskForm" label-width="120px">
         <el-form-item label="任务名称" required>
           <el-input
@@ -221,6 +215,42 @@
           />
         </el-form-item>
         <el-form-item label="考核周期" required>
+          <el-input
+            v-model="createTaskForm.period"
+            placeholder="202611"
+          />
+          <div class="hint">
+            ⚠️ 本入口**仅支持月度周期**（格式 <b>YYYYMM</b>，如 202611）。
+            季度 / 年度考核请到
+            <el-button link type="primary" @click="goSchemeManagement">
+              方案管理 → 配置覆盖与发起考核
+            </el-button>
+          </div>
+        </el-form-item>
+        <el-form-item label="被评员工" required>
+          <el-select
+            v-model="createTaskForm.targetEmployeeIds"
+            multiple
+            filterable
+            placeholder="选择被考核的员工"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="emp in candidateEmployees"
+              :key="emp.id"
+              :label="`${emp.name}（${emp.departmentName || '未分部门'}）`"
+              :value="emp.id"
+            />
+          </el-select>
+          <div class="hint">
+            ⚠️ 需要**方案覆盖**的员工请到
+            <el-button link type="primary" @click="goSchemeManagement">
+              方案管理 → 配置覆盖与发起考核
+            </el-button>
+            （那里会按方案版本自动分组冻结快照）。
+          </div>
+        </el-form-item>
+        <el-form-item label="考核周期起止" required>
           <el-date-picker
             v-model="createTaskForm.dateRange"
             type="daterange"
@@ -244,14 +274,6 @@
             type="date"
             placeholder="选择日期"
             style="width: 100%"
-          />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input
-            v-model="createTaskForm.description"
-            type="textarea"
-            placeholder="任务说明..."
-            rows="3"
           />
         </el-form-item>
       </el-form>
@@ -279,6 +301,15 @@ import { useRouter } from 'vue-router'
 import TrendReportPanel from '@/components/TrendReportPanel.vue'
 import ExecToolConfirmDialog from '@/components/ExecToolConfirmDialog.vue'
 import type { ExecToolName } from '@/api/p0p1'
+import { http } from '@/api/http'
+import {
+  computeStats,
+  confirmTask as confirmTaskApi,
+  createPerformanceTask as createPerformanceTaskApi,
+  fetchDashboard,
+  type PerformanceRecordRow,
+  type PerformanceTaskRow,
+} from '@/api/performanceDashboard'
 
 const router = useRouter()
 const loading = ref(false)
@@ -308,47 +339,85 @@ const stats = reactive({
   pendingManagerReview: 0,
 })
 
-// 模拟数据
-const tasks = ref<any[]>([
-  {
-    id: 'T001',
-    name: '2026年Q4绩效考核',
-    startDate: '2026-10-01',
-    endDate: '2026-12-31',
-    selfReviewDeadline: '2027-01-10',
-    managerReviewDeadline: '2027-01-15',
-    status: 'created',
-  },
-])
-
-const recentRecords = ref<any[]>([
-  {
-    id: 'R001',
-    employeeName: '张三',
-    departmentName: '运营中心',
-    taskName: '2026年Q4绩效考核',
-    selfReviewStatus: 'submitted',
-    managerReviewStatus: 'submitted',
-    finalGrade: 'A',
-  },
-  {
-    id: 'R002',
-    employeeName: '李四',
-    departmentName: '仓储部',
-    taskName: '2026年Q4绩效考核',
-    selfReviewStatus: 'submitted',
-    managerReviewStatus: 'not_started',
-    finalGrade: null,
-  },
-])
+/**
+ * ⚠️⚠️ **2026-11-24：这个页面原来是纯假数据页**
+ *
+ * 之前这里是写死的数组：
+ * ```ts
+ * const tasks = ref<any[]>([{ id: 'T001', name: '2026年Q4绩效考核', ... }])
+ * const recentRecords = ref<any[]>([{ id: 'R001', employeeName: '张三', ... }])
+ * ```
+ * 以及三处 `// 这里应该调用后端 API ...` 的 TODO
+ * ⇒ **一个请求都没发**。
+ *
+ * ⚠️ **为什么这是最坏的一类缺陷**
+ * 页面**看起来完全正常**：有数据、有按钮、有成功提示。
+ * ⇒ 验收的人会以为「系统跑通了」，
+ *    而实际数据库里什么都没变。
+ * （同类问题在 `EmployeeSelfReview.vue` 出现过 —— BUG-R6-41，已修）
+ *
+ * ⇒ 现在真实调后端，且由 `frontend/tests/performance-dashboard-no-mock.test.ts`
+ *   锁住「不许退回假数据」。
+ */
+const tasks = ref<PerformanceTaskRow[]>([])
+const recentRecords = ref<PerformanceRecordRow[]>([])
 
 const createTaskForm = reactive({
   name: '',
-  dateRange: [],
-  selfReviewDeadline: null,
-  managerReviewDeadline: null,
-  description: '',
+  /** ⚠️ **周期是紧凑格式** —— 后端权威格式是 `202611` / `2026Q4` / `2026` */
+  period: '',
+  /** ⚠️ **必须有被评员工** —— 后端 400「被评员工列表不能为空」 */
+  targetEmployeeIds: [] as string[],
+  dateRange: [] as string[],
+  selfReviewDeadline: null as string | null,
+  managerReviewDeadline: null as string | null,
 })
+
+/**
+ * 可选员工列表。
+ *
+ * ⚠️ **数据来源** `/system/employees`（需管理员权限）
+ * ⇒ 非 HR/管理员打开这个对话框时列表是空的，
+ *    此时应引导到「方案管理」页（那里 HR 有 `/schemes/scheme-coverage`）。
+ */
+const candidateEmployees = ref<{
+  id: string
+  name: string
+  departmentName?: string
+}[]>([])
+
+/** 跳到方案管理页（方案考核的正确入口）。 */
+function goSchemeManagement() {
+  showCreateTaskDialog.value = false
+  router.push('/system/performance-schemes')
+}
+
+/**
+ * 打开「发起考核任务」对话框，并加载可选员工。
+ *
+ * ⚠️ **员工列表来自 `/system/employees`** —— 需要管理员/HR 权限。
+ * 非 HR 打开时列表会为空 ⇒ 引导到方案管理页。
+ */
+async function openCreateTask() {
+  showCreateTaskDialog.value = true
+  if (candidateEmployees.value.length) return
+  try {
+    // ⚠️ **响应形状**：`{records, total, pageNo, pageSize}`，
+    //   员工名字段是 `realName`（不是 `name`），部门是 `departmentName`。
+    const res = await http.get<unknown, {
+      records?: { id: string; realName: string; departmentName?: string }[]
+    }>('/system/employees?pageSize=200')
+    candidateEmployees.value = (res?.records ?? []).map((e) => ({
+      id: e.id,
+      name: e.realName,
+      departmentName: e.departmentName,
+    }))
+  } catch {
+    // ⚠️ **静默降级** —— 没权限拿不到列表不该弹错误框打断流程，
+    //    用户仍可去方案管理页发起。
+    candidateEmployees.value = []
+  }
+}
 
 // 过滤任务
 const filteredTasks = computed(() => {
@@ -356,17 +425,22 @@ const filteredTasks = computed(() => {
   return tasks.value.filter(
     (task) =>
       task.name.includes(searchText.value) ||
-      task.id.includes(searchText.value)
+      task.task_id.includes(searchText.value) ||
+      task.period.includes(searchText.value)
   )
 })
 
 // 获取任务状态标签
+/**
+ * ⚠️ **状态值以 `AssessmentTask.status` 为准**
+ * （`created` / `confirmed` / `archived` / `draft`）
+ */
 function getTaskStatusLabel(status: string): string {
   const statusMap: Record<string, string> = {
-    created: '创建中',
-    in_progress: '进行中',
-    confirmed: '已确认',
-    completed: '已完成',
+    draft: '草稿',
+    created: '已创建',
+    confirmed: '已定稿',
+    archived: '已归档',
   }
   return statusMap[status] || status
 }
@@ -374,21 +448,28 @@ function getTaskStatusLabel(status: string): string {
 // 获取任务状态类型
 function getTaskStatusType(status: string): string {
   const typeMap: Record<string, string> = {
-    created: 'info',
-    in_progress: 'warning',
+    draft: 'info',
+    created: 'warning',
     confirmed: 'success',
-    completed: 'success',
+    archived: 'success',
   }
   return typeMap[status] || 'info'
 }
 
-// 获取记录状态标签
+/**
+ * 获取记录状态标签
+ *
+ * ⚠️ **口径与 `scheme_workflow.py` 的状态机完全一致**
+ * —— 这套值同时用于列表和看板统计，不能各写一套。
+ */
 function getRecordStatusLabel(status: string): string {
   const statusMap: Record<string, string> = {
     not_started: '未开始',
-    in_progress: '进行中',
-    submitted: '已提交',
-    confirmed: '已确认',
+    self_review_open: '填报中',
+    self_review_submitted: '待主管评分',
+    manager_review_submitted: '待主管面谈',
+    confirmed: '已定稿',
+    archived: '已归档',
   }
   return statusMap[status] || status
 }
@@ -397,9 +478,11 @@ function getRecordStatusLabel(status: string): string {
 function getRecordStatusType(status: string): string {
   const typeMap: Record<string, string> = {
     not_started: 'info',
-    in_progress: 'warning',
-    submitted: 'success',
+    self_review_open: 'info',
+    self_review_submitted: 'warning',
+    manager_review_submitted: 'warning',
     confirmed: 'success',
+    archived: 'success',
   }
   return typeMap[status] || 'info'
 }
@@ -414,19 +497,11 @@ async function loadDashboard() {
   loading.value = true
   error.value = ''
   try {
-    // 这里应该调用后端 API 获取数据
-    stats.activeTasks = tasks.value.filter((t) => t.status !== 'completed').length
-    stats.completedRecords = recentRecords.value.filter(
-      (r) => r.finalGrade
-    ).length
-    stats.pendingSelfReview = recentRecords.value.filter(
-      (r) => r.selfReviewStatus === 'not_started'
-    ).length
-    stats.pendingManagerReview = recentRecords.value.filter(
-      (r) =>
-        r.managerReviewStatus === 'not_started' &&
-        r.selfReviewStatus === 'submitted'
-    ).length
+    // ⚠️ **真实后端数据**（2026-11-24 修）—— 之前这里是假数据。
+    const data = await fetchDashboard()
+    tasks.value = data.tasks
+    recentRecords.value = data.records
+    Object.assign(stats, computeStats(data.tasks, data.records))
   } catch (err) {
     error.value = err instanceof Error ? err.message : '未知错误'
     ElMessage.error(error.value)
@@ -441,6 +516,22 @@ async function createTask() {
     ElMessage.warning('请输入任务名称')
     return
   }
+  if (!createTaskForm.period) {
+    ElMessage.warning('请输入考核周期（如 202611）')
+    return
+  }
+  // ⚠️ **只支持月度周期** —— 后端 `scheme_service.resolve` 默认
+  //   `period_type="monthly"`，且方案绑定是按 period_type 匹配的
+  //   ⇒ 传 "2026Q4" 匹配不到任何已发布方案 ⇒ 409。
+  //   ⇒ 前端先拦一道，给出可操作的提示而不是让后端报错。
+  if (!/^\d{6}$/.test(createTaskForm.period)) {
+    ElMessage.warning('考核周期格式应为 YYYYMM（如 202611）；季度/年度请到方案管理发起')
+    return
+  }
+  if (!createTaskForm.targetEmployeeIds.length) {
+    ElMessage.warning('请选择被评员工')
+    return
+  }
   if (!createTaskForm.dateRange || createTaskForm.dateRange.length !== 2) {
     ElMessage.warning('请选择考核周期')
     return
@@ -453,30 +544,41 @@ async function createTask() {
     ElMessage.warning('请选择评分截止日期')
     return
   }
+  // ⚠️ **必须自评早于主管评分** —— 后端会拒（400）
+  if (createTaskForm.selfReviewDeadline >= createTaskForm.managerReviewDeadline) {
+    ElMessage.warning('自评截止日期必须早于主管评分截止日期')
+    return
+  }
 
   creating.value = true
   try {
-    // 这里应该调用后端 API 创建任务
-    const newTask = {
-      id: `T${Math.random().toString().slice(2, 6)}`,
-      name: createTaskForm.name,
-      startDate: createTaskForm.dateRange[0],
-      endDate: createTaskForm.dateRange[1],
-      selfReviewDeadline: createTaskForm.selfReviewDeadline,
-      managerReviewDeadline: createTaskForm.managerReviewDeadline,
-      status: 'created',
-    }
-    tasks.value.push(newTask)
-    ElMessage.success('考核任务已发起')
+    // ⚠️ **真实后端调用**（2026-11-24 修）——
+    //   之前这里只往本地数组 push 一条假数据，然后弹「考核任务已发起」，
+    //   **数据库里什么都没变**（比不接还糟：它骗人）。
+    const result = await createPerformanceTaskApi({
+      title: createTaskForm.name,
+      // ⚠️ **已经是 YYYYMM**（上面正则校验过），不要再清洗
+      period: createTaskForm.period,
+      target_employee_ids: createTaskForm.targetEmployeeIds,
+      start_date: createTaskForm.dateRange[0],
+      end_date: createTaskForm.dateRange[1],
+      self_review_deadline: createTaskForm.selfReviewDeadline,
+      manager_review_deadline: createTaskForm.managerReviewDeadline,
+    })
+    ElMessage.success(result?.message || `已为 ${result?.target_count ?? 0} 人发起考核`)
     showCreateTaskDialog.value = false
 
     // 重置表单
     createTaskForm.name = ''
+    createTaskForm.period = ''
+    createTaskForm.targetEmployeeIds = []
     createTaskForm.dateRange = []
     createTaskForm.selfReviewDeadline = null
     createTaskForm.managerReviewDeadline = null
-    createTaskForm.description = ''
+
+    await loadDashboard()
   } catch (err) {
+    // ⚠️ **失败必须让用户看到** —— 静默失败 = 「看起来成功了」
     ElMessage.error(err instanceof Error ? err.message : '发起任务失败')
   } finally {
     creating.value = false
@@ -485,12 +587,17 @@ async function createTask() {
 
 // 查看任务详情
 function viewTaskDetails(taskId: string) {
-  router.push(`/performance/tasks/${taskId}`)
+  // ⚠️ **2026-11-24 修**：之前跳 `/performance/tasks/{id}`，
+  //   而**这个路由根本不存在** ⇒ 点「查看详情」进空白页。
+  //   任务详情在「按方案填报与评价」页里（列表可点进记录抽屉）。
+  router.push('/performance/scheme-filling')
 }
 
 // 查看记录详情
 function viewRecordDetails(recordId: string) {
-  router.push(`/performance/records/${recordId}`)
+  // ⚠️ **2026-11-24 修**：之前跳 `/performance/records/{id}`，该路由也不存在。
+  //   记录详情统一在「按方案填报与评价」页的抽屉里。
+  router.push('/performance/scheme-filling')
 }
 
 // 确认成绩
@@ -505,14 +612,16 @@ async function confirmTask(taskId: string) {
         type: 'warning',
       } as any
     )
-    // 这里应该调用后端 API 确认成绩
-    const task = tasks.value.find((t) => t.id === taskId)
-    if (task) {
-      task.status = 'confirmed'
-    }
-    ElMessage.success('成绩已确认')
-  } catch {
-    // 用户取消
+    // ⚠️ **真实后端调用**（2026-11-24 修）——
+    //   之前只改本地 `task.status`，弹「成绩已确认」，数据库没变。
+    const result = await confirmTaskApi(taskId)
+    ElMessage.success(result?.message || '成绩已确认')
+    await loadDashboard()
+  } catch (err) {
+    // ⚠️ **区分「用户取消」与「真的失败」** ——
+    //   取消是 'cancel'，失败是 Error ⇒ 只后者要提示。
+    if (err === 'cancel' || err === 'close') return
+    ElMessage.error(err instanceof Error ? err.message : '确认成绩失败')
   }
 }
 
@@ -528,11 +637,14 @@ async function deleteTask(taskId: string) {
         type: 'danger',
       } as any
     )
-    // 这里应该调用后端 API 删除任务
-    tasks.value = tasks.value.filter((t) => t.id !== taskId)
-    ElMessage.success('任务已删除')
-  } catch {
-    // 用户取消
+    // ⚠️ **后端没有删除任务的端点**（2026-11-24 核对 `performance.py` 确认），
+    //   过去这里只从前端数组里删掉一行，弹「任务已删除」——
+    //   **数据库里任务还在** ⇒ 刷新页面又回来了。
+    // ⇒ 现在**明确告知**，而不是假装删成功。
+    ElMessage.warning('后端暂未开放删除考核任务的接口，任务未被删除。如需清理请在方案管理页停用对应方案。')
+  } catch (err) {
+    if (err === 'cancel' || err === 'close') return
+    ElMessage.error(err instanceof Error ? err.message : '删除任务失败')
   }
 }
 
