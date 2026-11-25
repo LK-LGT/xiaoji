@@ -17,12 +17,26 @@ pytest 全是「进程内 + 依赖覆盖 + 内存 SQLite」，它**测不到**�
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 from typing import Any
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000").rstrip("/")
+
+# ⚠️ 测试账号口令**不在源码里**（2026-11-24 已移除明文常量）。
+#    ⇒ 从 ``TEST_USER_PASSWORDS`` 环境变量读（JSON，key=用户名），
+#      与后端 ``routes/auth.py`` 的读取口径**完全一致**。
+#    ⇒ 没配 ⇒ 四个账号都登不上 ⇒ 脚本会明确报「登录失败」。
+_LOGIN_PASSWORDS: dict[str, str] = {}
+try:
+    _raw = os.environ.get("TEST_USER_PASSWORDS", "")
+    _parsed = json.loads(_raw) if _raw else {}
+    if isinstance(_parsed, dict):
+        _LOGIN_PASSWORDS = {str(k): str(v) for k, v in _parsed.items()}
+except (json.JSONDecodeError, TypeError):
+    _LOGIN_PASSWORDS = {}
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -125,18 +139,16 @@ def main() -> int:
     # ---- 1. 真实登录 ----
     print("\n[1] 真实登录（拿真 token）")
     tokens: dict[str, str | None] = {}
-    for user, pwd in (
-        ("admin", "admin123"),
-        ("manager", "manager123"),
-        ("leader", "leader123"),
-        ("employee", "employee123"),
-    ):
-        tok = login(user, pwd)
+    # ⚠️ 2026-11-24（B2）：``manager`` / ``leader`` 改名为真实身份
+    #    （那两个别名撞 RBAC 角色名，且两个不同的人权限完全一样 ⇒ 测不出差别）
+    for user in ("admin", "yangfei", "biyumi", "employee"):
+        pwd = _LOGIN_PASSWORDS.get(user, "")
+        tok = login(user, pwd) if pwd else None
         tokens[user] = tok
         check(f"登录 {user}", tok is not None, "未拿到 accessToken")
 
     hr = tokens["admin"]
-    mgr = tokens["manager"]
+    mgr = tokens["yangfei"]
     emp = tokens["employee"]
     if not hr or not mgr or not emp:
         print("\n登录失败，终止。")

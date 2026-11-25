@@ -81,10 +81,11 @@
 
 ### ✅ 用户认证
 ```
-测试账号:
-├─ admin / admin123 (全部权限)
-├─ manager / manager123 (部门级权限)
-└─ employee / employee123 (员工权限)
+测试账号（口令由环境变量 TEST_USER_PASSWORDS 注入，不在源码里）:
+├─ admin      (林雅静，全部权限)
+├─ yangfei    (杨飞，总经理，管 10 个部门)
+├─ biyumi     (别嘧咪，总经理，管 6 个部门)
+└─ employee   (李凯，员工权限)
 ```
 
 ### ✅ 工作空间

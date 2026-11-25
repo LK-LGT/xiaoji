@@ -7,9 +7,59 @@
   python run-full-stack.py --frontend   # 仅启动前端
 """
 
+import socket
 import subprocess
 import sys
 from pathlib import Path
+
+
+def lan_ips() -> list[str]:
+    """列出本机可用的局域网 IPv4 地址。
+
+    为什么需要：其他电脑访问本机服务时**不能**用 `localhost`
+    （那指向访问者自己的电脑）。必须用本机的局域网 IP，
+    否则必然连不上。这个地址要在启动时明确打印出来。
+    """
+    ips: set[str] = set()
+    try:
+        # 常规做法：连一个外网地址，拿到系统选用的出口网卡 IP。
+        # 这里不发包，只做路由决策，不会真的产生网络流量。
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(0.2)
+            sock.connect(("8.8.8.8", 80))
+            ips.add(sock.getsockname()[0])
+    except OSError:
+        pass
+
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                ips.add(ip)
+    except OSError:
+        pass
+
+    return sorted(ips)
+
+
+def print_access_info(frontend_port: int = 5180, backend_port: int = 8000) -> None:
+    """打印本机与局域网访问地址。"""
+    print("\n" + "-"*80)
+    print("🌐 访问地址")
+    print("-"*80)
+    print(f"  本机前端: http://localhost:{frontend_port}")
+    print(f"  本机 API: http://localhost:{backend_port}/docs")
+
+    ips = lan_ips()
+    if not ips:
+        print("\n  ⚠️ 未探测到局域网地址：请确认已连接网络（有线/Wi-Fi）。")
+        print("     其它电脑请用「ipconfig」查到的 IPv4 地址访问。")
+    else:
+        print("\n  📡 其它电脑请用以下地址访问（不要用 localhost）：")
+        for ip in ips:
+            print(f"     前端: http://{ip}:{frontend_port}")
+            print(f"     API:  http://{ip}:{backend_port}/docs")
+    print("-"*80 + "\n")
 
 
 def run_backend():
@@ -68,6 +118,7 @@ def run_frontend():
         print(f"执行命令: {' '.join(cmd)}")
         print(f"工作目录: {frontend_dir}")
         print("\n🌐 前端服务启动中... (http://localhost:5180)")
+        print_access_info()
 
         subprocess.run(cmd, cwd=frontend_dir)
         return True
@@ -108,7 +159,8 @@ def main():
         print("\n然后访问:")
         print("  🌐 前端: http://localhost:5180")
         print("  📡 后端 API 文档: http://localhost:8000/docs")
-        print("\n或者直接运行:")
+        print_access_info()
+        print("或者直接运行:")
         print("  python run-full-stack.py --backend")
         print("  python run-full-stack.py --frontend")
         print("\n" + "="*80)

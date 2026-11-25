@@ -82,11 +82,11 @@ availableWorkspaces = WORKSPACES.filter(
 
 使用以下账号测试模块切换：
 
-| 账号 | 密码 | 预期工作空间 | 能否切换 |
+| 账号 | 身份 | 预期工作空间 | 能否切换 |
 |------|------|------------|--------|
-| admin | admin123 | 全部6个 | ✅ 是 |
-| manager | manager123 | 4个（dept/leader/emp/perf） | ❌ 否 |
-| employee | employee123 | 2个（emp/perf） | ❌ 否 |
+| admin | 林雅静 | 全部6个 | ✅ 是 |
+| yangfei | 杨飞（总经理）| 4个（dept/leader/emp/perf） | ❌ 否 |
+| employee | 李凯（员工）| 2个（emp/perf） | ❌ 否 |
 
 ## 🎯 快速修复步骤
 

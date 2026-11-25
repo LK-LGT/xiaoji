@@ -59,11 +59,16 @@ npm run dev
 
 ### 登录凭证
 
-| 账号 | 密码 | 角色 | 部门 |
+| 账号 | 角色 | 部门 | 说明 |
 |------|------|------|------|
-| `admin` | `admin123` | 系统管理员 | HR 部 |
-| `manager` | `manager123` | 部门主管 | 销售部 |
-| `employee` | `employee123` | 普通员工 | 销售部 |
+| `admin` | 系统管理员 | 人事行政部 | 林雅静 |
+| `yangfei` | 总经理 | 总经办 | 杨飞（管 10 个部门）|
+| `biyumi` | 总经理 | 总经办 | 别嘧咪（管 6 个部门）|
+| `employee` | 普通员工 | AI技术部 | 李凯 |
+
+> ⚠️ **口令不在源码里**（2026-11-24）⇒ 由环境变量 `TEST_USER_PASSWORDS` 注入，
+> 且 `PASSWORD_LOGIN_ENABLED=true` + `TEST_USERS_ENABLED=true` 时才可用。
+> 生产环境**默认全关**，只走飞书免登。
 
 ### 内部测试账号（用于 API 测试）
 

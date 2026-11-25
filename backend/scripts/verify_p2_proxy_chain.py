@@ -15,12 +15,19 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 from typing import Any
 
 ORIGIN = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:5180").rstrip("/")
+
+# ⚠️ 测试账号口令**不在源码里**（2026-11-24 已移除明文常量）。
+#    ⇒ 从环境变量读；没配就用一个**必然失败**的占位值，
+#      让脚本在登录那步明确报错，而不是偷偷用弱口令。
+LOGIN_USER = os.getenv("VERIFY_ADMIN_USER", "admin")
+LOGIN_PASSWORD = os.getenv("VERIFY_ADMIN_PASSWORD", "")
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
@@ -77,7 +84,7 @@ def main() -> int:
 
     print("\n[2] 登录（走代理）")
     status, body = call("POST", "/auth/login", body={
-        "username": "admin", "password": "admin123",
+        "username": LOGIN_USER, "password": LOGIN_PASSWORD,
     })
     check("登录 200", status == 200, f"status={status} body={str(body)[:200]}")
     data = body.get("data") if isinstance(body, dict) else None

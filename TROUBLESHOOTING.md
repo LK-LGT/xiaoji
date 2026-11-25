@@ -150,10 +150,17 @@ npm run dev
 
 ## 测试账号
 
-| 账号 | 密码 |
+| 账号 | 身份 |
 |------|------|
-| admin | admin123 |
-| manager | manager123 |
+| admin | 林雅静（系统管理员）|
+| yangfei | 杨飞（总经理）|
+| biyumi | 别嘧咪（总经理）|
+| employee | 李凯（普通员工）|
+
+> ⚠️ **口令不在源码里** ⇒ 需设环境变量 `TEST_USER_PASSWORDS`，
+> 并开启 `PASSWORD_LOGIN_ENABLED=true` + `TEST_USERS_ENABLED=true`。
+> 未开启时 `/v1/auth/login` 返回 **503** `PASSWORD_LOGIN_DISABLED`
+> ⇒ 这是**预期行为**，不是故障 ⇒ 生产只走飞书免登。
 
 ---
 

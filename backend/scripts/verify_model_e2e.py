@@ -93,8 +93,17 @@ def post(path: str, payload: dict, timeout: int = 180) -> dict:
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 ADMIN_USER = os.getenv("VERIFY_ADMIN_USER", "admin")
-# ⚠️ 测试账号口令见 `backend/app/routes/auth.py::_TEST_USER_PLAINTEXT`
-ADMIN_PASSWORD = os.getenv("VERIFY_ADMIN_PASSWORD", "admin123")
+# ⚠️ 测试账号口令**不在源码里**（2026-11-24 已移除明文常量）。
+#    ⇒ 从环境变量读；没配就明确报错，而不是悄悄用一个默认弱口令。
+#    ⇒ 口令来源与 `backend/app/routes/auth.py` 的 TEST_USER_PASSWORDS 一致。
+ADMIN_PASSWORD = os.getenv("VERIFY_ADMIN_PASSWORD", "")
+if not ADMIN_PASSWORD:
+    raise SystemExit(
+        "缺少 VERIFY_ADMIN_PASSWORD 环境变量。\n"
+        "  测试账号口令已不在源码里（2026-11-24）⇒ 请显式提供：\n"
+        '    $env:VERIFY_ADMIN_PASSWORD = "<口令>"  # PowerShell\n'
+        "  同时后端需已配置 TEST_USER_PASSWORDS 并开启 TEST_USERS_ENABLED。"
+    )
 
 
 def _backend_post(path: str, payload: dict, *, token: str = "", timeout: int = 180) -> dict:
