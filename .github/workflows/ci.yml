@@ -121,7 +121,33 @@ jobs:
         run: python backend/scripts/check_production_posture.py
 
       - name: 后端单元与集成测试
-        run: python -m pytest backend/app/tests -q --tb=short -p no:cacheprovider
+        # ⚠️ **必须落一份失败报告**（2026-11-25）
+        #   GitHub 的 job log 需要 admin 权限才能下 ⇒ 排查时抓瞎。
+        #   ⇒ 这里把失败详情写进文件，再用 artifact 上传
+        #   ⇒ 任何人（不用 admin）都能下载看。
+        run: |
+          python -m pytest backend/app/tests -q --tb=short -p no:cacheprovider \
+            --junitxml=data/_pytest_report.xml || {
+            echo "::group::pytest 失败详情"
+            python - <<'PY'
+            import xml.etree.ElementTree as ET
+            from pathlib import Path
+            p = Path("data/_pytest_report.xml")
+            if not p.exists():
+                print("（没有生成 junit 报告）")
+                raise SystemExit(0)
+            root = ET.parse(p).getroot()
+            for case in root.iter("testcase"):
+                for child in case:
+                    if child.tag in ("failure", "error"):
+                        print("=" * 70)
+                        print(f"FAILED: {case.get('classname')}::{case.get('name')}")
+                        print((child.get("message") or "")[:2000])
+                        print((child.text or "")[:3000])
+            PY
+            echo "::endgroup::"
+            exit 1
+          }
 
       - name: Alembic 迁移 —— 升级到 head
         working-directory: backend
@@ -233,7 +259,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backend-pytest-report
-          path: backend/.pytest_cache/
+          # ⚠️ **路径修正**（2026-11-25）
+          #   原来写的是 ``backend/.pytest_cache/`` ——
+          #   但 pytest 的 cache 目录在**仓库根**（rootdir），
+          #   而且 CI 用了 ``-p no:cacheprovider`` ⇒ **根本不会生成**。
+          #   ⇒ 这个 artifact 一直是空的 ⇒ 挂了也看不到任何信息。
+          #
+          # ⇒ 改成上传上面那一步生成的 junit XML（真的会有内容）。
+          path: |
+            data/_pytest_report.xml
+            data/_pytest_test.db
           retention-days: 7
           if-no-files-found: ignore
 
