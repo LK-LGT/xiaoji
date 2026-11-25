@@ -148,7 +148,13 @@ for _key, _value in _TEST_SCHEDULER_OFF.items():
 # ⚠️ **为什么用「直接赋值」而不是 setdefault**
 #   同上 —— 必须**强制**覆盖，否则 CI 注入的 DATABASE_URL 会赢。
 _TEST_DB_PATH = ROOT / "data" / "_pytest_test.db"
-os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH}"
+# ⚠️ **必须用 ``as_posix()``**（2026-11-25）
+#   SQLite URL 里的路径用正斜杠。
+#   Windows 上 ``str(Path)`` 得到 ``D:\a\b\data\_pytest_test.db`` ——
+#   反斜杠在 SQLite URL 里是**转义字符**（``\d`` 不是合法路径），
+#   在 Linux 上则是正斜杠 ⇒ 同一份代码两边行为不一致。
+#   ⇒ 统一用 ``as_posix()``，两边都得到正斜杠。
+os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH.as_posix()}"
 # ⚠️ **测试库要能自己建表** —— 否则又回到「no such table」。
 #    （这只影响**测试进程**，与生产的 Alembic 路线不冲突。）
 os.environ["AUTO_CREATE_TABLES"] = "true"
