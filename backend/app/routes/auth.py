@@ -20,7 +20,10 @@ from ..core.db import get_db
 from ..domain.models import Employee, FeishuIdentity, SystemAdmin
 from ..services import password_hasher
 from ..services.access_control import build_access_context
-from ..services.department_modules import enabled_modules_for_employee
+from ..services.department_modules import (
+    build_module_menu,
+    enabled_modules_for_employee,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,47 +79,108 @@ class LoginRequest(BaseModel):
 #      - 一旦将来改为从环境变量/密钥管理读取口令，只需改这一处。
 # ─────────────────────────────────────────────────────────────
 
-# 测试账号的明文口令（仅用于导入时算一次哈希）。
-# ⚠️ 这些口令必须能被自动化测试登录，因此只能留在源码里。
-#    生产部署应通过环境变量覆盖（见 _TEST_USER_PLAINTEXT_ENV）。
-_TEST_USER_PLAINTEXT: dict[str, str] = {
-    "admin": "admin123",
-    "manager": "manager123",
-    "leader": "leader123",
-    "employee": "employee123",
+# ⚠️⚠️⚠️ **源码里不再有任何明文口令**（2026-11-24）
+#
+# 过去这里是：
+#     _TEST_USER_PLAINTEXT = {"admin": "admin123", "manager": "manager123", ...}
+# ⇒ **任何人 clone 仓库就能 grep 出全套口令**，
+#   而这些账号映射的是**真实员工**（林雅静/杨飞/别嘧咪/李凯）
+#   ⇒ 拿到口令就能以真实员工身份登录 ⇒ 直接违反
+#   「只允许公司内真实存在、组织架构内同步成功的员工账号进入系统」。
+#
+# ⇒ 现在口令**只能**来自环境变量 ``TEST_USER_PASSWORDS``（JSON）。
+#   没配 ⇒ 测试账号**一律不存在** ⇒ 源码里搜不到任何口令。
+#
+# ⚠️ **为什么保留测试账号这个机制**
+# 自动化测试需要一条**绕过飞书 OAuth**的登录通路（CI 里没有飞书凭证）。
+# ⇒ 但它必须满足：
+#   ① 口令不在源码里；
+#   ② 生产环境**完全关闭**（``test_users_enabled=False``）；
+#   ③ 映射的仍然是**真实员工** ⇒ 权限与真实登录完全同路。
+_TEST_USER_PLAINTEXT_ENV = "TEST_USER_PASSWORDS"
+
+#: 测试账号 → 真实员工 ID（飞书同步落库）。
+#:
+#: ⚠️ **必须与真实库一致** —— 登录时 token 里写的是这个 id，
+#:    ``get_current_user`` 按它查库，对不上就是 401（而不是 403）。
+#: ⚠️ 这四人都是**公司内真实在职员工**，且飞书身份齐全
+#:    （open_id / union_id / user_id 三条）⇒ 不是凭空捏造的账号。
+#:
+#: ⚠️⚠️ **2026-11-24（B2）：别名改成「真实身份」，不再是「角色标签」**
+#:
+#: **过去**是 ``admin`` / ``manager`` / ``leader`` / ``employee``。
+#: ⚠️ **为什么这组名字有问题**
+#:   ① ``manager`` 与 ``leader`` **两个不同的人，权限完全一样**
+#:      —— 实测两人都是「总经理 / 总经办」，``access_control`` 给的角色集
+#:      与权限集**逐项相同**（零差异）⇒ 测试时根本区分不出来，
+#:      写「主管权限」还是「直属领导权限」的用例**测不出差别**。
+#:   ② ``manager`` 这个词在系统里**另有所指** ——
+#:      RBAC 角色表里的 ``manager`` 是「有直属下属」的角色，
+#:      而 ``department_leader`` 是「部门 leader_id」的角色。
+#:      用同名做登录名 ⇒ **登录名与角色名撞车** ⇒ 极易误判。
+#:   ③ ``leader`` 的中文注释写「直属领导」，但此人岗位是**总经理**，
+#:      根本不是任何人的直属上级（``manager_id`` 为空）⇒ **语义就是错的**。
+#:
+#: ⚠️ **改成什么**
+#: 改用**真实身份**（飞书 ``login_account`` 的同款命名）⇒ 一眼可知是谁，
+#:    且**不可能**与 RBAC 角色名撞车：
+#:
+#:     yangfei  → 杨飞   总经理/总经办   10 个部门、66 人汇报线
+#:     biyumi   → 别嘧咪 总经理/总经办    6 个部门、 8 人汇报线
+#:
+#: ⚠️ **注意：两人角色集相同但「管辖范围」不同**
+#:    角色权限一样，但 ``managed_department_ids``（10 vs 6）
+#:    与 ``reporting_line_ids``（66 vs 8）差很多 ⇒
+#:    「能不能看到某个人」这类用例仍然能区分出两者。
+#:
+#: ⚠️ **为什么 ``admin`` / ``employee`` 保留原名**
+#:    ① ``admin`` 映射的林雅静**确实**是 ``system_admin`` 表里的管理员
+#:       ⇒ 名字与事实一致。
+#:    ② ``employee`` 映射李凯，角色**只有** employee 一个 ⇒ 名字与事实一致。
+#:    ③ 这两个名字也**不会**与 RBAC 角色名混淆（登录后立刻跳转到对应工作区）。
+_TEST_USER_META: dict[str, dict[str, str]] = {
+    "admin": {"id": "b8663c7c", "name": "林雅静"},
+    "yangfei": {"id": "g426c684", "name": "杨飞"},
+    "biyumi": {"id": "939931ba", "name": "别嘧咪"},
+    "employee": {"id": "2aaf32ea", "name": "李凯"},
 }
 
 
 def _build_test_users() -> dict[str, dict[str, str]]:
     """构造测试账号表：口令在导入时算成哈希，明文不落表。
 
-    口令来源优先级：
-      1. 环境变量 ``TEST_USER_PASSWORDS``（JSON，key=用户名）；
-      2. 内置明文常量（仅供自动化测试）。
-    """
-    raw = dict(_TEST_USER_PLAINTEXT)
-    env_override = os.environ.get("TEST_USER_PASSWORDS")
-    if env_override:
-        try:
-            parsed = json.loads(env_override)
-            if isinstance(parsed, dict):
-                for key, value in parsed.items():
-                    if isinstance(value, str) and value:
-                        raw[str(key)] = value
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("TEST_USER_PASSWORDS 不是合法 JSON，忽略")
+    ⚠️ **口令来源：只有环境变量**（``TEST_USER_PASSWORDS``，JSON）。
+    没有它 ⇒ **返回空表** ⇒ 源码里不存在任何可用口令。
 
-    meta = {
-        "admin": {"id": "b8663c7c", "name": "管理员"},
-        "manager": {"id": "g426c684", "name": "部门主管"},
-        "leader": {"id": "939931ba", "name": "直属领导"},
-        "employee": {"id": "2aaf32ea", "name": "普通员工"},
-    }
+    ⚠️ **为什么还要 ``test_users_enabled`` 开关**
+    即使环境变量里配了口令，生产环境也必须显式
+    ``TEST_USERS_ENABLED=false``（默认）⇒ 测试账号不参与鉴权。
+    """
+    if not settings.test_users_enabled:
+        logger.info("测试账号已禁用（test_users_enabled=false）")
+        return {}
+
+    env_raw = os.environ.get(_TEST_USER_PLAINTEXT_ENV)
+    if not env_raw:
+        logger.warning(
+            "%s 未配置 ⇒ 测试账号不可用（这是预期行为：源码里不留明文口令）",
+            _TEST_USER_PLAINTEXT_ENV,
+        )
+        return {}
+
+    try:
+        parsed = json.loads(env_raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("%s 不是合法 JSON，测试账号不可用", _TEST_USER_PLAINTEXT_ENV)
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("%s 必须是 JSON 对象，测试账号不可用", _TEST_USER_PLAINTEXT_ENV)
+        return {}
 
     users: dict[str, dict[str, str]] = {}
-    for username, info in meta.items():
-        plaintext = raw.get(username)
-        if not plaintext:
+    for username, info in _TEST_USER_META.items():
+        plaintext = parsed.get(username)
+        if not isinstance(plaintext, str) or not plaintext:
             logger.warning("测试账号 %s 没有口令，跳过", username)
             continue
         users[username] = {
@@ -273,6 +337,23 @@ def _resolve_modules(db: Session, employee: Employee) -> list[str]:
     ⇒ 两个维度缺一不可，前端菜单必须**同时**满足。
     """
     return sorted(enabled_modules_for_employee(db, employee))
+
+
+def _resolve_module_menu(
+    db: Session, employee: Employee, permissions: list[str]
+) -> list[dict[str, Any]]:
+    """返回这个员工**能看到的板块菜单**（板块 → 子模块，两级）。
+
+    ⚠️ **为什么与 ``modules`` 并存**
+    ``modules`` 是**板块代码列表**（给路由守卫 / 兼容旧逻辑用）
+    ⇒ ``moduleMenus`` 是**渲染用的目录**（含路径、图标、岗位角色）
+    ⇒ 两者由**同一个判定口径**产出，不会互相矛盾。
+
+    ⚠️ **为什么前端不再自己写死菜单项**
+    用户诉求（2026-11-24）：侧边栏菜单**不是写死固定**，是**动态渲染**
+    ⇒ 前端只渲染本字段 ⇒ 板块没开通 / 岗位不参与 ⇒ 入口根本不出现。
+    """
+    return build_module_menu(db, employee, permissions)
 
 
 def _resolve_test_user(
@@ -513,12 +594,40 @@ async def login(
     request: LoginRequest,
     db: Session = Depends(get_db),
 ) -> dict:
-    """登录接口。
+    """登录接口（**口令**通路）。
+
+    ⚠️ **生产环境应当关闭本入口**（``password_login_enabled=false``）——
+    业务规则：「登录入口为飞书单点登录，只允许公司内真实存在、
+    组织架构内同步成功的员工账号进入系统」。
+    关闭时返回 **503** 并在 ``detail`` 里指明走飞书免登
+    （前端据此隐藏口令表单）。
+
+    ⚠️ **为什么保留本入口而不是直接删**
+    Runbook §3.2 约束 1：飞书故障时全员无法登录是灾难
+    ⇒ 保留为**兜底**，默认关闭，由部署方显式开启。
 
     支持测试账号和数据库员工账号。
     """
     username = request.username
     password = request.password
+
+    # ⚠️⚠️ **总闸门**（2026-11-24）
+    #
+    #    ⚠️ **为什么放在最前面**
+    #    测试账号与真实员工账号**都在**这条口令通路上
+    #    ⇒ 闸门关掉 ⇒ 两者**都**进不来 ⇒ 不会有「测试账号漏网」。
+    #
+    #    ⚠️ **为什么是 503 而不是 401**
+    #    503 = 「服务不可用」，语义是「这个入口没开，不是你的凭证错了」
+    #    ⇒ 前端能据此**切到飞书登录**；用 401 会让用户反复试密码。
+    if not settings.password_login_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "PASSWORD_LOGIN_DISABLED",
+                "message": "口令登录未启用，请使用飞书登录",
+            },
+        )
 
     # 检查测试账号
     if username in TEST_USERS:
@@ -566,6 +675,12 @@ async def login(
                 #    登录时看不到菜单，刷新后又能看到）。
                 "modules": (
                     _resolve_modules(db, employee) if employee is not None else []
+                ),
+                # ⚠️ **板块菜单目录**（板块 → 子模块）—— 前端**动态渲染**用
+                "moduleMenus": (
+                    _resolve_module_menu(db, employee, resolved["permissions"])
+                    if employee is not None
+                    else []
                 ),
             },
         }
@@ -657,6 +772,8 @@ async def login(
             "backendPermissions": backend_permissions,
             # ⚠️ **部门可用的功能板块** —— 前端菜单按它过滤
             "modules": _resolve_modules(db, employee),
+            # ⚠️ **板块菜单目录**（板块 → 子模块）—— 前端**动态渲染**用
+            "moduleMenus": _resolve_module_menu(db, employee, permissions),
         },
     }
 
@@ -707,6 +824,12 @@ async def get_me(request: Request, db: Session = Depends(get_db)) -> dict:
                     if test_employee is not None
                     else []
                 ),
+                # ⚠️ **板块菜单目录** —— 同上，测试账号也要一致
+                "moduleMenus": (
+                    _resolve_module_menu(db, test_employee, resolved["permissions"])
+                    if test_employee is not None
+                    else []
+                ),
             },
         }
     if not employee:
@@ -727,6 +850,8 @@ async def get_me(request: Request, db: Session = Depends(get_db)) -> dict:
             "backendPermissions": backend_permissions,
             # ⚠️ **部门可用的功能板块** —— 前端菜单按它过滤
             "modules": _resolve_modules(db, employee),
+            # ⚠️ **板块菜单目录**（板块 → 子模块）—— 前端**动态渲染**用
+            "moduleMenus": _resolve_module_menu(db, employee, permissions),
         },
     }
 

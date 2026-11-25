@@ -91,10 +91,19 @@ def test_test_users_store_hash_not_plaintext():
 
 
 def test_test_users_verify_with_hash():
-    """哈希串能验出正确口令、验不出错误口令。"""
+    """哈希串能验出正确口令、验不出错误口令。
+
+    ⚠️ **口令来源（2026-11-24 变更）**
+    源码里**不再有**明文口令常量（`_TEST_USER_PLAINTEXT` 已删除）
+    ⇒ 口令只能来自环境变量 ``TEST_USER_PASSWORDS``（由根 conftest 注入）。
+    """
+    import json
+    import os
+
+    plaintexts = json.loads(os.environ[auth._TEST_USER_PLAINTEXT_ENV])
     for username, info in TEST_USERS.items():
         assert password_hasher.verify_password(
-            auth._TEST_USER_PLAINTEXT[username], info["password_hash"]
+            plaintexts[username], info["password_hash"]
         ), f"{username} 正确口令验不过"
         assert not password_hasher.verify_password(
             "definitely-wrong", info["password_hash"]

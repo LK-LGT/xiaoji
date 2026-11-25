@@ -99,6 +99,15 @@ def backend_checks() -> list[Check]:
             env,
         ),
         Check(
+            # ⚠️ **生产姿态核对（B4）** —— 与 CI 工作流同一步骤。
+            #    CI 上没有 backend/.env ⇒ 走代码默认值 ⇒ 必然通过；
+            #    真正的价值在**部署环境**跑同一个脚本。
+            "生产姿态核对（登录入口）",
+            [PYTHON, "backend/scripts/check_production_posture.py"],
+            REPO_ROOT,
+            env,
+        ),
+        Check(
             "后端测试",
             [
                 PYTHON,

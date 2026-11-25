@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """快速诊断脚本 - 检查系统是否正常运行。"""
 
+import os
 import sys
 
 import requests
@@ -97,18 +98,24 @@ def main():
     # 最终结果
     print_header("📊 诊断结果")
 
+    # ⚠️ 测试账号口令**不在源码里**（2026-11-24 已移除明文常量）。
+    #    ⇒ 这里只提示「有测试账号」，不打印任何口令。
+    _has_test_users = bool(os.environ.get("TEST_USER_PASSWORDS"))
+    _test_accounts_hint = (
+        "测试账号口令已通过环境变量 TEST_USER_PASSWORDS 配置（不在源码里）"
+        if _has_test_users
+        else "未配置 TEST_USER_PASSWORDS ⇒ 测试账号不可用（请走飞书登录）"
+    )
+
     if all_good:
-        print("""
+        print(f"""
 ✅ 所有检查都通过！系统正常运行
 
 立即访问：
   🌐 前端应用: http://localhost:5180
   📡 API 文档: http://localhost:8000/docs
 
-测试账号：
-  admin / admin123
-  manager / manager123
-  employee / employee123
+{_test_accounts_hint}
         """)
         return 0
     else:

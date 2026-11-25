@@ -91,6 +91,15 @@ jobs:
         # 前后端端点对不上即失败：这是防止契约脱节的第一道闸门
         run: python backend/scripts/check_api_contract.py --strict
 
+      - name: 生产姿态核对（登录入口）
+        # ⚠️ **为什么这道检查必须在 CI 里**
+        # B1 交付了三个开关，代码默认值就是安全的（全关）。
+        # 但 CI 上跑这道检查 = 保证「**没有人误把开关打开**」也能被发现。
+        #
+        # ⚠️ **CI 上没有 backend/.env** ⇒ 走代码默认值 ⇒ 必然通过。
+        #    真正的价值在**部署环境**跑同一个脚本（部署前那一道）。
+        run: python backend/scripts/check_production_posture.py
+
       - name: 后端单元与集成测试
         run: python -m pytest backend/app/tests -q --tb=short -p no:cacheprovider
 

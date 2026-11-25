@@ -106,3 +106,45 @@ for _key, _value in _TEST_SCHEDULER_OFF.items():
     # ⚠️ 用直接赋值，不用 setdefault ——
     #    setdefault 不会覆盖已存在的值，而我们要的是**强制**关闭。
     os.environ[_key] = _value
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ★ 登录入口开关（2026-11-24，B1）
+#
+# ⚠️ **为什么测试进程要打开口令登录**
+# 自动化测试需要一条**绕过飞书 OAuth**的登录通路
+# （CI 里没有飞书凭证，也不可能每次真去调飞书换 token）。
+# ⇒ 测试进程里显式打开 `PASSWORD_LOGIN_ENABLED`。
+#
+# ⚠️ **为什么口令要在这里注入**
+# 源码里**不再有明文口令**（2026-11-24 已移除 `admin123` 等字面量）
+# ⇒ 口令只能来自环境变量 ``TEST_USER_PASSWORDS``。
+# ⇒ 这个文件是**唯一的注入点**，且**只在测试进程里**生效。
+#
+# ⚠️ **为什么不写进 ``backend/.env``**
+# ``.env`` 是**开发者本地真机联调**用的，且会被 ``.gitignore`` 排除
+# ⇒ 放进去等于「本地能登录、生产登录不了」的隐形差异，
+#   而且真机联调时万一提交就泄露了。
+# ⇒ 放 conftest ⇒ 与代码同版本管理，**生产不会带出去**。
+#
+# ⚠️ **这是测试专用口令，不是任何真实账号的口令**
+# （测试账号映射的是真实员工，但口令只在本测试进程里有效）。
+_TEST_LOGIN_ON = {
+    "PASSWORD_LOGIN_ENABLED": "true",
+    "TEST_USERS_ENABLED": "true",
+}
+for _key, _value in _TEST_LOGIN_ON.items():
+    os.environ[_key] = _value
+
+# ⚠️ 测试账号口令 —— 注入到环境变量，供 ``routes/auth.py`` 读取。
+# ⚠️ **必须与 ``routes/auth.py`` 的 ``_TEST_USER_META`` 的 key 一致** ——
+#    对不上的账号会被跳过（源码里会打 warning）。
+#
+# ⚠️ **2026-11-24（B2）：``manager`` / ``leader`` 改名为真实身份**
+#    ⇒ 原因见 ``auth.py::_TEST_USER_META`` 的注释（那两个名字撞 RBAC 角色名，
+#      而且两个不同的人权限完全一样 ⇒ 测试根本区分不出来）。
+os.environ.setdefault(
+    "TEST_USER_PASSWORDS",
+    '{"admin": "admin123", "yangfei": "yangfei123", '
+    '"biyumi": "biyumi123", "employee": "employee123"}',
+)

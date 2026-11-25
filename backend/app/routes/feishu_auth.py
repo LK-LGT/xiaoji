@@ -147,7 +147,12 @@ def exchange(
     # ⚠️ 复用 auth.py 的 token 生成与权限解析 ——
     #    这样免登**自动继承** token_version 失效机制
     #    （离职/禁用后旧 token 立即失效），无需另写一套。
-    from .auth import _generate_token, _resolve_modules, _resolve_permissions
+    from .auth import (
+        _generate_token,
+        _resolve_module_menu,
+        _resolve_modules,
+        _resolve_permissions,
+    )
 
     service = _oauth_service(db, client)
     try:
@@ -207,5 +212,8 @@ def exchange(
             # ⚠️ **部门可用的功能板块** —— 前端菜单按它过滤
             #    （与 ``/auth/login``、``/auth/me`` 保持同构）
             "modules": _resolve_modules(db, employee),
+            # ⚠️ **板块菜单目录**（板块 → 子模块）—— 前端**动态渲染**用
+            #    （同样与 ``/auth/login``、``/auth/me`` 保持同构）
+            "moduleMenus": _resolve_module_menu(db, employee, permissions),
         }
     )
