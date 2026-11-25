@@ -132,7 +132,17 @@ def test_trigger_sync_accepts_idempotency_key(client_and_db, monkeypatch):
 
     这里直接调用**真实**的 ``start_async_sync`` 来校验签名契约。
     """
+    from backend.app.core.config import settings
     from backend.app.services import feishu_sync_tasks
+
+    # ⚠️ **必须显式配好飞书凭证**（2026-11-25，CI 22 连红修复）
+    # 本用例要验的是「幂等键的**签名契约**」，
+    # 而不是一个「**没配飞书凭证**」的用例。
+    # ⇒ 若不显式配凭证，无凭据环境（CI 没有 ``backend/.env``）
+    # 会先命中 ``SyncNotConfiguredError`` ⇒ 用例挂掉。
+    # ⇒ 又是「本地绿 / CI 红」，且错在**测试**不在业务代码。
+    monkeypatch.setattr(settings, "feishu_app_id", "cli_test")
+    monkeypatch.setattr(settings, "feishu_app_secret", "secret_test")
 
     # 替换后台执行线程，避免真实调用飞书；只验证参数能传进去。
     monkeypatch.setattr(feishu_sync_tasks, "_execute_batch", lambda *a, **k: None)

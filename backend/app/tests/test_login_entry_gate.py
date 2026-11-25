@@ -297,8 +297,17 @@ class TestFeishuSsoUnaffected:
     def test_飞书免登不受口令闸门影响(self, monkeypatch):
         """⚠️ **配对** —— 关掉口令登录，飞书免登端点仍然工作。
 
-        ⚠️ 这里只断言「路由存在且不是 503 闸门」
-        （真正换 token 需要飞书凭证，不适合在单测里做）。
+        ⚠️ **为什么不能只断言「不是 503」**（2026-11-25 实测踩坑）
+        这个端点有**两个不同原因**都会返回 503：
+          ① 口令闸门挡住了；
+          ② 没配飞书应用凭据（``feishu_app_id`` / ``feishu_app_secret``）。
+        ⇒ 旧断言 ``status_code != 503`` 在**本地**（有 ``backend/.env``，
+          配了飞书凭据）能过，在**CI**（没有 ``.env``）必然挂 ——
+          ⇒ 又是「本地全绿 / CI 全红」，而且错在**测试**不在业务代码。
+
+        ✅ **正确断言**：闸门关掉后，飞书端点**绝不能**返回
+        「口令闸门」那个 503（``PASSWORD_LOGIN_DISABLED``）。
+        没有凭据时返回的 503 是**凭据缺失**，属于预期行为。
         """
         from backend.app.core.config import settings as s
 
@@ -310,10 +319,18 @@ class TestFeishuSsoUnaffected:
                 json={"code": "invalid-code-for-test", "state": "x"},
             )
 
-        # ⚠️ 期望是「飞书侧的失败」（400/502），**不是** 503 闸门
-        assert resp.status_code != 503, (
-            f"飞书免登被口令闸门挡住了：{resp.text}"
-        )
+        # ⚠️ 期望是「飞书侧的失败」（400/502）或「凭据缺失」（503），
+        #    **不是** 口令闸门的 503。
+        # ⇒ 用 detail 内容区分，而不是只看状态码。
+        detail = resp.json().get("detail")
+        if isinstance(detail, dict):
+            assert detail.get("code") != "PASSWORD_LOGIN_DISABLED", (
+                f"飞书免登被口令闸门挡住了：{resp.text}"
+            )
+        else:
+            assert "口令" not in str(detail), (
+                f"飞书免登被口令闸门挡住了：{resp.text}"
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

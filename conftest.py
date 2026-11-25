@@ -197,6 +197,46 @@ os.environ.setdefault(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ★ 工具网关密钥（2026-11-25，CI 22 连红修复的第三环）
+#
+# ⚠️ **为什么必须做（又是一个「本地绿 / CI 红」）**
+#   现象：CI 的后端测试挂了 23 个用例，全是工具令牌相关
+#         （``test_qa_peer_score_tool.py`` 等），报
+#         ``AgentToolUnavailable: 工具网关未配置``。
+#   根因：``agent_tool_token._sign()`` 在 ``settings.agent_tool_secret``
+#         为空时**直接抛 503** ⇒ 工具令牌签发/校验全都不可用。
+#         而这些测试**自己不去设置**这个值 ⇒ 依赖外部配置。
+#         本地有 ``backend/.env``（配了 ``AGENT_TOOL_SECRET``）⇒ 能过；
+#         CI 没有 ``.env`` ⇒ 空 ⇒ 必挂。
+#
+# ⚠️ **为什么这里可以写死**
+#   ``AGENT_TOOL_SECRET`` 只用于**测试进程内**的令牌签名自洽性检查
+#   （签一个、验一个），不对应任何真实凭据、不出网、不进生产。
+#   ⇒ 生产由部署环境的 Secret 管理系统注入。
+#
+# ⚠️ **为什么必须与 AUTH_TOKEN_SECRET 不同**
+#   ``Settings._validate_agent_tool_secret`` 明确要求
+#   「工具密钥不得与登录密钥、共享密钥相同」⇒ 两者必须是不同的字符串。
+_TEST_CREDENTIALS = {
+    # 工具网关签名密钥（≥32 位，不得与下面两个相同）
+    "AGENT_TOOL_SECRET": "ci-test-only-agent-tool-secret-not-real-0123456789",
+}
+for _key, _value in _TEST_CREDENTIALS.items():
+    # ⚠️ 强制覆盖 —— 本地 ``backend/.env`` 里可能有真实值，
+    #    测试进程**必须**用测试值（不碰真实凭据）。
+    os.environ[_key] = _value
+
+# ⚠️⚠️ **不要在这里设 ``AGENT_SHARED_SECRET``**（2026-11-25 实测踩坑）
+#   那个密钥**属于 agent-service**，由
+#   ``agent-service/tests/_test_secret.py`` 统一提供（用 ``setdefault``）。
+#   若根 conftest 强制覆盖它 ⇒ agent-service 的测试里
+#   ``AUTH_HEADERS``（用 ``TEST_SECRET`` 算的）与实际配置不一致
+#   ⇒ 401 ⇒ 12 个 agent-service 用例全挂。
+#   ⇒ 这正是「用 setdefault 的那个才是权威」——
+#     谁拥有这个配置，谁说了算。
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ★ 测试库生命周期（隔离的另一半）
 # ─────────────────────────────────────────────────────────────────────────────
 # ⚠️ **为什么要删旧库**

@@ -605,8 +605,18 @@ class TestScheduler:
     """定时同步 —— 没绑定时必须**静默跳过**（预期状态，不是错误）。"""
 
     def test_没绑定_跳过(self, db, monkeypatch):
+        """⚠️ **必须显式配好飞书凭证**（2026-11-25，CI 22 连红修复）
+        本用例要验的是「**没有表格绑定** ⇒ 静默跳过」，
+        而不是一个「**没配飞书凭证**」的用例（那是下一个用例的事）。
+        ⇒ 若不显式配凭证，无凭据环境（CI 没有 ``backend/.env``）
+        会先命中「未配凭证」分支 ⇒ 断言 ``skipped_no_bindings`` 挂掉。
+        ⇒ 又是「本地绿 / CI 红」，且错在**测试**不在业务代码。
+        """
+        from backend.app.core.config import settings
         from backend.app.services import feishu_metric_scheduler as sched
 
+        monkeypatch.setattr(settings, "feishu_app_id", "cli_test")
+        monkeypatch.setattr(settings, "feishu_app_secret", "secret_test")
         monkeypatch.setattr(sched, "get_sessionmaker", lambda: lambda: db)
         result = sched.run_scheduled_sync()
         assert result is None
