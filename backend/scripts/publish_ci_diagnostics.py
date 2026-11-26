@@ -89,31 +89,6 @@ def _patch(url: str, token: str, payload: dict) -> tuple[int, dict]:
     return _request("PATCH", url, token, payload)
 
 
-def _get(url: str, token: str) -> tuple[int, dict]:
-    """调 GitHub API（GET）。返回 ``(状态码, 响应 JSON)``。"""
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "ci-diagnostics",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-            return resp.status, json.loads(body) if body else {}
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        try:
-            return exc.code, json.loads(body)
-        except json.JSONDecodeError:
-            return exc.code, {"raw": body[:500]}
-    except urllib.error.URLError as exc:
-        return 0, {"error": str(exc)}
-
-
 def _read_failures(junit: Path) -> str:
     """把 junit XML 转成人类可读的失败摘要。"""
     import xml.etree.ElementTree as ET
@@ -155,175 +130,126 @@ def _read_failures(junit: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _checkout_origin_url() -> str:
-    """取 CI **检出仓库** 的 ``origin`` URL（取不到就返回空串）。
-
-    ⚠️ **为什么必须用它**（2026-11-26 实测）
-    ``actions/checkout`` 通过 **extraheader** 注入认证：
-    ``http.https://github.com/OWNER/REPO.git.extraheader``
-    ⇒ **按 URL 精确匹配**。
-
-    ⇒ 在临时仓库里直接 ``git push <url>``（没配 remote）时，
-    git **不会**附带那个 extraheader ⇒ 401/403。
-
-    ⇒ 用 checkout 仓库里**真实的** origin URL ⇒ extraheader 命中。
-    """
-    import subprocess
-
-    repo_root = Path(__file__).resolve().parents[2]
-    try:
-        proc = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except OSError:
-        return ""
-    if proc.returncode != 0:
-        return ""
-    return (proc.stdout or "").strip()
-
-
-def _checkout_extraheaders(url: str) -> list[str]:
-    """从 checkout 仓库的本地配置里取出**匹配该 URL 的 extraheader**。
-
-    返回的每一项都可以直接喂给 ``git config --local <key> <value>``。
-
-    ⚠️ **为什么要拷**（2026-11-26 实测）
-    ``actions/checkout`` 把 ``GITHUB_TOKEN`` 写成：
-    ``http.https://github.com/OWNER/REPO.git.extraheader = AUTHORIZATION: basic xxx``
-    —— 是**仓库本地配置** ⇒ 临时仓库读不到 ⇒ 推送 401/403。
-
-    ⚠️ **只取「URL 前缀匹配」的**
-    extraheader 的 key 是 ``http.<url>.extraheader``，
-    git 对 URL 是**前缀匹配**（``https://github.com/OWNER/REPO.git``
-    也能匹配 ``http.https://github.com/OWNER/REPO.git.extraheader``）。
-    ⇒ 取所有以 ``http.`` 开头且含 ``extraheader`` 的行。
-    """
-    import subprocess
-
-    repo_root = Path(__file__).resolve().parents[2]
-    try:
-        proc = subprocess.run(
-            ["git", "config", "--local", "--list"],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except OSError:
-        return []
-    if proc.returncode != 0:
-        return []
-
-    result: list[str] = []
-    for line in (proc.stdout or "").splitlines():
-        line = line.strip()
-        if not line or "extraheader" not in line or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        # ⚠️ 只取 http(s) 的 extraheader（git 也有 ``http.<url>.cookie`` 之类）
-        if not key.startswith("http."):
-            continue
-        result.append(f"{key}={value}")
-    return result
-
-
 def _git_push(args, files: dict[str, str]) -> bool:
-    """主通道：直接用 ``git push`` 把报告推到诊断分支。
+    """主通道：用 **git 底层命令（plumbing）** 把报告推到诊断分支。
 
-    ⚠️ **为什么主通道用 git 而不是 REST API**（2026-11-26 实测）
-    REST API 那条路在这套环境里**一直没建出分支**（POST 422 / 各种边角），
-    而 ``git push`` 是**被验证过能通的**（开发者日常推送走的就是它）。
+    ⚠️ **为什么用 plumbing 而不是「临时仓库 + 普通 commit」**（2026-11-26 实测）
+    普通 commit 方式（``git init`` + ``git add`` + ``git commit`` + ``git push``）
+    在 CI 里连续失败：
+    - 临时仓库**读不到** checkout 的 extraheader 认证；
+    - 就算把认证拷过去，URL 匹配也容易出偏差。
 
-    ⚠️ **认证从哪来**
-    CI 里由 ``actions/checkout`` 配置的 extraheader 提供
-    （``GITHUB_TOKEN``）⇒ 不需要额外配 credential。
+    ⚠️ **plumbing 的好处**
+    - 全程在 **checkout 那个仓库**里跑 ⇒ **认证、remote、config 全是现成的**；
+    - **完全不碰工作树**（不用 ``git add`` / ``git checkout``）
+      ⇒ 不会把后续 step 的工作目录/分支搞乱；
+    - 不需要 ``user.name`` / ``user.email``（用环境变量显式指定）。
 
-    ⚠️ **必须用「独立仓库」而不是在 CI 检出的仓库上操作**
-    否则会把检出状态搞乱（后续步骤的工作目录/分支就变了）。
+    ⚠️ **流程**
+    ``hash-object`` → ``mktree`` → ``commit-tree`` → ``push <sha>:refs/heads/<branch>``
 
     ⚠️ **失败也不阻断主流程** —— 报告发不出去不是测试失败的原因。
     """
     import subprocess
-    import tempfile
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        for name, content in files.items():
-            (tmp_path / name).write_text(content, encoding="utf-8")
+    repo_root = Path(__file__).resolve().parents[2]
 
-        def run(*cmd: str) -> tuple[int, str]:
-            proc = subprocess.run(
-                cmd,
-                cwd=tmp_path,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
-
-        # ⚠️ **先 init 一个独立仓库** ⇒ 不碰 CI 检出的那个仓库。
-        code, out = run("git", "init", "-q")
-        if code != 0:
-            print(f"   git init 失败：{out[:300]}", file=sys.stderr)
-            return False
-        for cmd in (
-            ("git", "config", "user.name", "ci-diagnostics"),
-            ("git", "config", "user.email", "ci-diagnostics@localhost"),
-            ("git", "add", "-A"),
-            ("git", "commit", "-q", "-m", f"ci: 失败报告 run={args.run_id or 'unknown'}"),
-        ):
-            code, out = run(*cmd)
-            if code != 0:
-                print(f"   {' '.join(cmd)} 失败：{out[:300]}", file=sys.stderr)
-                return False
-
-        remote = os.environ.get("GIT_PUSH_URL") or f"https://github.com/{args.repo}.git"
-        # ⚠️ **必须把 remote 显式设成 checkout 用的那个 URL**（2026-11-26 实测）
-        #   ``actions/checkout`` 通过 **extraheader**（``http.<url>.extraheader``）
-        #   注入认证 —— 而 extraheader 是**按 URL 精确匹配**的。
-        #   ⇒ 临时仓库里若**没有配置 remote**，git 就不知道该往哪个 URL 发
-        #     ⇒ **不会附带认证头** ⇒ 推送 401/403。
-        #   ⇒ 显式 ``git remote add origin <url>``（用 checkout 的原始 URL）
-        #     ⇒ extraheader 命中 ⇒ 认证生效。
-        #
-        #   ⚠️ **优先用 checkout 仓库里真实的 remote URL**
-        #   （企业版可能不是 github.com，URL 可能带路径前缀）。
-        origin_url = _checkout_origin_url()
-        if origin_url:
-            remote = origin_url
-            run("git", "remote", "add", "origin", remote)
-
-        # ⚠️⚠️ **必须把 extraheader 认证拷进临时仓库**（2026-11-26 实测）
-        #   ``actions/checkout`` 把认证写成 **仓库本地配置**：
-        #     ``http.<url>.extraheader = AUTHORIZATION: basic <token>``
-        #   ⇒ 新建的临时仓库**读不到**它
-        #   ⇒ 推送会 **401/403**（而且错误信息很难看懂）。
-        #
-        #   ⇒ 显式把 checkout 仓库里匹配该 URL 的 extraheader
-        #     **原样拷进临时仓库** ⇒ 认证生效。
-        #
-        #   ⚠️ **只拷 extraheader，不拷别的**
-        #   （别把整个 config 搬过去 ⇒ 避免带进本地路径之类的设置）。
-        for cfg_line in _checkout_extraheaders(origin_url):
-            run("git", "config", "--local", cfg_line)
-
-        # ⚠️ **HEAD:refs/heads/<branch>** —— 明确目标 ref，
-        #   避免分支名歧义。
-        code, out = run(
-            "git", "push", "--force", remote, f"HEAD:refs/heads/{args.branch}"
+    def run(*cmd: str) -> tuple[int, str]:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
-        if code != 0:
-            print(f"   git push 失败：{out[:500]}", file=sys.stderr)
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    # ── 1) 每个文件写成 blob ─────────────────────────────────
+    tree_entries: list[str] = []
+    for name, content in files.items():
+        proc = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=str(repo_root),
+            input=content.encode("utf-8"),
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            print(
+                "   git hash-object 失败："
+                + proc.stderr.decode("utf-8", "replace")[:300],
+                file=sys.stderr,
+            )
             return False
-        return True
+        blob_sha = proc.stdout.decode("ascii", "replace").strip()
+        # ⚠️ ``mktree`` 输入格式：``<mode> SP <type> SP <sha> TAB <path>``
+        tree_entries.append(f"100644 blob {blob_sha}\t{name}")
+
+    # ── 2) 建树 ──────────────────────────────────────────────
+    proc = subprocess.run(
+        ["git", "mktree"],
+        cwd=str(repo_root),
+        input="\n".join(tree_entries).encode("utf-8"),
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        print(
+            "   git mktree 失败：" + proc.stderr.decode("utf-8", "replace")[:300],
+            file=sys.stderr,
+        )
+        return False
+    tree_sha = proc.stdout.decode("ascii", "replace").strip()
+
+    # ── 3) 建 commit（**无父提交** ⇒ 孤儿提交）───────────────
+    # ⚠️ 孤儿提交（不带 parent）⇒ 不依赖目标分支是否已存在
+    #   ⇒ 第一次失败就能建出分支。
+    proc = subprocess.run(
+        [
+            "git",
+            "commit-tree",
+            tree_sha,
+            "-m",
+            f"ci: 失败报告 run={args.run_id or 'unknown'}",
+        ],
+        cwd=str(repo_root),
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "ci-diagnostics",
+            "GIT_AUTHOR_EMAIL": "ci-diagnostics@localhost",
+            "GIT_COMMITTER_NAME": "ci-diagnostics",
+            "GIT_COMMITTER_EMAIL": "ci-diagnostics@localhost",
+        },
+    )
+    if proc.returncode != 0:
+        print(
+            "   git commit-tree 失败："
+            + proc.stderr.decode("utf-8", "replace")[:300],
+            file=sys.stderr,
+        )
+        return False
+    commit_sha = proc.stdout.decode("ascii", "replace").strip()
+
+    # ── 4) 推到诊断分支 ──────────────────────────────────────
+    remote = os.environ.get("GIT_PUSH_URL")
+    if not remote:
+        code, out = run("git", "remote", "get-url", "origin")
+        if code != 0:
+            print(f"   找不到 origin remote：{out[:200]}", file=sys.stderr)
+            return False
+        remote = out.strip()
+
+    code, out = run(
+        "git",
+        "push",
+        "--force",
+        remote,
+        f"{commit_sha}:refs/heads/{args.branch}",
+    )
+    if code != 0:
+        print(f"   git push 失败：{out[:800]}", file=sys.stderr)
+        return False
+    return True
 
 
 def main(argv: list[str]) -> int:
