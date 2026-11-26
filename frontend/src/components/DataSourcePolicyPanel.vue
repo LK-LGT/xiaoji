@@ -133,7 +133,16 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { dataSourceApi, type DataSourcePolicy } from '@/api/p2'
+import { roleLabel } from '@/views/profile/profilePresentation'
 
+/**
+ * 数据源策略允许的角色清单。
+ *
+ * ⚠️ **注意**：这里**不含** `admin` ——
+ * 「系统管理员」管的是系统配置与同步，**不自动获得业务数据访问权**
+ * （见 `hr_admin_roles.py`）。把 admin 加进来等于给配置权限的人
+ * 开了业务数据后门。
+ */
 const ROLES = ['hr', 'manager', 'department_leader', 'employee']
 
 const policies = ref<DataSourcePolicy[]>([])
@@ -151,15 +160,13 @@ const form = reactive({
   note: '',
 })
 
-function roleLabel(role: string): string {
-  const map: Record<string, string> = {
-    hr: 'HR',
-    manager: '主管',
-    department_leader: '部门负责人',
-    employee: '员工',
-  }
-  return map[role] ?? role
-}
+/**
+ * 角色码 → 中文标签。
+ *
+ * ⚠️ 复用 `profilePresentation.ts` 的**单一权威映射**，
+ * 不在本文件另存一份 —— 两份 map 必然漂移（历史上就漂移过：
+ * 一份用 `SUPER_ADMIN` 自造码，一份用后端真实码）。
+ */
 
 async function load() {
   loading.value = true
