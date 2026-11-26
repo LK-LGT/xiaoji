@@ -37,6 +37,21 @@ jobs:
     name: 后端（契约校验 / 测试 / 迁移）
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # ⚠️ **这个 job 需要写权限**（2026-11-25 实测踩坑）
+    #   失败时要把失败详情发布到**诊断分支**（见末尾那个 step），
+    #   否则排查时「job log 要 admin、artifact 要登录态」⇒ 什么都拿不到。
+    #
+    # ⚠️ **为什么必须是 job 级、不能是 step 级**
+    #   GitHub Actions **不支持 step 级 ``permissions``** ——
+    #   写了会让整个 workflow 变成**非法**⇒ job **根本不会被创建**
+    #   （表现：run 存在但 jobs = 0，连失败都看不到）。
+    #   ⇒ 只能提升到 **job 级**。
+    #
+    # ⚠️ **为什么只提升这一个 job**
+    #   其它 job（前端 / 智能体）仍是 ``contents: read``
+    #   ⇒ 最小权限原则不被破坏。
+    permissions:
+      contents: write
 
     steps:
       - name: 检出代码
@@ -142,12 +157,15 @@ jobs:
         #   ⇒ 这是排查时最省事的一处。
         if: failure()
         run: |
-          python backend/scripts/print_pytest_failures.py data/_pytest_report.xml | tee /tmp/failures.txt | head -80
+          python backend/scripts/print_pytest_failures.py data/_pytest_report.xml > /tmp/failures.txt 2>&1 || true
+          echo "::group::pytest 失败摘要"
+          head -80 /tmp/failures.txt
+          echo "::endgroup::"
           {
             echo "## ❌ 后端测试失败"
             echo ""
             echo '```'
-            cat /tmp/failures.txt
+            head -200 /tmp/failures.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -297,8 +315,6 @@ jobs:
         #     失败有明确返回码可查；而且用**孤儿提交**，
         #     不依赖目标分支已存在 ⇒ 第一次失败就能建出分支。
         if: failure()
-        permissions:
-          contents: write
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
