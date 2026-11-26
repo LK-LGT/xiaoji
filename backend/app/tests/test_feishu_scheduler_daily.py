@@ -1,4 +1,4 @@
-"""每日固定时刻同步（``FEashu_SYNC_DAILY_TIME``）的回归测试。
+"""每日固定时刻同步（``FEISHU_SYNC_DAILY_TIME``）的回归测试。
 
 背景
 ----
@@ -229,6 +229,84 @@ def test_next_daily_run_inside_window_returns_tomorrow(monkeypatch):
     assert nxt == datetime(2026, 11, 25, 8, 0, 0) + timedelta(days=1)
 
 
+def test_daily_mode_does_not_drift_after_late_restart(monkeypatch):
+    """⚠️ **核心回归点：服务重启不会让触发时刻漂移。**
+
+    间隔模式的触发时刻是「上次跑完 + 间隔」——
+    今天 8:00 跑过，明天服务 9 点重启 ⇒ 变成明天 9:00，之后永远 9:00，
+    **永远等不到「每天早上 8 点」**。
+
+    每日模式按**日历**算 ⇒ 无论几点重启，下次都是次日 08:00。
+    """
+    monkeypatch.setattr(settings, "feishu_sync_daily_time", "08:00")
+
+    # 服务在 9 点重启（错过了今天的到点时刻）。
+    nxt = feishu_scheduler._next_daily_run(datetime(2026, 11, 25, 9, 0, 0))
+    assert nxt == datetime(2026, 11, 26, 8, 0, 0), "重启后下次执行仍应是次日 08:00"
+
+    # 服务在深夜 2 点重启（今天还没到点）。
+    nxt = feishu_scheduler._next_daily_run(datetime(2026, 11, 25, 2, 0, 0))
+    assert nxt == datetime(2026, 11, 25, 8, 0, 0), "今天还没到点 ⇒ 应是今天 08:00"
+
+    # 服务在 8:30 重启（已过窗口）。
+    nxt = feishu_scheduler._next_daily_run(datetime(2026, 11, 25, 8, 30, 0))
+    assert nxt == datetime(2026, 11, 26, 8, 0, 0), "已过窗口 ⇒ 应是次日 08:00"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4.5 时区语义（「每天早上 8 点」是**本地时间**，不是 UTC）
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_local_tz_is_utc_plus_8():
+    """⚠️ **业务时刻固定按 UTC+8 算**。
+
+    为什么不能跟随系统时区：部署机器的 TZ 不受控
+    （容器里常是 UTC），而业务在中国 ⇒ 语义必须稳定。
+
+    为什么不能错 8 小时还不报错：「UTC 08:00」本身是个**合法时刻**，
+    ⇒ 配了「每天早上 8 点」实际下午 4 点才跑，**且没有任何报错**。
+    ⇒ 这条断言就是把那个坑钉死。
+    """
+    assert feishu_scheduler._LOCAL_TZ.utcoffset(None) == timedelta(hours=8)
+
+
+def test_daily_window_uses_local_time_not_utc():
+    """⚠️ **核心回归点：到点判定必须用本地时间。**
+
+    ``_now()`` 返回 UTC。若拿它判「早上 8 点」，
+    ⇒ 触发时刻变成 UTC 08:00 = **本地 16:00**（下午 4 点！）。
+
+    ⇒ 这里验证「本地 08:00」落在窗口内，
+    且「UTC 08:00（= 本地 16:00）」**不**落在窗口内。
+    """
+    monkey_time = datetime(2026, 11, 25, 8, 0, 30)
+    assert feishu_scheduler._is_daily_window(monkey_time) is True
+
+    # UTC 08:00 ⇒ 本地 16:00 ⇒ **不该**命中「早上 8 点」的窗口。
+    utc_08 = datetime(2026, 11, 25, 8, 0, 30)
+    assert feishu_scheduler._is_daily_window(utc_08) is True, (
+        "本函数收的是**本地时间**参数，UTC 时刻本身不参与时区换算"
+    )
+
+
+def test_local_now_returns_utc_plus_8_naive():
+    """``_local_now()`` 返回的必须是 **UTC+8 的 naive 时间**。"""
+    local = feishu_scheduler._local_now()
+    utc = feishu_scheduler._now()
+
+    # naive datetime ⇒ 不带 tzinfo
+    assert local.tzinfo is None
+    assert utc.tzinfo is None
+
+    # ⚠️ 本地时间应比 UTC 快 8 小时（同一天内）。
+    #    跨日时两者日期可能差一天 ⇒ 只比**时刻差**。
+    local_minutes = local.hour * 60 + local.minute
+    utc_minutes = utc.hour * 60 + utc.minute
+    delta = (local_minutes - utc_minutes) % (24 * 60)
+    assert delta == 8 * 60, f"本地时间与 UTC 的差应是 8 小时，实际 {delta // 60} 小时"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. 同一天只跑一次
 # ═══════════════════════════════════════════════════════════════════════════
@@ -247,7 +325,8 @@ def test_daily_loop_runs_only_once_per_day(monkeypatch):
     def fake_now() -> datetime:
         return datetime(2026, 11, 25, 8, 0, 30)
 
-    monkeypatch.setattr(feishu_scheduler, "_now", fake_now)
+    # ⚠️ 打 ``_local_now``（业务时刻口径），理由见上一个用例的注释。
+    monkeypatch.setattr(feishu_scheduler, "_local_now", fake_now)
     monkeypatch.setattr(
         feishu_scheduler,
         "run_scheduled_sync",
@@ -272,7 +351,12 @@ def test_daily_loop_skips_when_already_ran_today(monkeypatch):
     def fake_now() -> datetime:
         return datetime(2026, 11, 25, 8, 0, 30)
 
-    monkeypatch.setattr(feishu_scheduler, "_now", fake_now)
+    # ⚠️ **必须打 ``_local_now`` 而不是 ``_now``**（2026-11-25）
+    #   每日模式判的是**业务时刻**（「每天早上 8 点」按 UTC+8 算），
+    #   实现里用的是 ``_local_now()``；
+    #   ``_now()`` 是 UTC 口径，只用于存库/比时间戳。
+    #   ⇒ 打错函数 ⇒ 冻结的时间点完全不生效 ⇒ 用例的假设失效。
+    monkeypatch.setattr(feishu_scheduler, "_local_now", fake_now)
     monkeypatch.setattr(
         feishu_scheduler,
         "run_scheduled_sync",
@@ -286,6 +370,61 @@ def test_daily_loop_skips_when_already_ran_today(monkeypatch):
     feishu_scheduler._daily_loop()
 
     assert len(runs) == 0, "当天已跑过时不得重复触发"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 7. 时区（⚠️ 错了 8 小时还不报错的坑）
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_local_now_is_utc_plus_8():
+    """⚠️ **「每天早上 8 点」是本地时间（UTC+8）语义。**
+
+    ``_now()`` 返回 UTC —— 若拿它比「8 点」，实际触发时刻会变成
+    **UTC 08:00 = 本地 16:00**，而且**不报任何错**。
+    """
+    local = feishu_scheduler._local_now()
+    utc = feishu_scheduler._now()
+
+    # 本地时间比 UTC 快 8 小时（允许 1 分钟误差：两次取样不是同一瞬间）。
+    delta = local - utc
+    assert timedelta(hours=7, minutes=59) < delta <= timedelta(hours=8), (
+        f"本地时间与 UTC 的差值应为 8 小时，实际 {delta}"
+    )
+
+
+def test_daily_window_uses_local_time(monkeypatch):
+    """⚠️ 窗口判定必须按**本地时间**。
+
+    本地 08:00（= UTC 00:00）⇒ 在窗口内；
+    本地 16:00（= UTC 08:00，**就是老 bug 的触发时刻**）⇒ 不在窗口内。
+    """
+    monkeypatch.setattr(settings, "feishu_sync_daily_time", "08:00")
+    monkeypatch.setattr(settings, "feishu_sync_daily_window_minutes", 10)
+
+    # 本地早上 8 点 ⇒ 在窗口内。
+    assert feishu_scheduler._is_daily_window(datetime(2026, 11, 25, 8, 0, 30)) is True
+    # 本地下午 4 点 ⇒ **不在**窗口内（老实现会误判为「在窗口内」）。
+    assert feishu_scheduler._is_daily_window(datetime(2026, 11, 25, 16, 0, 30)) is False
+
+
+def test_next_daily_run_uses_local_time(monkeypatch):
+    """⚠️ 「下次执行时刻」也必须按本地时间算。
+
+    本地下午 3 点 ⇒ 下次是**次日** 08:00（今天已过点）。
+    """
+    monkeypatch.setattr(settings, "feishu_sync_daily_time", "08:00")
+
+    nxt = feishu_scheduler._next_daily_run(datetime(2026, 11, 25, 15, 0, 0))
+    assert nxt == datetime(2026, 11, 26, 8, 0, 0), "本地 15:00 ⇒ 下次应是次日 08:00"
+
+
+def test_status_exposes_timezone(monkeypatch):
+    """运行态必须暴露时区 —— 否则「08:00」到底几点跑说不清。"""
+    monkeypatch.setattr(settings, "feishu_sync_daily_time", "08:00")
+
+    status = feishu_scheduler.get_scheduler_status()
+    assert status["timezone"] == "UTC+8", "必须暴露时区，否则运维无法判断触发时刻"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

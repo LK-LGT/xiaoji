@@ -79,6 +79,22 @@ def _reset_scheduler_state():
     )
 
 
+@pytest.fixture(autouse=True)
+def _force_interval_mode(monkeypatch):
+    """把调度器固定在**间隔模式**，与本机 ``.env`` 无关。
+
+    ⚠️ **为什么必须隔离**：
+    ``FEISHU_SYNC_DAILY_TIME`` 是**部署配置**（本地 ``.env`` 常年是
+    ``08:00``）。若不隔离，测试会跟着开发者本机的 ``.env`` 走 ——
+    配了每日时刻就静默切到每日模式，间隔模式的用例全部失真，
+    而且**本地能过、CI 会红**（CI 的 ``.env`` 没有这一项）。
+
+    ⇒ 测试必须**显式声明**自己测的是哪个模式，不能依赖环境。
+    """
+    monkeypatch.setattr(settings, "feishu_sync_daily_time", "")
+    monkeypatch.setattr(settings, "feishu_sync_daily_window_minutes", 10)
+
+
 # ─────────────────────────────────────────────────────────────
 # 调度器
 # ─────────────────────────────────────────────────────────────

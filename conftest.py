@@ -159,6 +159,33 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH.as_posix()}"
 #    （这只影响**测试进程**，与生产的 Alembic 路线不冲突。）
 os.environ["AUTO_CREATE_TABLES"] = "true"
 
+# ⚠️⚠️ **删旧库文件必须放在「导入期」**（2026-11-25 实测踩坑）
+#   文件被删不掉的原因是「**还有进程持有它的句柄**」
+#   —— SQLAlchemy 的 engine 是**全局单例**，一旦有连接开着，
+#   Windows 上就 ``PermissionError: [WinError 32]``。
+#
+#   ⇒ 在**模块导入期**（还没人建 engine）删文件 ⇒ 此时没有任何句柄
+#   ⇒ 删得掉。之后 engine 再建也是从零开始。
+#
+#   ⚠️ **为什么不能放到 fixture 里**
+#   fixture 跑的时候，pytest 可能已经 import 了别的模块
+#   ⇒ engine 可能已经被建好、连接可能已经打开 ⇒ 删不掉
+#   ⇒ 实测：整批用例在 setup 阶段就 ERROR
+#   （``ERROR at setup of test_xxx``）。
+#
+#   ⚠️ **为什么这里用「尽量删，删不掉就算了」**
+#   删不掉（极端情况：上一次进程还没退干净）时，
+#   后面的 fixture 还会 drop schema ⇒ 起点依然干净 ⇒ 不阻断测试。
+for _suffix in ("", "-wal", "-shm"):
+    _candidate = Path(f"{_TEST_DB_PATH}{_suffix}")
+    try:
+        if _candidate.exists():
+            _candidate.unlink()
+    except OSError:
+        # ⚠️ 删不掉不算致命 —— 后面的 fixture 会 drop schema 兜底。
+        pass
+_TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ★ 登录入口开关（2026-11-24，B1）
@@ -245,23 +272,46 @@ for _key, _value in _TEST_CREDENTIALS.items():
 # ─────────────────────────────────────────────────────────────────────────────
 # ★ 测试库生命周期（隔离的另一半）
 # ─────────────────────────────────────────────────────────────────────────────
-# ⚠️ **为什么要删旧库**
+# ⚠️ **为什么清空旧数据**
 #   上一次跑测试留下的数据会被这一轮读到 ⇒
 #   「跑一次绿、跑两次红」的**顺序依赖**，
 #   而这种 flaky 在 CI 上表现为「有时红有时绿」，极难查。
-#   ⇒ 每个会话开始前删掉旧文件 ⇒ 每次跑测试都是**干净起点**。
+#   ⇒ 每轮测试都从**干净起点**开始。
 #
-# ⚠️ **为什么用 session 级 autouse fixture 而不是模块级语句**
-#   模块级语句在 import 时执行 —— 此时 pytest 还没开始收集，
-#   万一 import 失败旧库还在，下次跑又会带着脏数据。
-#   放进 fixture ⇒ 与「本轮测试真的开始」绑定。
+# ⚠️⚠️ **为什么「删文件」改成「drop schema」（2026-11-25 实测踩坑）**
+#   删文件在 Windows 上直接炸：
+#     ``PermissionError: [WinError 32] 另一个程序正在使用此文件``
+#   —— 因为上一轮测试的 SQLAlchemy engine 还**持有该文件的句柄**
+#   （连接池没关）⇒ 删不掉 ⇒ **整批用例在 setup 阶段就 ERROR**。
+#
+#   ⇒ 改成「用同一个 engine 把所有表 drop 掉」：
+#     - 不碰文件本身 ⇒ 没有文件锁问题（Windows / Linux 都安全）；
+#     - 效果一样：下一轮 ``init_db()`` 会重新 ``create_all`` 重建。
+#
+#   ⚠️ **为什么用 ``checkfirst=True``**
+#   表可能还没建（第一次跑）⇒ 不加这个参数会报「表不存在」。
 @pytest.fixture(autouse=True, scope="session")
 def _reset_test_database():
-    """每个测试会话开始前删掉上一次的测试库残留。"""
-    # ⚠️ 先删再留空目录 —— SQLite 要求父目录存在才能建文件。
-    for suffix in ("", "-wal", "-shm"):
-        candidate = Path(f"{_TEST_DB_PATH}{suffix}")
-        if candidate.exists():
-            candidate.unlink()
+    """每轮测试开始前清空测试库的表。"""
     _TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # ⚠️ **先确保目录存在，再尝试清理旧表** ——
+    #    库文件还不存在时（第一次跑）直接跳过清理。
+    if not _TEST_DB_PATH.exists():
+        yield
+        return
+
+    try:
+        from backend.app.core.db import get_engine
+        from backend.app.domain.models import Base
+
+        engine = get_engine()
+        Base.metadata.drop_all(engine, checkfirst=True)
+    except Exception:
+        # ⚠️ **清理失败不能阻断测试** ——
+        #    清理只是「让起点更干净」的辅助手段，
+        #    真正保证隔离的是「每个用例自带内存库」。
+        #    ⇒ 这里静默降级，让测试继续跑。
+        pass
+
     yield

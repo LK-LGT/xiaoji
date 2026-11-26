@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from ..core.config import settings
@@ -64,11 +64,40 @@ _state: dict[str, Any] = {
     "next_run_at": None,
     "run_count": 0,
     "skip_count": 0,
+    # ⚠️ **每日模式下「今天已经跑过了」的标记**（``YYYY-MM-DD``）。
+    #    每日窗口有 10 分钟宽、轮询每分钟一次 ⇒ 不记这个会重复触发。
+    "last_daily_run_date": None,
 }
 
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+#: 每日模式的**本地时区**（UTC+8，Asia/Shanghai）。
+#:
+#: ⚠️⚠️ **为什么必须显式指定时区** —— 这是本模块最容易被忽略、
+#: 且**错了 8 小时还不报错**的坑：
+#:
+#:   ``_now()`` 返回的是 **UTC**（naive）。若直接拿它跟「早上 8 点」比，
+#:   触发时刻会变成 **UTC 08:00 = 本地 16:00** —— 用户配了「每天早上 8 点」，
+#:   实际却是**下午 4 点**才跑，而且**不报任何错**（时刻本身合法）。
+#:
+#:   ⇒ 「每天早上 8 点」是**业务/本地时间**语义，必须先转成本地时间再比。
+#:
+#: 固定用 UTC+8 而不是系统本地时区：部署机器的 TZ 不受控
+#: （容器里常是 UTC），而业务在中国 ⇒ 语义必须稳定。
+_LOCAL_TZ = timezone(timedelta(hours=8))
+
+
+def _local_now() -> datetime:
+    """返回**本地时间**（UTC+8）的 naive datetime。
+
+    ⚠️ 与 ``_now()``（UTC）区分清楚：
+    - ``_now()``   —— 存库 / 比对时间戳用（与全库口径一致，UTC）；
+    - ``_local_now()`` —— **业务时刻**用（「每天早上 8 点」按本地时间算）。
+    """
+    return datetime.now(_LOCAL_TZ).replace(tzinfo=None)
 
 
 #: 每日模式的轮询间隔（秒）—— 每分钟检查一次「到点没到」。
@@ -158,6 +187,9 @@ def get_scheduler_status() -> dict[str, Any]:
         # 到底是「每天 8 点」还是「每 N 小时」。配置漂移一眼可见。
         "mode": "daily" if daily is not None else "interval",
         "dailyTime": f"{daily[0]:02d}:{daily[1]:02d}" if daily else None,
+        # ⚠️ **显式暴露时区** —— 「08:00」是**本地时间**（UTC+8）还是 UTC？
+        #    不说清楚的话，运维看到「08:00」根本判断不了实际几点跑。
+        "timezone": "UTC+8",
         "intervalSeconds": max(60, settings.feishu_sync_interval_seconds),
         "started": bool(current.get("started")),
         "lastRunAt": current.get("last_run_at").isoformat() if current.get("last_run_at") else None,
@@ -233,7 +265,9 @@ def _daily_loop() -> None:
     避免轮询命中窗口时重复触发（窗口有 10 分钟宽，轮询每分钟一次）。
     """
     # 启动即跑一次 —— 保持与间隔模式一致的行为（服务起来就收敛一次）。
-    now = _now()
+    # ⚠️ **用本地时间**：判断「今天跑过没有」必须按业务日历（UTC+8），
+    #    否则 UTC 跨日时点会算错日期。
+    now = _local_now()
     # ⚠️ **「启动即跑一次」必须尊重「当天只跑一次」这道闸** ——
     # 否则服务在 8:05 重启 ⇒ 首轮又跑一次 ⇒ 当天同步了两次。
     # 与间隔模式的差异：间隔模式的「启动即跑」是**收敛**语义（多跑一次无害，
@@ -244,7 +278,7 @@ def _daily_loop() -> None:
         _run_once(_DAILY_TICK_SECONDS, initial=True, next_run_at=_next_daily_run(now))
 
     while not _stop_event.wait(_DAILY_TICK_SECONDS):
-        now = _now()
+        now = _local_now()
         if not _is_daily_window(now):
             continue
         current = _get_state()
@@ -372,7 +406,7 @@ def start_scheduler() -> None:
         _stop_event.clear()
         _set_state(
             started=True,
-            next_run_at=_next_daily_run(_now()),
+            next_run_at=_next_daily_run(_local_now()),
         )
         _scheduler_thread = threading.Thread(
             target=_daily_loop,
