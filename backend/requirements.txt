@@ -17,3 +17,23 @@ pycryptodome>=3.20
 #    驱动缺失是「部署即失败」，不会等到运行时才暴露。
 #    psycopg3 同时支持 psycopg:// 与 postgresql:// 两种连接串前缀。
 psycopg[binary]>=3.1
+# jsonschema —— **后端测试套件跑 agent-service 代码**时必需（2026-11-26 实测踩坑）
+#
+# ⚠️ **为什么后端要声明 agent-service 的依赖**
+#   后端测试里有几个文件**直接 import agent-service 的模块**：
+#     - test_agent_service_auth_r12.py（agent-service 强制鉴权回归）
+#     - test_plan_hallucination_detector.py（计划幻觉检测器）
+#     - test_qa_tool_flow.py（QA 工具全链路）
+#     - test_agent_tool_foundation.py（工具层地基）
+#   而 agent-service/app/tools.py 会 ``from jsonschema import ...``
+#   ⇒ 后端 CI 只装 backend 依赖 ⇒ **ModuleNotFoundError: jsonschema**
+#   ⇒ 这几个文件**整批挂掉**（本地有装所以看不出来）。
+#
+# ⚠️ **为什么不用 importorskip 绕过去**
+#   那等于「让安全测试在 CI 里静默跳过」——
+#   而 R12 那组恰恰是防「AI 接口裸奔」的**最后一道防线** ⇒ 绝不能跳过。
+#
+# ⇒ 正确做法：把跨服务测试要用的依赖**显式声明**在 backend 侧。
+#   （有护栏守着：test_dependency_lock_guard.py 里的
+#    test_cross_service_imports_have_declared_dependencies）
+jsonschema>=4.23

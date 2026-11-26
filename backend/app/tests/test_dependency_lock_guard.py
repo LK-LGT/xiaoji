@@ -202,6 +202,171 @@ def test_locked_versions_satisfy_requirements(service: str) -> None:
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 跨服务依赖（2026-11-26）
+# ═══════════════════════════════════════════════════════════════════════════
+# ⚠️ **背景：CI 红了但本地全绿**
+#   后端测试里有几个文件**直接 import agent-service 的模块**：
+#     - test_agent_service_auth_r12.py
+#     - test_plan_hallucination_detector.py
+#     - test_qa_tool_flow.py
+#     - test_agent_tool_foundation.py
+#   而 ``agent-service/app/tools.py`` 会 ``from jsonschema import ...``
+#   ⇒ 后端 CI 只装 ``backend/requirements.lock.txt`` ⇒
+#     **ModuleNotFoundError: No module named 'jsonschema'**
+#   ⇒ 这几组用例**整批挂掉**。
+#   ⚠️ 本地之所以看不出来：开发者机器上**早就装过** jsonschema
+#   （agent-service 开发时装过）⇒ 环境差异被掩盖了。
+#
+# ⚠️ **为什么不用 ``importorskip`` 绕过去**
+#   那等于「让安全测试在 CI 里静默跳过」——
+#   而 R12 那组恰恰是防「AI 接口裸奔」的**最后一道防线** ⇒ 绝不能跳过。
+#
+# ⇒ 正确做法：**跨服务测试用到的依赖，必须在 backend 侧显式声明**。
+
+#: 后端测试会 import 的**其它服务**的代码目录。
+_CROSS_SERVICE_ROOTS = ("agent-service",)
+
+#: 后端测试文件里**出现过**的服务目录名（用于定位「谁在跨服务 import」）。
+def _backend_tests_importing_cross_service() -> dict[str, list[str]]:
+    """找出「后端测试里 import 了其它服务代码」的文件。
+
+    返回 ``{依赖包名: [文件名, ...]}``。
+    """
+    result: dict[str, list[str]] = {}
+    tests_dir = ROOT / "backend" / "app" / "tests"
+    for path in sorted(tests_dir.rglob("test_*.py")):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for service in _CROSS_SERVICE_ROOTS:
+            if service not in text:
+                continue
+            # ⚠️ 只认「真的在 import」——
+            #   光是字符串里提到目录名（比如注释）不算。
+            if not re.search(rf"(importlib|import)\b[^\n]*{re.escape(service)}", text) and not re.search(
+                rf"[\"']{re.escape(service)}[\"']", text
+            ):
+                continue
+            result.setdefault(service, []).append(path.name)
+    return result
+
+
+def _declared_packages(requirements_path: Path) -> set[str]:
+    """取 requirements.txt 里声明的包名（规范化：小写、``-``→``_``）。"""
+    names: set[str] = set()
+    for line in _read(requirements_path).splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = re.match(r"^([a-zA-Z0-9][a-zA-Z0-9._-]*)", stripped)
+        if match:
+            names.add(match.group(1).lower().replace("-", "_"))
+    return names
+
+
+def _imported_top_level_modules(path: Path) -> set[str]:
+    """取一个文件里 ``import X`` / ``from X import ...`` 的顶层模块名。"""
+    modules: set[str] = set()
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    for match in re.finditer(r"^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*)", text, re.M):
+        modules.add(match.group(1).split(".")[0])
+    for match in re.finditer(r"^\s*from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import", text, re.M):
+        modules.add(match.group(1).split(".")[0])
+    return modules
+
+
+def test_cross_service_imports_have_declared_dependencies() -> None:
+    """⚠️ **核心护栏** —— 跨服务 import 的依赖必须在 backend 侧声明。
+
+    回归点（2026-11-26 实测）：
+    后端 CI 报 ``ModuleNotFoundError: No module named 'jsonschema'``
+    ⇒ 根因是「后端测试 import agent-service 代码，
+    但 agent-service 的依赖没在 backend 侧声明」。
+
+    ⇒ 这条断言把「跨服务 import 到的第三方包」与
+      「backend/requirements.txt 声明的包」对齐，
+      少一个就红 ⇒ 不会等到 CI 才发现。
+    """
+    backend_req = ROOT / "backend" / "requirements.txt"
+    declared = _declared_packages(backend_req)
+
+    # ⚠️ **stdlib 白名单** —— 标准库不该出现在 requirements 里。
+    import sys
+
+    stdlib = set(sys.stdlib_module_names)
+
+    offenders: list[str] = []
+    for service in _CROSS_SERVICE_ROOTS:
+        service_root = ROOT / service / "app"
+        if not service_root.is_dir():
+            continue
+        # ⚠️ **只扫「服务自己的」代码**——
+        #   第三方包不可能出现在自己代码里 ⇒ 命中的就是第三方 import。
+        for module_path in sorted(service_root.rglob("*.py")):
+            for module in _imported_top_level_modules(module_path):
+                normalized = module.lower().replace("-", "_")
+                if normalized in stdlib or normalized in declared:
+                    continue
+                # ⚠️ **跳过相对导入的顶层名**（``from .tools import X``）
+                #   —— 正则只匹配绝对导入，``from .x`` 的组是空 ⇒ 不会命中。
+                # ⚠️ **跳过服务自己的包名**
+                if normalized in {service.replace("-", "_"), "app"}:
+                    continue
+                offenders.append(
+                    f"{module_path.relative_to(ROOT)}: import {module}"
+                    f" ⇒ backend/requirements.txt 里没声明"
+                )
+
+    assert not offenders, (
+        "跨服务代码用到的第三方包**必须**在 backend/requirements.txt 里声明：\n"
+        + "\n".join(f"  - {o}" for o in sorted(set(offenders)))
+        + "\n原因：后端测试会 import 这些代码，"
+        "而 CI 只装 backend/requirements.lock.txt ⇒ CI 会 ModuleNotFoundError。"
+        "\n修法：在 backend/requirements.txt 里加声明，"
+        "然后重新生成 backend/requirements.lock.txt。"
+    )
+
+
+def test_cross_service_tests_are_not_silently_skipped() -> None:
+    """⚠️ 跨服务测试**不许**用 ``importorskip`` 把关键用例悄悄跳过。
+
+    ⚠️ 允许的例外：``test_qa_tool_flow.py`` 用 ``importorskip`` 是因为
+    那个文件测的是「QA 工具全链路」（在 agent-service 侧另有一份完整测试）。
+    ⇒ 例外名单是**显式**的，不是「谁想跳就跳」。
+    """
+    # ⚠️ 显式白名单 —— 新增跨服务测试**默认不许** skip，
+    #    要 skip 就得先在这里登记（⇒ 变成一次有意识的决定）。
+    allowed_to_skip: set[str] = {
+        # QA 工具全链路：agent-service 侧有完整覆盖，后端这份是补充。
+        "test_qa_tool_flow.py",
+    }
+
+    offenders: list[str] = []
+    for service, filenames in _backend_tests_importing_cross_service().items():
+        for filename in filenames:
+            if filename in allowed_to_skip:
+                continue
+            # ⚠️ **本文件自己排除**——
+            #   它提到「agent-service」这些服务名（要在文档里解释清楚），
+            #   也提到「importorskip」这个词 ⇒ 否则会**自己告自己**。
+            if filename == Path(__file__).name:
+                continue
+            path = ROOT / "backend" / "app" / "tests" / filename
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if "importorskip" in text:
+                offenders.append(
+                    f"{filename}（跨服务 import {service}）用了 importorskip"
+                )
+
+    assert not offenders, (
+        "跨服务测试**不许**用 importorskip 静默跳过：\n"
+        + "\n".join(f"  - {o}" for o in offenders)
+        + "\n原因：跳过了就等于「CI 里这组用例根本没跑」，"
+        "而其中包含安全相关的鉴权回归。\n"
+        "修法：把缺的依赖声明进 backend/requirements.txt；"
+        "确实需要跳过就登记到 allowed_to_skip 里（要经过一次有意识的决定）。"
+    )
+
+
 def _version_tuple(text: str) -> tuple[int, ...]:
     """把版本串转成可比较的元组。
 
