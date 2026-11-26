@@ -75,8 +75,20 @@ import SystemDashboard from '@/views/system/SystemDashboard.vue'
 import EmployeeRegister from '@/views/system/EmployeeRegister.vue'
 import EmployeeManagement from '@/views/system/EmployeeManagement.vue'
 import OrgManagement from '@/views/system/OrgManagement.vue'
-import RoleManagement from '@/views/system/RoleManagement.vue'
-import PermissionManagement from '@/views/system/PermissionManagement.vue'
+// ⚠️ **「角色管理」/「权限管理」已下线**（2026-11-26）
+//
+// ❌ **为什么下线**
+//   两个页面对应的后端接口返回**硬编码假数据**，库里没有 `role` 表 ⇒
+//   页面能看能填，但**存不进去**（POST/PUT 是 no-op）。
+//
+// ❌ **为什么不接真实数据**
+//   现在的权限模型**不是** RBAC 角色表，而是「角色 × 部门 × 汇报线」的
+//   **动态判定** —— 角色由系统按真实身份**自动推导**，不人工分配。
+//   ⇒ 做「角色表」等于倒退回被废弃的模型。
+//
+// ✅ **保留路由**：老链接不 404，直接访问时给出明确说明（而非白屏）。
+//    **菜单入口已移除**（见 `navigation/workspaces.ts`）。
+import RetiredRoleManagement from '@/views/system/RetiredRoleManagement.vue'
 import DepartmentModules from '@/views/system/DepartmentModules.vue'
 import WorkdayRules from '@/views/system/WorkdayRules.vue'
 import WeekPlanStandardSupplement from '@/views/system/WeekPlanStandardSupplement.vue'
@@ -261,8 +273,11 @@ const router = createRouter({
     withAppShell('/system/employee-register', EmployeeRegister, { permission: 'system:employee:register' }),
     withAppShell('/system/employees', EmployeeManagement, { permission: 'system:employee:view' }, '/system/users'),
     withAppShell('/system/orgs', OrgManagement, { permission: 'system:org:view' }),
-    withAppShell('/system/roles', RoleManagement, { permission: 'system:role:view' }),
-    withAppShell('/system/permissions', PermissionManagement, { permission: 'system:permission:view' }),
+    // ⚠️ **「角色管理」/「权限管理」已下线**（2026-11-26）——
+    //    路由保留（老链接不 404），但指向「已下线说明页」。
+    //    菜单入口已移除 ⇒ 用户不会主动点进来。
+    withAppShell('/system/roles', RetiredRoleManagement, { permission: 'system:role:view' }),
+    withAppShell('/system/permissions', RetiredRoleManagement, { permission: 'system:permission:view' }),
     // ★ 部门功能板块隔离（2026-11-21）—— 管理「哪个部门有哪些业务板块」
     // ⚠️ 用 `system:department-module:manage` —— HR 专属动作位
     withAppShell('/system/department-modules', DepartmentModules, { permission: 'system:department-module:manage' }),

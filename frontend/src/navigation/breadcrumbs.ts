@@ -58,8 +58,11 @@ const SECTION_TITLES: Record<string, string> = {
   '/system/employee-register': '员工注册',
   '/system/employees': '员工管理',
   '/system/orgs': '部门/项目组',
-  '/system/roles': '角色管理',
-  '/system/permissions': '权限管理',
+  // ⚠️ **「角色管理」/「权限管理」已下线**（2026-11-26）——
+  //    路由保留但指向「已下线说明页」⇒ 面包屑也该说清楚，
+  //    否则用户会以为进了一个真能用的功能页。
+  '/system/roles': '角色与权限（已下线）',
+  '/system/permissions': '角色与权限（已下线）',
   '/system/workday-rules': '工作日规则',
   '/system/audits': '审计日志',
   '/system/ai': 'AI 配置',

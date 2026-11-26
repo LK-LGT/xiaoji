@@ -45,8 +45,32 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
       { label: '员工注册', path: '/system/employee-register', icon: '+', permission: 'system:employee:register' },
       { label: '员工管理', path: '/system/employees', icon: '♙', permission: 'system:employee:view' },
       { label: '部门/项目组', path: '/system/orgs', icon: '⌘', permission: 'system:org:view' },
-      { label: '角色管理', path: '/system/roles', icon: '◇', permission: 'system:role:view' },
-      { label: '权限管理', path: '/system/permissions', icon: '✓', permission: 'system:permission:view' },
+      // ⚠️⚠️ **「角色管理」/「权限管理」已下线**（2026-11-26）
+      //
+      // ❌ **为什么下线**
+      //   这两个页面对应的后端接口返回的是**硬编码假数据**：
+      //     `GET /v1/system/roles`       → 写死 3 条 ADMIN/MANAGER/EMPLOYEE
+      //     `GET /v1/system/permissions` → 写死 1 个「系统管理」节点
+      //   而数据库里**根本没有 `role` 表**（实测 2026-11-26）。
+      //
+      //   ⇒ 页面看起来能增删改，实际**存不进去**（POST/PUT 是 no-op，
+      //     只 `return` 一个临时 id）⇒ 属于**假功能**。
+      //
+      // ❌ **为什么不接真实数据**
+      //   现在的权限模型**不是** RBAC 角色表，而是「角色 × 部门 × 汇报线」
+      //   的**动态判定**（见 `services/access_control.py`）：
+      //     - 角色是**推导出来的**，不是「分配」出来的
+      //     - 数据范围由**真实身份**（部门/汇报线）决定，不由角色决定
+      //   ⇒ 做一个「角色表」等于**倒退**回被明确废弃的模型。
+      //
+      // ✅ **替代口径**
+      //   权限配置看「部门功能板块」（`/system/department-modules`），
+      //   组织与汇报线看「部门/项目组」（`/system/orgs`），
+      //   角色本身由系统按真实身份**自动判定**，无需人工配置。
+      //
+      // ⚠️ **路由仍在**（见 `router/index.ts`）—— 保留是为了
+      //    ① 老链接不 404；② 直接访问时给出明确提示而不是白屏。
+      //    但**菜单入口不再展示**。
       // ★ 部门功能板块隔离（2026-11-21）
       // ⚠️ **独立权限位**，不挂在 `system:org:view` 上 ——
       //    「能看部门树」≠「能改板块开通范围」

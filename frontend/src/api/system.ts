@@ -139,18 +139,8 @@ export interface UserItem {
   createdAt: string
 }
 
-export interface PermissionNode {
-  /** 权限 ID（自增数字主键，按约定保持 number）。 */
-  id: number
-  /** 父权限 ID（自增数字主键，按约定保持 number）。 */
-  parentId: number
-  name: string
-  code: string
-  type: string
-  path?: string
-  status: number
-  children: PermissionNode[]
-}
+// ⚠️ **``PermissionNode`` 已随「权限管理」页下线一起移除**（2026-11-26）
+//    那个页面对应后端返回硬编码假数据，且没有真实 ``permission`` 表。
 
 export interface WorkdayRule {
   id: number
@@ -211,14 +201,32 @@ export const createDepartment = (data: Record<string, unknown>) => http.post<unk
 export const updateDepartment = (id: string, data: Record<string, unknown>) => http.put<unknown, DeptNode>(`/system/departments/${id}`, data)
 export const deleteDepartment = (id: string) => http.delete(`/system/departments/${id}`)
 
-export const getRoles = () => http.get<unknown, RoleItem[]>('/system/roles')
-export const createRole = (data: Record<string, unknown>) => http.post<unknown, RoleItem>('/system/roles', data)
-export const updateRole = (id: number, data: Record<string, unknown>) => http.put<unknown, RoleItem>(`/system/roles/${id}`, data)
-
-export const getPermissions = () => http.get<unknown, PermissionNode[]>('/system/permissions')
-export const getRolePermissions = (id: number) => http.get<unknown, number[]>(`/system/roles/${id}/permissions`)
-export const saveRolePermissions = (id: number, permissionIds: number[]) =>
-  http.put(`/system/roles/${id}/permissions`, { permissionIds })
+// ⚠️⚠️ **角色/权限的读写接口已下线**（2026-11-26）
+//
+// ❌ **为什么删**
+//   后端 ``/system/roles``、``/system/permissions`` 返回的是**硬编码假数据**，
+//   库里**没有 `role` 表** ⇒ 写操作是 no-op（存不进去）。
+//   对应的两个前端页面（``RoleManagement.vue`` / ``PermissionManagement.vue``）
+//   已一并删除 ⇒ 这些 API 无人调用 ⇒ 删掉避免误用。
+//
+// ⚠️ **后端端点仍保留** —— 契约测试覆盖了它们，且老链接要能打开。
+//
+// ⚠️ **注意：``RoleItem`` / ``SystemOptions.roles`` 仍在使用** ——
+//    员工注册 / 员工管理页的「角色」下拉框用的是
+//    ``GET /system/options``，与这里下线的 ``/system/roles`` **不是同一个东西**。
+//
+// ⚠️⚠️ **但 ``/system/options`` 的 ``code`` 字段也是历史遗留**（2026-11-26）
+//    ``RoleItem.code`` 返回的是**大写自造码**（``ADMIN`` / ``EMPLOYEE`` /
+//    ``DEPARTMENT_LEADER`` / ``LEADER``），而后端真实角色码是小写
+//    （``admin`` / ``employee`` / ``department_leader`` / ``manager``）。
+//    ⚠️ **真正与后端角色体系对齐的是 ``RoleItem.id``**
+//    （值就是 ``admin`` / ``employee`` / ``department_leader`` / ``leader``）。
+//    ⇒ 用 ``code`` 做角色判断的地方（如 ``EmployeeRegister.vue`` 找默认角色）
+//      是在匹配**自造码**，与「真实角色码」是两套东西。
+//    ⇒ 本轮**未改** ``/system/options`` 的返回结构 —— 员工注册是真实业务，
+//      改 ``code`` 会连带改契约测试与注册流程的默认角色匹配；
+//      留待「角色码口径统一」那一轮专门处理。
+//    ⇒ 详见 ``docs/11-待完善清单.md`` 中的角色码统一条目。
 
 export const getWorkdayRules = (params: Record<string, unknown>) =>
   http.get<unknown, PageResult<WorkdayRule>>('/system/workday-rules', { params })
@@ -267,12 +275,7 @@ export interface Department {
   parentId?: string
 }
 
-export interface Role {
-  id: string
-  name: string
-  description: string
-  permissions: string[]
-}
+// ⚠️ **``Role`` 接口类型已随「角色管理」页下线一起移除**（2026-11-26）
 
 export const listEmployees = (skip: number = 0, limit: number = 20, filters?: Record<string, unknown>) =>
   http.get<unknown, EmployeeListResult>('/system/employees', { params: { skip, limit, ...filters } })
@@ -292,8 +295,7 @@ export const deleteEmployee = (userId: string) =>
 export const listDepartments = () =>
   http.get<unknown, Department[]>('/system/departments')
 
-export const listRoles = () =>
-  http.get<unknown, Role[]>('/system/roles')
+// ⚠️ **``listRoles`` 已随「角色管理」页下线一起移除**（2026-11-26）
 
 export function flattenDepartments(nodes: DeptNode[], depth = 0): Array<DeptNode & { depth: number }> {
   return nodes.flatMap((node) => [{ ...node, depth }, ...flattenDepartments(node.children || [], depth + 1)])

@@ -163,7 +163,11 @@ const entries = [
   { label: '员工注册', desc: '直接创建员工账号', path: '/system/employee-register' },
   { label: '员工管理', desc: '维护组织、负责人和状态', path: '/system/employees' },
   { label: '部门/项目组', desc: '维护组织树和负责人', path: '/system/orgs' },
-  { label: '角色与权限', desc: '配置角色动作边界', path: '/system/roles' },
+  // ⚠️ **「角色与权限」入口已下线**（2026-11-26）——
+  //    对应后端接口返回硬编码假数据、库里没有 `role` 表，
+  //    而且现在的权限是按**真实身份动态判定**的，不需要人工配角色。
+  //    详见 `navigation/workspaces.ts` 里同一处的说明。
+  { label: '部门功能板块', desc: '配置各部门可用的功能板块', path: '/system/department-modules' },
   { label: '工作日规则', desc: '维护日期填报口径', path: '/system/workday-rules' },
   { label: '审计日志', desc: '查询关键操作留痕', path: '/system/audits' },
   { label: '企业知识', desc: '查看发布依据与同步状态', path: '/system/knowledge' },
