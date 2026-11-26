@@ -317,10 +317,11 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_PUSH_URL: ${{ github.server_url }}/${{ github.repository }}.git
         run: |
           python backend/scripts/publish_ci_diagnostics.py \
             --repo "${GITHUB_REPOSITORY}" \
-            --branch "ci-diagnostics/failure-report" \
+            --branch "ci-diagnostics" \
             --junit data/_pytest_report.xml \
             --run-id "${GITHUB_RUN_ID}" \
             --sha "${GITHUB_SHA}"

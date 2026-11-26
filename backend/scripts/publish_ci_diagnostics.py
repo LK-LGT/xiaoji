@@ -155,16 +155,19 @@ def _read_failures(junit: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _fallback_git_push(args, files: dict[str, str]) -> bool:
-    """备用通道：直接用 ``git push`` 把报告推到诊断分支。
+def _git_push(args, files: dict[str, str]) -> bool:
+    """主通道：直接用 ``git push`` 把报告推到诊断分支。
 
-    ⚠️ **为什么需要备用通道**
-    REST API 的 ``POST/PATCH /git/refs`` 会因为「分支名里有 ``/``」
-    之类的细节返回 422 ⇒ 报告发不出去 ⇒ 白跑一趟。
-    ⇒ 兜一条 ``git push`` 通道。
+    ⚠️ **为什么主通道用 git 而不是 REST API**（2026-11-26 实测）
+    REST API 那条路在这套环境里**一直没建出分支**（POST 422 / 各种边角），
+    而 ``git push`` 是**被验证过能通的**（开发者日常推送走的就是它）。
 
-    ⚠️ **必须用「孤儿分支」而不是在当前分支上追加**
-    否则会把 CI 的检出状态搞乱（后续步骤的工作目录就变了）。
+    ⚠️ **认证从哪来**
+    CI 里由 ``actions/checkout`` 配置的 extraheader 提供
+    （``GITHUB_TOKEN``）⇒ 不需要额外配 credential。
+
+    ⚠️ **必须用「独立仓库」而不是在 CI 检出的仓库上操作**
+    否则会把检出状态搞乱（后续步骤的工作目录/分支就变了）。
 
     ⚠️ **失败也不阻断主流程** —— 报告发不出去不是测试失败的原因。
     """
@@ -204,7 +207,11 @@ def _fallback_git_push(args, files: dict[str, str]) -> bool:
                 return False
 
         remote = os.environ.get("GIT_PUSH_URL") or f"https://github.com/{args.repo}.git"
-        code, out = run("git", "push", "--force", remote, f"HEAD:refs/heads/{args.branch}")
+        # ⚠️ **HEAD:refs/heads/<branch>** —— 明确目标 ref，
+        #   避免分支名歧义。
+        code, out = run(
+            "git", "push", "--force", remote, f"HEAD:refs/heads/{args.branch}"
+        )
         if code != 0:
             print(f"   git push 失败：{out[:500]}", file=sys.stderr)
             return False
@@ -221,9 +228,6 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
 
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
-    if not token:
-        print("⚠️ 没有 GH_TOKEN / GITHUB_TOKEN ⇒ 跳过发布", file=sys.stderr)
-        return 0
 
     junit = Path(args.junit)
     failures = _read_failures(junit)
@@ -238,6 +242,30 @@ def main(argv: list[str]) -> int:
     }
     if junit.exists():
         files["pytest-report.xml"] = junit.read_text(encoding="utf-8", errors="replace")
+
+    # ⚠️ **先走 git push 通道**（2026-11-26 实测）
+    #   实测：REST API 那条路在这套环境里**一直没建出分支**
+    #   （POST 422 / 权限 / 各种边角）⇒ 排查不了。
+    #   而 ``git push`` 通道是**被验证过能通的**
+    #   （开发者日常推送 ``develop`` 走的就是它）⇒ 放前面。
+    #
+    #   ⚠️ **git push 通道不需要 token** —— 认证由
+    #   ``actions/checkout`` 配置的 extraheader 提供
+    #   ⇒ 所以这一步在「没有 token」时也要能跑。
+    if _git_push(args, files):
+        print(f"✅ 失败报告已发布到分支 {args.branch}（git push 通道）")
+        return 0
+
+    print("   ⇒ git push 通道失败，退回 REST API 通道", file=sys.stderr)
+
+    # ⚠️ **REST API 通道需要 token**（git push 通道不需要）
+    if not token:
+        print(
+            "❌ git push 通道失败，且没有 GH_TOKEN / GITHUB_TOKEN "
+            "⇒ 无法走 REST API 通道",
+            file=sys.stderr,
+        )
+        return 1
 
     # ⚠️ **孤儿提交**（parent = null）——
     #   不依赖目标分支是否存在 ⇒ 第一次失败就能建出分支。
@@ -307,10 +335,6 @@ def main(argv: list[str]) -> int:
             f"   （分支名 {args.branch!r} → 编码后 {encoded_ref!r}）",
             file=sys.stderr,
         )
-        print("   ⇒ 尝试退回 git push（备用通道）", file=sys.stderr)
-        if _fallback_git_push(args, files):
-            print(f"✅ 失败报告已发布到分支 {args.branch}（git push 通道）")
-            return 0
         return 1
 
     print(f"✅ 失败报告已发布到分支 {args.branch}（commit {commit['sha'][:7]}）")
