@@ -290,19 +290,24 @@ jobs:
         #   ⇒ 这一个 step 单独提升为 ``contents: write``。
         #   ⚠️ **只提升这一个 step**，不影响其它步骤
         #   ⇒ 最小权限原则不被破坏。
+        #
+        # ⚠️ **用 REST API 而不是 ``git push``**（实测踩坑）
+        #   ``git push`` 在这套 CI 环境里推不上去（分支始终不出现）
+        #   ⇒ 改用 GitHub API：``GITHUB_TOKEN`` 自带、权限明确、
+        #     失败有明确返回码可查；而且用**孤儿提交**，
+        #     不依赖目标分支已存在 ⇒ 第一次失败就能建出分支。
         if: failure()
         permissions:
           contents: write
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.name "ci-diagnostics"
-          git config user.email "ci-diagnostics@localhost"
-          mkdir -p ci-diagnostics
-          cp data/_pytest_report.xml ci-diagnostics/ 2>/dev/null || true
-          python backend/scripts/print_pytest_failures.py data/_pytest_report.xml > ci-diagnostics/failures.txt 2>&1 || true
-          git checkout -B ci-diagnostics/failure-report
-          git add ci-diagnostics/
-          git commit -m "ci: 后端测试失败报告 $(date -u +%Y%m%dT%H%M%SZ)" || echo "（没有可提交的内容）"
-          git push --force origin ci-diagnostics/failure-report || echo "（推送失败，不影响主流程）"
+          python backend/scripts/publish_ci_diagnostics.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --branch "ci-diagnostics/failure-report" \
+            --junit data/_pytest_report.xml \
+            --run-id "${GITHUB_RUN_ID}" \
+            --sha "${GITHUB_SHA}"
 
   # ───────────────────────────────────────────────────────────
   # 智能体服务：独立 FastAPI 服务，单独测试
