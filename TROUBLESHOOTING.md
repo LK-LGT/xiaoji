@@ -1,5 +1,10 @@
 # 🔧 前端无法进入 - 故障排除
 
+> ⚠️ **端口说明（2026-11-26）**
+> **本机后端跑在 8001**（8000 被另一个项目「买手流程智能中控台」占用）。
+> 下文凡是 `8000` 的命令，**本机一律改成 `8001`**；
+> 部署环境仍用 8000（项目默认）。
+
 ## 可能的问题
 
 ### 问题 1: 浏览器缓存
@@ -31,17 +36,17 @@ npm run dev
 **检查方法:**
 ```bash
 # 测试后端 API
-curl http://localhost:8000/v1/organizations/employees?limit=1
+curl http://localhost:8001/v1/organizations/employees?limit=1
 
 # 测试 API 文档
-访问 http://localhost:8000/docs
+访问 http://localhost:8001/docs
 ```
 
 **如果 API 无响应:**
 ```bash
 # 重启后端
 cd framework/backend
-python -m uvicorn app.main:app --port 8000 --reload
+python -m uvicorn app.main:app --port 8001 --reload
 ```
 
 ### 问题 4: 前端配置错误
@@ -50,7 +55,7 @@ python -m uvicorn app.main:app --port 8000 --reload
 **检查前端配置:**
 ```bash
 # 编辑 frontend/.env
-VITE_API_TARGET=http://localhost:8000  # 确保这一行正确
+VITE_API_TARGET=http://localhost:8001  # 确保这一行正确（本机端口）
 VITE_PORT=5180
 ```
 

@@ -577,6 +577,18 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
                 PermissionAction.SYNC_ORGANIZATION,
                 PermissionAction.SYNC_ATTENDANCE,
                 PermissionAction.VIEW_AUDIT_LOG,
+                # ⚠️ **2026-11-26 补** —— 系统管理员也要能**管员工**。
+                #
+                # 背景：``POST /system/users/{id}/reset-password`` 等端点
+                # 补上 ``MANAGE_EMPLOYEES`` 权限闸后（修 P0 越权后门），
+                # 只给 HR 的话 ⇒ **管理员被挡住** ⇒ 管理员改不了员工状态 /
+                # 重置不了员工密码 ⇒ 管理端功能形同虚设。
+                #
+                # 口径依据：前端菜单 ``ROLE_UI_PERMISSIONS`` 里
+                # ``hr`` 与 ``admin`` **都**有 ``system:employee:register``
+                # 与 ``system:employee:view`` ⇒ 后端动作权限必须对齐，
+                # 否则就是「前端能看、后端放行」/「前端能看、后端 403」两种漂移。
+                PermissionAction.MANAGE_EMPLOYEES,
             }
         )
 

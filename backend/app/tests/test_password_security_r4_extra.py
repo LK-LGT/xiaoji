@@ -73,6 +73,40 @@ def _auth_headers(db: Session, employee_id: str, token_version: int = 1) -> dict
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 0. 「谁能重置他人密码」的权限闸（2026-11-26 补）
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture()
+def admin_user(db: Session) -> str:
+    """造一个**系统管理员**（有 ``MANAGE_EMPLOYEES`` 权限位）。
+
+    ⚠️ **为什么要专门造一个管理员**
+    ``POST /system/users/{id}/reset-password`` 现在要求
+    ``MANAGE_EMPLOYEES``（只有 HR / 系统管理员有）。
+    ⇒ 下面几个「重置密码真的落库」的测试，**调用者必须是管理员**，
+    否则会被 403 挡掉（那是**正确**行为，不是 bug）。
+
+    ⚠️ **不要用被重置的那个人自己当调用者** ——
+    那正是这个闸要挡的越权路径。
+    """
+    from backend.app.domain.models import SystemAdmin
+
+    admin = Employee(
+        id="R4_ADMIN",
+        name="R4 管理员",
+        login_account="r4_admin",
+        employment_status="active",
+        account_status="enabled",
+        token_version=1,
+    )
+    db.add(admin)
+    db.add(SystemAdmin(employee_id="R4_ADMIN", active=True))
+    db.commit()
+    return "R4_ADMIN"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 1. 测试账号走哈希路径
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -184,10 +218,15 @@ def test_generate_initial_password_avoids_ambiguous_chars():
         assert not set(pwd) & set("0O1lI"), f"含易混淆字符：{pwd}"
 
 
-def test_reset_password_writes_hash_and_revokes_tokens(client: TestClient, db: Session):
+def test_reset_password_writes_hash_and_revokes_tokens(
+    client: TestClient, db: Session, admin_user: str
+):
     """管理员重置密码 → 落哈希、置强制改密、吊销旧 Token。
 
     之前该端点是空壳（返回 ``{"initialPassword": ""}``），用户的老密码**依然能用**。
+
+    ⚠️ **调用者是管理员，不是被重置的人** —— 该端点现在有权限闸
+    （见 ``admin_user`` fixture 的说明）。
     """
     emp = Employee(
         id="R4_RESET_001",
@@ -201,7 +240,7 @@ def test_reset_password_writes_hash_and_revokes_tokens(client: TestClient, db: S
     db.add(emp)
     db.commit()
 
-    admin_headers = _auth_headers(db, "R4_RESET_001")
+    admin_headers = _auth_headers(db, admin_user)
     resp = client.post(
         "/v1/system/users/R4_RESET_001/reset-password", headers=admin_headers
     )
@@ -220,10 +259,13 @@ def test_reset_password_writes_hash_and_revokes_tokens(client: TestClient, db: S
     assert refreshed.force_change_password is True
     # 旧 Token 全部失效。
     assert refreshed.token_version == 2
-    assert client.get("/v1/auth/me", headers=admin_headers).status_code == 401
+    # ⚠️ 管理员自己的 Token **不受影响**（被重置的是别人）。
+    assert client.get("/v1/auth/me", headers=admin_headers).status_code == 200
 
 
-def test_reset_password_old_password_no_longer_works(client: TestClient, db: Session):
+def test_reset_password_old_password_no_longer_works(
+    client: TestClient, db: Session, admin_user: str
+):
     """重置后，旧口令不能再登录。"""
     emp = Employee(
         id="R4_RESET_002",
@@ -237,7 +279,7 @@ def test_reset_password_old_password_no_longer_works(client: TestClient, db: Ses
     db.add(emp)
     db.commit()
 
-    headers = _auth_headers(db, "R4_RESET_002")
+    headers = _auth_headers(db, admin_user)
     assert client.post(
         "/v1/system/users/R4_RESET_002/reset-password", headers=headers
     ).status_code == 200
@@ -248,7 +290,9 @@ def test_reset_password_old_password_no_longer_works(client: TestClient, db: Ses
     assert resp.status_code == 401, "重置后旧口令仍能登录"
 
 
-def test_reset_password_404_for_unknown_user(client: TestClient, db: Session):
+def test_reset_password_404_for_unknown_user(
+    client: TestClient, db: Session, admin_user: str
+):
     """对不存在的用户重置密码 → 404（而不是假装成功）。"""
     emp = Employee(
         id="R4_RESET_003",
@@ -261,11 +305,54 @@ def test_reset_password_404_for_unknown_user(client: TestClient, db: Session):
     db.add(emp)
     db.commit()
 
-    headers = _auth_headers(db, "R4_RESET_003")
+    headers = _auth_headers(db, admin_user)
     resp = client.post(
         "/v1/system/users/NOT_EXIST_USER/reset-password", headers=headers
     )
     assert resp.status_code == 404
+
+
+def test_普通员工不能重置他人密码(client: TestClient, db: Session):
+    """🔴 **越权回归**：普通员工重置**别人**密码 → 403。
+
+    ⚠️ **这是 2026-11-26 实测到并修掉的真实越权后门**：
+    该端点原先只校验了登录态 ⇒ 任何员工都能把任意人（含 HR / 管理员）
+    的密码改成攻击者已知口令，并**直接拿到明文初始口令** ⇒ 完整账号接管。
+
+    ⇒ 必须用**动作权限位** ``MANAGE_EMPLOYEES`` 挡住，
+    而不是靠前端菜单串（那是可见性标识，不是动作鉴权）。
+    """
+    attacker = Employee(
+        id="R4_ATTACKER",
+        name="R4 普通员工",
+        login_account="r4_attacker",
+        employment_status="active",
+        account_status="enabled",
+        token_version=1,
+    )
+    victim = Employee(
+        id="R4_VICTIM",
+        name="R4 受害者",
+        login_account="r4_victim",
+        employment_status="active",
+        account_status="enabled",
+        password_hash=password_hasher.hash_password("original-pass"),
+        token_version=1,
+    )
+    db.add_all([attacker, victim])
+    db.commit()
+
+    headers = _auth_headers(db, "R4_ATTACKER")
+    resp = client.post(
+        "/v1/system/users/R4_VICTIM/reset-password", headers=headers
+    )
+    assert resp.status_code == 403, f"普通员工竟能重置他人密码：{resp.text}"
+
+    # ⚠️ 受害者的密码**必须没被改**。
+    db.expire_all()
+    refreshed = db.get(Employee, "R4_VICTIM")
+    assert password_hasher.verify_password("original-pass", refreshed.password_hash)
+    assert refreshed.token_version == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════

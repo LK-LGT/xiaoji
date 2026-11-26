@@ -17,10 +17,19 @@
 
 ## 🚀 如何运行
 
+### ⚠️ 端口说明（2026-11-26 起本机用 8001）
+
+本机 **8000 端口被另一个项目占用**（买手流程智能中控台）⇒
+本项目后端改用 **8001**，前端代理也已同步指向 8001（`frontend/.env` 的
+`VITE_API_TARGET=http://localhost:8001`）。
+
+> ⚠️ 8000 仍是**项目约定的默认端口**（部署环境用）。
+> 换端口只影响本机开发，**不要**把 8001 写进部署配置。
+
 ### 启动后端
 ```bash
 cd D:\AI-Projects\performance-management\framework\backend
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 ### 启动前端
@@ -31,8 +40,8 @@ npm run dev
 
 ### 访问应用
 - 🌐 **前端**: http://localhost:5180
-- 📡 **后端 API**: http://localhost:8000
-- 📚 **API 文档**: http://localhost:8000/docs
+- 📡 **后端 API**: http://localhost:8001
+- 📚 **API 文档**: http://localhost:8001/docs
 
 ---
 

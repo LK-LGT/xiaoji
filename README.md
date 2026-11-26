@@ -207,10 +207,14 @@ API 响应时间:
 
 ### 启动步骤
 
+> ⚠️ **本机端口是 8001，不是 8000**（2026-11-26）——
+> 本机 8000 被另一个项目（买手流程智能中控台）占用。
+> 部署环境仍用 8000（项目默认），**不要**把 8001 写进部署配置。
+
 **终端 1 - 启动后端:**
 ```bash
 cd framework/backend
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 **终端 2 - 启动前端:**
@@ -222,7 +226,7 @@ npm run dev
 
 **访问应用:**
 - 前端: http://localhost:5180
-- API 文档: http://localhost:8000/docs
+- API 文档: http://localhost:8001/docs
 
 ---
 

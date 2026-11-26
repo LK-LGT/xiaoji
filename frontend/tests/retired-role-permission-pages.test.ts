@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
@@ -66,6 +67,29 @@ test('「角色管理」「权限管理」两个假功能页面已删除', () =>
     router,
     /import RetiredRoleManagement from/,
     'router 应 import「已下线说明页」',
+  )
+})
+
+test('两个页面文件本身也不在磁盘上', () => {
+  // ⚠️ 上一条只查「有没有被 import」——
+  //   文件躺在仓库里但没人 import，同样是**死代码 + 误导后人**。
+  //   ⇒ 补一条「文件真的没了」的断言。
+  const viewsDir = fileURLToPath(new URL('../src/views/system/', import.meta.url))
+  assert.equal(
+    existsSync(join(viewsDir, 'RoleManagement.vue')),
+    false,
+    'RoleManagement.vue 应已删除（假功能页面）',
+  )
+  assert.equal(
+    existsSync(join(viewsDir, 'PermissionManagement.vue')),
+    false,
+    'PermissionManagement.vue 应已删除（假功能页面）',
+  )
+  // 「已下线说明页」必须在
+  assert.equal(
+    existsSync(join(viewsDir, 'RetiredRoleManagement.vue')),
+    true,
+    'RetiredRoleManagement.vue（已下线说明页）必须存在',
   )
 })
 
