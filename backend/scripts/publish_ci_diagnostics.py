@@ -39,17 +39,24 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
 _API = os.environ.get("GITHUB_API_BASE") or "https://api.github.com"
 
 
-def _post(url: str, token: str, payload: dict) -> tuple[int, dict]:
-    """调 GitHub API（POST）。返回 ``(状态码, 响应 JSON)``。"""
+def _request(
+    method: str, url: str, token: str, payload: dict
+) -> tuple[int, dict]:
+    """调 GitHub API。返回 ``(状态码, 响应 JSON)``。
+
+    ⚠️ **永远不抛异常** —— 返回 ``(0, {...})`` 表示网络层失败。
+    ⇒ CI 里能拿到明确的错误码，而不是一堆堆栈。
+    """
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=data,
-        method="POST",
+        method=method,
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -70,6 +77,16 @@ def _post(url: str, token: str, payload: dict) -> tuple[int, dict]:
             return exc.code, {"raw": body[:500]}
     except urllib.error.URLError as exc:
         return 0, {"error": str(exc)}
+
+
+def _post(url: str, token: str, payload: dict) -> tuple[int, dict]:
+    """调 GitHub API（POST —— 创建资源）。"""
+    return _request("POST", url, token, payload)
+
+
+def _patch(url: str, token: str, payload: dict) -> tuple[int, dict]:
+    """调 GitHub API（PATCH —— 更新已有资源）。"""
+    return _request("PATCH", url, token, payload)
 
 
 def _get(url: str, token: str) -> tuple[int, dict]:
@@ -138,6 +155,62 @@ def _read_failures(junit: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _fallback_git_push(args, files: dict[str, str]) -> bool:
+    """备用通道：直接用 ``git push`` 把报告推到诊断分支。
+
+    ⚠️ **为什么需要备用通道**
+    REST API 的 ``POST/PATCH /git/refs`` 会因为「分支名里有 ``/``」
+    之类的细节返回 422 ⇒ 报告发不出去 ⇒ 白跑一趟。
+    ⇒ 兜一条 ``git push`` 通道。
+
+    ⚠️ **必须用「孤儿分支」而不是在当前分支上追加**
+    否则会把 CI 的检出状态搞乱（后续步骤的工作目录就变了）。
+
+    ⚠️ **失败也不阻断主流程** —— 报告发不出去不是测试失败的原因。
+    """
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        for name, content in files.items():
+            (tmp_path / name).write_text(content, encoding="utf-8")
+
+        def run(*cmd: str) -> tuple[int, str]:
+            proc = subprocess.run(
+                cmd,
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+        # ⚠️ **先 init 一个独立仓库** ⇒ 不碰 CI 检出的那个仓库。
+        code, out = run("git", "init", "-q")
+        if code != 0:
+            print(f"   git init 失败：{out[:300]}", file=sys.stderr)
+            return False
+        for cmd in (
+            ("git", "config", "user.name", "ci-diagnostics"),
+            ("git", "config", "user.email", "ci-diagnostics@localhost"),
+            ("git", "add", "-A"),
+            ("git", "commit", "-q", "-m", f"ci: 失败报告 run={args.run_id or 'unknown'}"),
+        ):
+            code, out = run(*cmd)
+            if code != 0:
+                print(f"   {' '.join(cmd)} 失败：{out[:300]}", file=sys.stderr)
+                return False
+
+        remote = os.environ.get("GIT_PUSH_URL") or f"https://github.com/{args.repo}.git"
+        code, out = run("git", "push", "--force", remote, f"HEAD:refs/heads/{args.branch}")
+        if code != 0:
+            print(f"   git push 失败：{out[:500]}", file=sys.stderr)
+            return False
+        return True
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="发布 CI 失败报告到诊断分支")
     parser.add_argument("--repo", required=True, help="owner/name")
@@ -183,8 +256,12 @@ def main(argv: list[str]) -> int:
 
     status, resp = _post(f"{_API}/repos/{args.repo}/git/trees", token, tree)
     if status not in (200, 201):
-        print(f"⚠️ 创建 tree 失败：HTTP {status} {resp}", file=sys.stderr)
-        return 0
+        print(
+            f"❌ 创建 tree 失败：HTTP {status} {resp}\n"
+            f"   （token 长度 {len(token)}，repo={args.repo!r}）",
+            file=sys.stderr,
+        )
+        return 1
 
     commit_payload = {
         "message": f"ci: 失败报告 run={args.run_id or 'unknown'}",
@@ -195,19 +272,46 @@ def main(argv: list[str]) -> int:
         f"{_API}/repos/{args.repo}/git/commits", token, commit_payload
     )
     if status not in (200, 201):
-        print(f"⚠️ 创建 commit 失败：HTTP {status} {commit}", file=sys.stderr)
-        return 0
+        print(f"❌ 创建 commit 失败：HTTP {status} {commit}", file=sys.stderr)
+        return 1
 
     ref_payload = {
         "sha": commit["sha"],
         "force": True,
     }
+    # ⚠️ **分支名里的 ``/`` 必须做 URL 编码**（实测踩坑）
+    #   ``POST /repos/{owner}/{repo}/git/refs/heads/{ref}`` —— 这里的 ``{ref}``
+    #   是**一个路径段**，而 GitHub 的路由把 ``/`` 当成**层级分隔符**。
+    #   ⇒ 分支名 ``ci-diagnostics/failure-report`` 会被解析成
+    #     ``refs/heads/ci-diagnostics`` + ``failure-report``（两段）
+    #     ⇒ **422 Unprocessable Entity**，分支建不出来。
+    #   ⇒ 用 ``quote`` 把整段编码成 ``ci-diagnostics%2Ffailure-report``。
+    encoded_ref = quote(args.branch, safe="")
     status, ref = _post(
-        f"{_API}/repos/{args.repo}/git/refs/heads/{args.branch}", token, ref_payload
+        f"{_API}/repos/{args.repo}/git/refs/heads/{encoded_ref}", token, ref_payload
     )
+    # ⚠️ **分支已存在时 POST 会 422** ⇒ 退回 PATCH（更新现有 ref）。
+    #   POST  = 创建；PATCH = 更新。
+    if status == 422:
+        status, ref = _patch(
+            f"{_API}/repos/{args.repo}/git/refs/heads/{encoded_ref}",
+            token,
+            {"sha": commit["sha"], "force": True},
+        )
     if status not in (200, 201):
-        print(f"⚠️ 更新分支失败：HTTP {status} {ref}", file=sys.stderr)
-        return 0
+        # ⚠️ **常见原因**：
+        #   - 分支名里的 ``/`` 没编码（本次踩的坑）；
+        #   - token 权限不足（job 级 permissions 没提到 ``contents: write``）。
+        print(
+            f"❌ 更新分支失败：HTTP {status} {ref}\n"
+            f"   （分支名 {args.branch!r} → 编码后 {encoded_ref!r}）",
+            file=sys.stderr,
+        )
+        print("   ⇒ 尝试退回 git push（备用通道）", file=sys.stderr)
+        if _fallback_git_push(args, files):
+            print(f"✅ 失败报告已发布到分支 {args.branch}（git push 通道）")
+            return 0
+        return 1
 
     print(f"✅ 失败报告已发布到分支 {args.branch}（commit {commit['sha'][:7]}）")
     return 0
