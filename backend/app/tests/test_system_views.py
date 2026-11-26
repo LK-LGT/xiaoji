@@ -173,15 +173,23 @@ def test_user_item_exposes_dual_status(db):
 
 
 def test_role_names_are_derived(db):
-    """角色应按系统授权推导。"""
+    """角色应按系统授权推导。
+
+    ⚠️ **角色码用统一词表**（2026-11-26）——
+    ``services/role_vocabulary.py`` 是唯一事实源：
+    有下属 ⇒ ``manager``（**不是** ``leader``）。
+    历史上 ``system_views`` 用 ``leader``、``access_control`` 用 ``manager``，
+    两边不一致 ⇒ 同一个人在不同页面显示不同角色。
+    """
     _seed(db)
     result = system_views.list_user_items(db, page_no=1, page_size=50)
     by_id = {item["id"]: item for item in result["records"]}
 
     # 系统管理员
     assert "admin" in by_id["U_LEADER"]["roleNames"]
-    # 有下属 -> 直属主管
-    assert "leader" in by_id["U_LEADER"]["roleNames"]
+    # 有下属 -> 直属主管（规范角色码是 manager，不是 leader）
+    assert "manager" in by_id["U_LEADER"]["roleNames"]
+    assert "leader" not in by_id["U_LEADER"]["roleNames"]
     # 普通员工
     assert by_id["U_EMP"]["roleNames"] == ["employee"]
 

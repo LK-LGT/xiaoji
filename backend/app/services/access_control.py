@@ -26,6 +26,7 @@ from ..domain.models import (
     HrDepartmentConfig,
     SystemAdmin,
 )
+from .role_vocabulary import Role, derive_roles
 
 logger = logging.getLogger(__name__)
 
@@ -476,7 +477,18 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
         )
     ).first() is not None
 
-    roles: set[str] = {"employee"}
+    # ⚠️ **角色集合由 ``role_vocabulary.derive_roles`` 统一推导**（2026-11-26）
+    #
+    # 过去这里手写 ``roles.add("manager")`` / ``roles.add("department_leader")``，
+    # 而视图层 ``system_views._role_names`` 又另写了一份（还用了 ``leader``
+    # 而不是 ``manager``，且漏了 ``hr``）⇒ 同一个人的角色在两处显示不一样。
+    # ⇒ 现在两处都调 ``derive_roles``，判定条件与产出的角色码**只有一处定义**。
+    #
+    # ⚠️⚠️ **必须放在「代理授权查询」之后**（2026-11-26 修的真实 BUG）
+    #   `derive_roles` 的入参含 ``delegated_ids``（有没有代理授权也算下属），
+    #   而 ``delegated_ids` 在下面才赋值 ⇒ 提前调用会抛
+    #   ``UnboundLocalError: cannot access local variable 'delegated_ids'``。
+    #   ⇒ 把整个推导块**下移**到委托查询之后。
     permissions: set[str] = {
         PermissionAction.VIEW_OWN_SCORE,
         PermissionAction.SUBMIT_OWN_REVIEW,
@@ -501,8 +513,23 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
     except Exception:  # pragma: no cover - 委托表缺失时不影响既有权限
         logger.warning("读取代理授权失败（按无委托处理）", exc_info=True)
 
-    if direct_report_ids or delegated_ids or reporting_line_ids:
-        roles.add("manager")
+    # ✅ 位置正确：此时 ``delegated_ids`` / ``direct_report_ids`` /
+    #    ``reporting_line_ids`` / ``managed_department_ids`` / ``is_hr`` /
+    #    ``is_admin`` **全部已就绪**。
+    roles: set[str] = set(
+        derive_roles(
+            has_subordinates=bool(
+                direct_report_ids or delegated_ids or reporting_line_ids
+            ),
+            manages_department=bool(managed_department_ids),
+            is_hr=is_hr,
+            is_admin=is_admin,
+        )
+    )
+
+    # ⚠️ 角色集合**已在上方由 ``derive_roles`` 推导完毕** ——
+    # 这里只负责**权限位**（角色 ⇒ 权限位的映射仍按角色分别展开）。
+    if Role.MANAGER in roles:
         permissions.update(
             {
                 PermissionAction.VIEW_DIRECT_REPORT_SCORE,
@@ -511,8 +538,7 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
             }
         )
 
-    if managed_department_ids:
-        roles.add("department_leader")
+    if Role.DEPARTMENT_LEADER in roles:
         permissions.update(
             {
                 PermissionAction.VIEW_DIRECT_REPORT_SCORE,
@@ -520,8 +546,7 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
             }
         )
 
-    if is_hr:
-        roles.add("hr")
+    if Role.HR in roles:
         permissions.update(
             {
                 PermissionAction.VIEW_ALL_SCORES,
@@ -545,8 +570,7 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
             }
         )
 
-    if is_admin:
-        roles.add("admin")
+    if Role.ADMIN in roles:
         permissions.update(
             {
                 PermissionAction.MANAGE_SYSTEM_CONFIG,

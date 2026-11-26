@@ -86,16 +86,26 @@ export interface DeptNode {
 }
 
 export interface RoleItem {
-  /** 角色 ID（自增数字主键，后端 role_id 为 int）。 */
-  id: number
+  /**
+   * 角色 ID —— **规范角色码**（字符串），不是自增数字。
+   *
+   * ⚠️ 2026-11-26 起：后端 `/system/options` 的角色候选里
+   * `id` 与 `code` **都是规范角色码**（`employee` / `manager` /
+   * `department_leader` / `hr` / `admin`）。
+   * 历史上这里是「`id` 小写 / `code` 大写自造码（`ADMIN` / `EMPLOYEE`）」
+   * 两套码并存，且混着一个后端不存在的 `leader`。
+   * ⇒ 唯一事实源见 `backend/app/services/role_vocabulary.py`。
+   */
+  id: string
   name: string
+  /** 与 `id` 相同（规范角色码）。 */
   code: string
   description?: string
-  dataScope: string
-  builtIn: boolean
+  dataScope?: string
+  builtIn?: boolean
   status: number
-  userCount: number
-  permissionCount: number
+  userCount?: number
+  permissionCount?: number
 }
 
 export interface OptionItem { id: string; label: string; secondary?: string; status: number }
@@ -182,7 +192,7 @@ export interface WeekPlanStandardSupplementAction {
 export const getHealth = () => http.get<unknown, HealthStatus>('/health', { timeout: 5000 })
 export const getSystemDashboard = () => http.get<unknown, DashboardData>('/system/dashboard')
 export const getSystemOptions = () => http.get<unknown, SystemOptions>('/system/options')
-export const registerEmployee = (data: { realName: string; mobile: string; deptId: string; directLeaderId?: string; roleId: number; positionName?: string }) =>
+export const registerEmployee = (data: { realName: string; mobile: string; deptId: string; directLeaderId?: string; roleId: string; positionName?: string }) =>
   http.post<unknown, RegistrationResult>('/system/users/register', data)
 export const getUsers = (params: Record<string, unknown>) => http.get<unknown, PageResult<UserItem>>('/system/users', { params })
 export const updateUser = (id: string, data: Record<string, unknown>) => http.put<unknown, UserItem>(`/system/users/${id}`, data)
@@ -215,18 +225,12 @@ export const deleteDepartment = (id: string) => http.delete(`/system/departments
 //    员工注册 / 员工管理页的「角色」下拉框用的是
 //    ``GET /system/options``，与这里下线的 ``/system/roles`` **不是同一个东西**。
 //
-// ⚠️⚠️ **但 ``/system/options`` 的 ``code`` 字段也是历史遗留**（2026-11-26）
-//    ``RoleItem.code`` 返回的是**大写自造码**（``ADMIN`` / ``EMPLOYEE`` /
-//    ``DEPARTMENT_LEADER`` / ``LEADER``），而后端真实角色码是小写
-//    （``admin`` / ``employee`` / ``department_leader`` / ``manager``）。
-//    ⚠️ **真正与后端角色体系对齐的是 ``RoleItem.id``**
-//    （值就是 ``admin`` / ``employee`` / ``department_leader`` / ``leader``）。
-//    ⇒ 用 ``code`` 做角色判断的地方（如 ``EmployeeRegister.vue`` 找默认角色）
-//      是在匹配**自造码**，与「真实角色码」是两套东西。
-//    ⇒ 本轮**未改** ``/system/options`` 的返回结构 —— 员工注册是真实业务，
-//      改 ``code`` 会连带改契约测试与注册流程的默认角色匹配；
-//      留待「角色码口径统一」那一轮专门处理。
-//    ⇒ 详见 ``docs/11-待完善清单.md`` 中的角色码统一条目。
+// ✅ **2026-11-26 已统一**：`/system/options` 的角色候选现在
+//    ``id`` 与 ``code`` **都是规范角色码**（``employee`` / ``manager`` /
+//    ``department_leader`` / ``hr`` / ``admin``）。
+//    ⇒ 历史上「``id`` 小写 / ``code`` 大写自造码」的两套码并存已消除，
+//      前端不再需要「区分 id 和 code 哪个才是真的」。
+//    ⇒ 唯一事实源：``backend/app/services/role_vocabulary.py``。
 
 export const getWorkdayRules = (params: Record<string, unknown>) =>
   http.get<unknown, PageResult<WorkdayRule>>('/system/workday-rules', { params })

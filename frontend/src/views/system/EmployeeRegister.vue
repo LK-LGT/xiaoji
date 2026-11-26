@@ -72,7 +72,7 @@ const loading = ref(false)
 const saving = ref(false)
 const result = ref<RegistrationResult>()
 const options = reactive<SystemOptions>({ departments: [], leaders: [], roles: [] })
-const form = reactive<{ realName: string; mobile: string; positionName: string; deptId?: string; directLeaderId?: string; roleId?: number }>({ realName: '', mobile: '', positionName: '' })
+const form = reactive<{ realName: string; mobile: string; positionName: string; deptId?: string; directLeaderId?: string; roleId?: string }>({ realName: '', mobile: '', positionName: '' })
 const rules: FormRules = {
   realName: [{ required: true, message: '请输入员工姓名', trigger: 'blur' }],
   mobile: [{ required: true, pattern: /^1\d{10}$/, message: '请输入正确的11位手机号', trigger: 'blur' }],
@@ -109,8 +109,11 @@ function reset(clearResult = true) {
   if (clearResult) result.value = undefined
 }
 function defaultRoleId() {
-  const employeeRole = options.roles.find((role) => role.code === 'EMPLOYEE' && role.status === 1)
-  // 角色主键是自增数字（后端 role_id 为 int），不能转字符串。
+  // ⚠️ **匹配规范角色码 `employee`**（不是历史大写自造码 `EMPLOYEE`）——
+  // 后端 `/system/options` 的角色候选现在 `id` 与 `code` 都是规范码
+  // （见 `backend/app/services/role_vocabulary.py`）。
+  const employeeRole = options.roles.find((role) => role.code === 'employee' && role.status === 1)
+  // 角色主键是字符串角色码（不是自增数字），不能转数字。
   return employeeRole ? employeeRole.id : undefined
 }
 async function copy(value: string) {

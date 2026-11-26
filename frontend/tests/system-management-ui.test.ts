@@ -37,7 +37,7 @@ const aiManagementView = readFileSync(
 test('employee registration selects one role and allows an empty direct leader', () => {
   assert.match(registerView, /v-model="form\.roleId"/)
   assert.doesNotMatch(registerView, /v-model="form\.roleId"[^>]*multiple/)
-  assert.match(registerView, /role\.code === 'EMPLOYEE'/)
+  assert.match(registerView, /role\.code === 'employee'/)
   assert.match(registerView, /v-model="form\.directLeaderId"[^>]*clearable/)
   assert.doesNotMatch(registerView, /directLeaderId:\s*\[\{\s*required:\s*true/)
   assert.match(registerView, /roleId:\s*form\.roleId!/)

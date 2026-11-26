@@ -5,9 +5,12 @@ import { availableWorkspaces } from '../../navigation/workspaces.ts'
  *
  * ⚠️⚠️ **key 必须与后端 `roles` 字段发来的字符串完全一致**
  *
- * 后端权威来源（两处，必须同步）：
- * - `backend/app/services/access_control.py` → `roles.add("...")`
+ * 后端权威来源（**唯一**）：
+ * - `backend/app/services/role_vocabulary.py` → `ROLE_LABELS`
+ *
+ * ⚠️ 后端另有两处也用这套码，**必须同步**：
  * - `backend/app/routes/auth.py` → `ROLE_UI_PERMISSIONS` 的 key
+ * - `backend/app/services/access_control.py` → `derive_roles` 的产出
  *
  * 实际只有 **5 个**角色，且可叠加（一个人可能同时是员工 + 主管 + HR）：
  *
@@ -30,6 +33,10 @@ import { availableWorkspaces } from '../../navigation/workspaces.ts'
  * （`system_admin` 表绑定 `employee_id`），只是被授予了系统配置权限，
  * **不是**能随意查看/伪装全公司数据的万能账号。
  * ⇒ 「超级管理员」这个词会误导用户以为存在后门角色，直接不写。
+ *
+ * ⚠️ **前后端一致性由测试锁定** ——
+ * `frontend/tests/role-vocabulary-parity.test.ts` 会读后端
+ * `role_vocabulary.py` 的 `ROLE_LABELS`，与本表逐项比对。
  */
 const BUILT_IN_ROLE_LABELS: Record<string, string> = {
   employee: '员工',

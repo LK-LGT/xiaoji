@@ -10,14 +10,44 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+from .services.role_vocabulary import Role
+
 
 class RoleEnum(StrEnum):
-    """系统中的所有角色"""
-    ADMIN = "admin"                      # 系统管理员
-    DEPARTMENT_LEADER = "department"     # 部门负责人
-    TEAM_LEADER = "leader"               # 直属领导
-    EMPLOYEE = "employee"                # 普通员工
-    REVIEWER = "reviewer"                # 评审人员
+    """系统中的所有角色。
+
+    ⚠️⚠️ **已废弃（2026-11-26）—— 本模块整体不再被任何代码引用**
+    ------------------------------------------------------------------
+    这个文件是「阶段一权限模型」的遗留物，从 ReviewOps 借鉴的设计，
+    但项目后来改用了「角色 × 部门 × 汇报线」的**动态判定**
+    （``services/access_control.py`` + ``services/role_vocabulary.py``），
+    ⇒ 本文件里的 ``can_user_*`` / ``assert_user_can_*`` **一个都没被调用**。
+
+    ⚠️ **为什么还留着**
+        本文件里的 ``RoleEnum`` 曾是**第 4 套**角色词表，且与真实词表对不上：
+        - ``DEPARTMENT_LEADER = "department"`` —— 真实码是 ``department_leader``；
+        - ``TEAM_LEADER = "leader"`` —— 真实码是 ``manager``；
+        - ``REVIEWER = "reviewer"`` —— **后端根本不存在「裁决评审员」这个角色**。
+
+        ⇒ 留着它就等于留着一个「看起来是权威、其实全错」的词表，
+          后人照着它写代码必然出错。
+
+    ✅ **现在它只是「角色词表」的单薄转发**
+        所有角色码都从 ``services/role_vocabulary.py`` 取 ——
+        那是**唯一事实源** ⇒ 本文件不再可能与真实词表漂移。
+
+    ✅ **真实入口**
+        - 角色词表与推导 → ``services/role_vocabulary.py``
+        - 权限判定 → ``services/access_control.py``
+        - 角色中文标签 → ``services/role_vocabulary.ROLE_LABELS``
+    """
+
+    # ⚠️ 直接转发到唯一事实源 —— 不再自己定义一份。
+    EMPLOYEE = Role.EMPLOYEE
+    MANAGER = Role.MANAGER
+    DEPARTMENT_LEADER = Role.DEPARTMENT_LEADER
+    HR = Role.HR
+    ADMIN = Role.ADMIN
 
 
 class PermissionError(Exception):
@@ -157,13 +187,20 @@ def can_user_approve_plan(user: User, plan: Plan, approver_role: str) -> bool:
     """
     用户是否可以批准计划
 
-    approver_role: 审批人角色 ('manager', 'department_head', 'admin')
+    approver_role: 审批人角色（**规范角色码**）
+        （``manager`` / ``department_leader`` / ``admin``）
+
+    ⚠️ **历史坑（已修，2026-11-26）**
+        这里过去写的是 ``'department_head'`` / ``'department'`` ——
+        两者都**不是**真实角色码（真实码是 ``department_leader``）
+        ⇒ 传 ``department_head`` 会静默走到最后一行返回 ``False``，
+        即「部门负责人永远批不了计划」。
     """
     if user.is_admin:
         return True
-    if approver_role == "manager":
+    if approver_role == Role.MANAGER:
         return "leader:month-approval:view" in user.permissions
-    if approver_role == "department":
+    if approver_role == Role.DEPARTMENT_LEADER:
         return "department:month-approval:view" in user.permissions
     return False
 

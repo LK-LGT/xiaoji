@@ -15,10 +15,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..domain.models import Department, Employee, EmployeeDepartment, SystemAdmin
+from ..domain.models import Department, Employee, EmployeeDepartment
+from .role_vocabulary import role_choices
 
 # 组织节点类型。飞书只有部门与虚拟组两类，这里按规则归一。
 ORG_TYPE_DEPARTMENT = "DEPARTMENT"
@@ -134,33 +135,14 @@ def list_system_options(db: Session) -> dict[str, Any]:
         and employee.account_status == "enabled"
     ]
 
-    # 角色来自系统内置集合：本系统用角色集合表表达管理员授权。
-    roles = [
-        {
-            "id": "admin",
-            "name": "系统管理员",
-            "code": "ADMIN",
-            "status": 1,
-        },
-        {
-            "id": "department_leader",
-            "name": "部门负责人",
-            "code": "DEPARTMENT_LEADER",
-            "status": 1,
-        },
-        {
-            "id": "leader",
-            "name": "直属主管",
-            "code": "LEADER",
-            "status": 1,
-        },
-        {
-            "id": "employee",
-            "name": "普通员工",
-            "code": "EMPLOYEE",
-            "status": 1,
-        },
-    ]
+    # ⚠️ **角色候选来自 ``role_vocabulary``（唯一词表）**（2026-11-26）
+    #
+    # 过去这里是**手写的一组字面量**，而且 ``id`` 与 ``code`` 用了**两套码**
+    # （``id`` 小写真实码 / ``code`` 大写自造码，如 ``ADMIN`` / ``EMPLOYEE``），
+    # 外加一个后端根本不存在的 ``leader``（真实码是 ``manager``）。
+    # ⇒ 前端想用真实码就得看 ``id``，想看 ``code`` 却是自造码 ⇒ 两头不讨好。
+    # ⇒ 现在 ``id`` 与 ``code`` **都是规范角色码**。
+    roles = role_choices()
 
     return {"departments": departments, "leaders": leaders, "roles": roles}
 
@@ -249,41 +231,27 @@ def build_user_item(db: Session, employee: Employee) -> dict[str, Any]:
 
 
 def _role_names(db: Session, employee: Employee) -> list[str]:
-    """按系统授权推导角色名称。
+    """按系统授权推导角色码。
 
-    角色来源：
-    - ``system_admin`` 表：系统管理员；
-    - 拥有下属：直属主管；
-    - 是部门负责人：部门负责人；
-    - 其余：普通员工。
+    ⚠️ **角色判定已收敛到 ``access_control.build_access_context``**（2026-11-26）
+    ------------------------------------------------------------------
+    过去这里是**另写一份**判定逻辑，而且用的是 ``leader`` 而不是 ``manager``、
+    还**漏掉了 ``hr``** ⇒ 同一个人的角色在「个人中心」和「员工管理」里
+    显示**不一样**（真实发生过）。
+
+    ⇒ 现在直接复用 ``build_access_context`` 的 ``roles`` ——
+    它内部走 ``role_vocabulary.derive_roles``，是唯一的判定实现。
+    ⇒ 代价：每次推导要多几次查询（列表页 N 行 ⇒ N 次）。
+    ⚠️ 员工列表是分页的（默认 20 行），量级可接受；
+    若将来要做大批量导出，应改成分批预取 `managed_department_ids` 等。
+
+    返回**规范角色码**（``employee`` / ``manager`` / ``department_leader`` /
+    ``hr`` / ``admin``），前端直接拿它渲染中文标签即可。
     """
-    names: list[str] = []
+    from .access_control import build_access_context
 
-    is_admin = db.execute(
-        select(SystemAdmin).where(
-            SystemAdmin.employee_id == employee.id, SystemAdmin.active.is_(True)
-        )
-    ).scalars().first()
-    if is_admin is not None:
-        names.append("admin")
-
-    if employee.employment_status != "active":
-        return names or ["employee"]
-
-    has_reports = db.execute(
-        select(func.count(Employee.id)).where(Employee.manager_id == employee.id)
-    ).scalar_one()
-    if has_reports:
-        names.append("leader")
-
-    if employee.department_id:
-        dept = db.get(Department, employee.department_id)
-        if dept is not None and dept.leader_id == employee.id:
-            names.append("department_leader")
-
-    if not names:
-        names.append("employee")
-    return names
+    context = build_access_context(db, employee)
+    return sorted(context.roles)
 
 
 def employee_multi_departments(db: Session, employee_id: str) -> list[str]:
