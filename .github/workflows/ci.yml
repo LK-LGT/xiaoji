@@ -136,15 +136,20 @@ jobs:
         #   ⇒ 失败时把每个失败用例的 message + traceback 打到 job log
         #     （不需要 admin 权限就能看）。
         #
-        # ⚠️ **为什么先 ``head -60`` 打一份短的**
-        #   完整 traceback 可能几十 KB ⇒ GitHub 会折叠日志，
-        #   反而看不见。⇒ 先打一份**摘要**（每个失败用例的头几行），
-        #   完整版放在诊断分支里。
+        # ⚠️ **同时写进「job summary」**
+        #   job summary 出现在 **run 页面顶部**（不用展开日志就能看到），
+        #   且可通过 check-runs API 读取 ⇒ **不需要任何权限**。
+        #   ⇒ 这是排查时最省事的一处。
         if: failure()
         run: |
-          echo "::group::pytest 失败摘要"
-          python backend/scripts/print_pytest_failures.py data/_pytest_report.xml | head -80
-          echo "::endgroup::"
+          python backend/scripts/print_pytest_failures.py data/_pytest_report.xml | tee /tmp/failures.txt | head -80
+          {
+            echo "## ❌ 后端测试失败"
+            echo ""
+            echo '```'
+            cat /tmp/failures.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Alembic 迁移 —— 升级到 head
         working-directory: backend
@@ -278,7 +283,16 @@ jobs:
         #
         # ⚠️ **不碰 develop** —— 只推到独立的诊断分支，
         #   避免把失败产物混进开发分支。
+        #
+        # ⚠️ **为什么要单独给 permissions**（实测踩坑）
+        #   job 级别的 ``permissions: contents: read`` **不会**让
+        #   这一步获得推送权限 ⇒ 分支根本不会被创建（实测空跑）。
+        #   ⇒ 这一个 step 单独提升为 ``contents: write``。
+        #   ⚠️ **只提升这一个 step**，不影响其它步骤
+        #   ⇒ 最小权限原则不被破坏。
         if: failure()
+        permissions:
+          contents: write
         run: |
           git config user.name "ci-diagnostics"
           git config user.email "ci-diagnostics@localhost"
