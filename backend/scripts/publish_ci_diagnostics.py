@@ -155,6 +155,85 @@ def _read_failures(junit: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _checkout_origin_url() -> str:
+    """取 CI **检出仓库** 的 ``origin`` URL（取不到就返回空串）。
+
+    ⚠️ **为什么必须用它**（2026-11-26 实测）
+    ``actions/checkout`` 通过 **extraheader** 注入认证：
+    ``http.https://github.com/OWNER/REPO.git.extraheader``
+    ⇒ **按 URL 精确匹配**。
+
+    ⇒ 在临时仓库里直接 ``git push <url>``（没配 remote）时，
+    git **不会**附带那个 extraheader ⇒ 401/403。
+
+    ⇒ 用 checkout 仓库里**真实的** origin URL ⇒ extraheader 命中。
+    """
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        proc = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def _checkout_extraheaders(url: str) -> list[str]:
+    """从 checkout 仓库的本地配置里取出**匹配该 URL 的 extraheader**。
+
+    返回的每一项都可以直接喂给 ``git config --local <key> <value>``。
+
+    ⚠️ **为什么要拷**（2026-11-26 实测）
+    ``actions/checkout`` 把 ``GITHUB_TOKEN`` 写成：
+    ``http.https://github.com/OWNER/REPO.git.extraheader = AUTHORIZATION: basic xxx``
+    —— 是**仓库本地配置** ⇒ 临时仓库读不到 ⇒ 推送 401/403。
+
+    ⚠️ **只取「URL 前缀匹配」的**
+    extraheader 的 key 是 ``http.<url>.extraheader``，
+    git 对 URL 是**前缀匹配**（``https://github.com/OWNER/REPO.git``
+    也能匹配 ``http.https://github.com/OWNER/REPO.git.extraheader``）。
+    ⇒ 取所有以 ``http.`` 开头且含 ``extraheader`` 的行。
+    """
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        proc = subprocess.run(
+            ["git", "config", "--local", "--list"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        return []
+    if proc.returncode != 0:
+        return []
+
+    result: list[str] = []
+    for line in (proc.stdout or "").splitlines():
+        line = line.strip()
+        if not line or "extraheader" not in line or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        # ⚠️ 只取 http(s) 的 extraheader（git 也有 ``http.<url>.cookie`` 之类）
+        if not key.startswith("http."):
+            continue
+        result.append(f"{key}={value}")
+    return result
+
+
 def _git_push(args, files: dict[str, str]) -> bool:
     """主通道：直接用 ``git push`` 把报告推到诊断分支。
 
@@ -207,6 +286,35 @@ def _git_push(args, files: dict[str, str]) -> bool:
                 return False
 
         remote = os.environ.get("GIT_PUSH_URL") or f"https://github.com/{args.repo}.git"
+        # ⚠️ **必须把 remote 显式设成 checkout 用的那个 URL**（2026-11-26 实测）
+        #   ``actions/checkout`` 通过 **extraheader**（``http.<url>.extraheader``）
+        #   注入认证 —— 而 extraheader 是**按 URL 精确匹配**的。
+        #   ⇒ 临时仓库里若**没有配置 remote**，git 就不知道该往哪个 URL 发
+        #     ⇒ **不会附带认证头** ⇒ 推送 401/403。
+        #   ⇒ 显式 ``git remote add origin <url>``（用 checkout 的原始 URL）
+        #     ⇒ extraheader 命中 ⇒ 认证生效。
+        #
+        #   ⚠️ **优先用 checkout 仓库里真实的 remote URL**
+        #   （企业版可能不是 github.com，URL 可能带路径前缀）。
+        origin_url = _checkout_origin_url()
+        if origin_url:
+            remote = origin_url
+            run("git", "remote", "add", "origin", remote)
+
+        # ⚠️⚠️ **必须把 extraheader 认证拷进临时仓库**（2026-11-26 实测）
+        #   ``actions/checkout`` 把认证写成 **仓库本地配置**：
+        #     ``http.<url>.extraheader = AUTHORIZATION: basic <token>``
+        #   ⇒ 新建的临时仓库**读不到**它
+        #   ⇒ 推送会 **401/403**（而且错误信息很难看懂）。
+        #
+        #   ⇒ 显式把 checkout 仓库里匹配该 URL 的 extraheader
+        #     **原样拷进临时仓库** ⇒ 认证生效。
+        #
+        #   ⚠️ **只拷 extraheader，不拷别的**
+        #   （别把整个 config 搬过去 ⇒ 避免带进本地路径之类的设置）。
+        for cfg_line in _checkout_extraheaders(origin_url):
+            run("git", "config", "--local", cfg_line)
+
         # ⚠️ **HEAD:refs/heads/<branch>** —— 明确目标 ref，
         #   避免分支名歧义。
         code, out = run(
