@@ -29,10 +29,12 @@ from pathlib import Path
 
 import httpx
 
-# 允许从仓库根目录直接运行
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# ⚠️ **引导到仓库根 + 用 ``backend.app.*``** —— 见
+# ``seed_department_workload.py`` 里同一问题的说明：
+# 顶层 ``app`` 会被 agent-service 的 ``app`` 包抢占。
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.core.config import settings  # noqa: E402
+from backend.app.core.config import settings  # noqa: E402
 
 TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 APP_INFO_URL = "https://open.feishu.cn/open-apis/application/v6/applications/{app_id}"

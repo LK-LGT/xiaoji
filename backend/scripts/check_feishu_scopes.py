@@ -35,10 +35,13 @@ from typing import Any
 
 import httpx
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# ⚠️ **引导到仓库根 + 用 ``backend.app.*``** —— 见
+# ``seed_department_workload.py`` 里同一问题的说明：
+# 顶层 ``app`` 会被 agent-service 的 ``app`` 包抢占。
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.core.config import settings  # noqa: E402
-from app.services.feishu_client import FeishuClient  # noqa: E402
+from backend.app.core.config import settings  # noqa: E402
+from backend.app.services.feishu_client import FeishuClient  # noqa: E402
 
 BASE_URL = "https://open.feishu.cn/open-apis"
 

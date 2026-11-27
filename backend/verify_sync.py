@@ -1,8 +1,16 @@
 #!/usr/bin/env python
 """验证数据库中的飞书同步数据。"""
 
-from app.core.db import get_sessionmaker
-from app.domain.models import Department, Employee
+import sys
+from pathlib import Path
+
+# ⚠️ **引导到仓库根** —— 让 `backend.app.*` 可导入。
+# （顶层 `app` 会被 agent-service 的 `app` 包抢占，所以统一用全路径。）
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+from backend.app.core.db import get_sessionmaker
+from backend.app.domain.models import Department, Employee
 
 db = get_sessionmaker()()
 

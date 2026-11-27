@@ -39,19 +39,22 @@ from datetime import datetime
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-# ⚠️ 必须在 import app.core.* **之前**切换 CWD：
+# ⚠️ 必须在 import backend.app.core.* **之前**切换 CWD：
 # ``settings.database_url`` 是相对路径（``sqlite:///./data/perf.db``），
 # 相对的是进程 CWD。服务端以 ``backend/`` 为 CWD 启动，
 # 脚本必须对齐，否则就会改到**另一个库**上（详见 _resolve_db_path 注释）。
 os.chdir(BACKEND_DIR)
 
-from app.core.config import settings  # noqa: E402
-from app.core.db import get_sessionmaker  # noqa: E402
-from app.domain.models import Employee  # noqa: E402
-from app.services import password_hasher  # noqa: E402
+# ⚠️ 用 ``backend.app.*`` 全路径 —— 顶层 ``app`` 会被 agent-service 的
+# ``app`` 包抢占（仓库根 conftest 会把 agent-service 放进 sys.path）。
+from backend.app.core.config import settings  # noqa: E402
+from backend.app.core.db import get_sessionmaker  # noqa: E402
+from backend.app.domain.models import Employee  # noqa: E402
+from backend.app.services import password_hasher  # noqa: E402
 
 
 def _resolve_db_path() -> Path:

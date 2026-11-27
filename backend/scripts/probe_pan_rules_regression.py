@@ -12,11 +12,14 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# ⚠️ **引导到仓库根 + 用 ``backend.app.*``** —— 见
+# ``seed_department_workload.py`` 里同一问题的说明：
+# 顶层 ``app`` 会被 agent-service 的 ``app`` 包抢占。
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.core.db import get_sessionmaker  # noqa: E402
-from app.services.baidu_pan_service import BaiduPanService  # noqa: E402
-from app.services.pan_workload_rules import (  # noqa: E402
+from backend.app.core.db import get_sessionmaker  # noqa: E402
+from backend.app.services.baidu_pan_service import BaiduPanService  # noqa: E402
+from backend.app.services.pan_workload_rules import (  # noqa: E402
     DEFAULT_MARKER_RULES,
     judge_file,
     resolve_owner,

@@ -1,5 +1,13 @@
-from app.main import app
-from app.routes.self_review import router as sr_router
+import sys
+from pathlib import Path
+
+# ⚠️ **引导到仓库根** —— 让 `backend.app.*` 可导入。
+# （顶层 `app` 会被 agent-service 的 `app` 包抢占，所以统一用全路径。）
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+from backend.app.main import app
+from backend.app.routes.self_review import router as sr_router
 
 print("=== Checking _IncludedRouter ===")
 for route_obj in app.routes:

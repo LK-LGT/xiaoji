@@ -1,9 +1,14 @@
 """Debug route registration"""
 import sys
+from pathlib import Path
+
+# ⚠️ **引导到仓库根** —— 让 ``backend.app.*`` 可导入。
+# （顶层 ``app`` 会被 agent-service 的 ``app`` 包抢占，所以统一用全路径。）
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
     print("Step 1: Import self_review module...")
-    from app.routes import self_review
+    from backend.app.routes import self_review
     print(f"  OK: {self_review.router}")
     print(f"  Routes in self_review.router: {[r.path for r in self_review.router.routes if hasattr(r, 'path')]}")
 except Exception as e:
@@ -14,7 +19,7 @@ except Exception as e:
 
 try:
     print("\nStep 2: Import main app...")
-    from app.main import app
+    from backend.app.main import app
     print(f"  OK: app={app}")
 except Exception as e:
     print(f"  ERROR: {e}")

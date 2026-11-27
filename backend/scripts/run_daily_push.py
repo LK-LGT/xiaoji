@@ -33,7 +33,10 @@ from datetime import date
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(BACKEND_ROOT))
+# ⚠️ **引导到仓库根 + 用 ``backend.app.*``** —— 见
+# ``seed_department_workload.py`` 里同一问题的说明：
+# 顶层 ``app`` 会被 agent-service 的 ``app`` 包抢占。
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 def main() -> int:
@@ -52,11 +55,11 @@ def main() -> int:
     if not day:
         parser.error("请指定 --day 或 --today")
 
-    from app.core.config import settings
-    from app.core.db import get_sessionmaker
-    from app.services import pan_workload_policy as policy
-    from app.services.feishu_daily_metric_push import editors_for_push
-    from app.services.feishu_daily_push import leaders_of
+    from backend.app.core.config import settings
+    from backend.app.core.db import get_sessionmaker
+    from backend.app.services import pan_workload_policy as policy
+    from backend.app.services.feishu_daily_metric_push import editors_for_push
+    from backend.app.services.feishu_daily_push import leaders_of
 
     print("=" * 68)
     print(f"每日填报提醒推送 · {day}")
@@ -92,7 +95,7 @@ def main() -> int:
             return 0
 
         print("\n▶ 正在发送…")
-        from app.services.feishu_daily_push import push_daily_metrics
+        from backend.app.services.feishu_daily_push import push_daily_metrics
 
         result = push_daily_metrics(db, day)
         db.commit()

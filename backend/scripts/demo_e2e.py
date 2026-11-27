@@ -18,14 +18,21 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+# ⚠️ **引导到仓库根 + 用 ``backend.app.*``** —— 见
+# ``seed_department_workload.py`` 里同一问题的说明：
+# 顶层 ``app`` 会被 agent-service 的 ``app`` 包抢占。
 BACKEND = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(BACKEND))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.core.db import get_sessionmaker, init_db  # noqa: E402
-from app.db import seed as seed_mod  # noqa: E402
-from app.domain.enums import AttendanceAnomalyType, EvidenceSource, SubmitSource  # noqa: E402
-from app.domain.models import Employee  # noqa: E402
-from app.services import evidence_service, review_service  # noqa: E402
+from backend.app.core.db import get_sessionmaker, init_db  # noqa: E402
+from backend.app.db import seed as seed_mod  # noqa: E402
+from backend.app.domain.enums import (  # noqa: E402
+    AttendanceAnomalyType,
+    EvidenceSource,
+    SubmitSource,
+)
+from backend.app.domain.models import Employee  # noqa: E402
+from backend.app.services import evidence_service, review_service  # noqa: E402
 
 SEP = "=" * 72
 
@@ -40,10 +47,10 @@ def main() -> None:
     if db_path.exists():
         db_path.unlink()
 
-    import app.core.config as config_mod
+    import backend.app.core.config as config_mod
 
     config_mod.settings.database_url = f"sqlite:///{db_path}"
-    import app.core.db as db_mod
+    import backend.app.core.db as db_mod
 
     db_mod._engine = None
     db_mod._SessionLocal = None

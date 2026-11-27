@@ -7,14 +7,16 @@
 import sys
 from pathlib import Path
 
-# 添加 backend 到 path
+# ⚠️ **引导到仓库根 + 用 ``backend.app.*``** —— 见
+# ``seed_department_workload.py`` 里同一问题的说明：
+# 顶层 ``app`` 会被 agent-service 的 ``app`` 包抢占。
 backend_path = Path(__file__).parent.parent
-sys.path.insert(0, str(backend_path))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import logging
 
-from app.core.config import settings
-from app.services.feishu_client import FeishuClient
+from backend.app.core.config import settings
+from backend.app.services.feishu_client import FeishuClient
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
