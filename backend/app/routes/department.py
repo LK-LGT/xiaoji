@@ -30,7 +30,7 @@ from ..domain.config_models import (
 from ..domain.models import DayPlan, Department, Employee, MonthPlan, MonthPlanItem, WeekPlan
 from ..domain.plan_models import PlanApproval
 from ..domain.result_models import Result
-from ..services import department_config_service, ledger_service, plan_approval
+from ..services import department_config_service, ledger_service, plan_approval, workbench_service
 from ..services.access_control import PermissionAction
 from .shared import JsonBody
 
@@ -1391,60 +1391,110 @@ def _action_result(object_id: str, status: str, message: str = "") -> dict:
 # ============================================
 
 
+def _department_visible_department_ids(
+    db: Session, current_user: Employee
+) -> list[str]:
+    """部门侧可见部门：HR 全部；否则管理部门（无管理范围时退回本部门）。"""
+    context = build_access_context_for_user(current_user, db)
+    if context.has_permission(PermissionAction.VIEW_ALL_SCORES):
+        return [
+            str(row[0])
+            for row in db.query(Department.id).filter(Department.active.is_(True)).all()
+        ]
+    if context.managed_department_ids:
+        return sorted(context.managed_department_ids)
+    return [current_user.department_id] if current_user.department_id else []
+
+
+def _assert_department_can_view_employee(
+    db: Session, current_user: Employee, employee: Employee
+) -> None:
+    if employee.id == current_user.id:
+        return
+    context = build_access_context_for_user(current_user, db)
+    if context.has_permission(PermissionAction.VIEW_ALL_SCORES):
+        return
+    department_ids = set(context.managed_department_ids)
+    if current_user.department_id:
+        department_ids.add(str(current_user.department_id))
+    if str(employee.department_id or "") in department_ids:
+        return
+    raise HTTPException(status_code=403, detail="无权查看该员工的工作记录")
+
+
 @router.get("/org-tree")
-async def get_department_org_tree(db: Session = Depends(get_db)) -> dict:
+async def get_department_org_tree(
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """获取部门侧组织树。
 
     响应结构：OrgNode[]（裸数组）
     """
-    return {"code": 0, "data": []}
+    return {
+        "code": 0,
+        "data": workbench_service.org_tree(
+            db, _department_visible_department_ids(db, current_user)
+        ),
+    }
 
 
 @router.get("/employees/{owner_id}/work-items")
 async def list_department_employee_work_items(
     owner_id: str,
-    page_no: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
-    work_type: str | None = Query(None),
+    page_no: int = Query(1, ge=1, alias="pageNo"),
+    page_size: int = Query(20, ge=1, le=200, alias="pageSize"),
+    work_type: str | None = Query(None, alias="workType"),
+    start_date: str | None = Query(None, alias="startDate"),
+    end_date: str | None = Query(None, alias="endDate"),
+    status: str | None = Query(None),
+    keyword: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取指定员工的工作项分页。
 
     响应结构：DepartmentEmployeeWorkPage（= LeaderEmployeeWorkPage）
     """
+    employee = db.get(Employee, owner_id)
+    if employee is None:
+        raise HTTPException(status_code=404, detail="员工不存在")
+    _assert_department_can_view_employee(db, current_user, employee)
     return {
         "code": 0,
-        "data": {
-            "employee": _empty_leader_employee_summary(owner_id),
-            "items": [],
-            "total": 0,
-            "pageNo": page_no,
-            "pageSize": page_size,
-        },
+        "data": workbench_service.work_items_page(
+            db,
+            employee,
+            work_type=work_type,
+            start_date=start_date,
+            end_date=end_date,
+            status=status,
+            keyword=keyword,
+            page_no=page_no,
+            page_size=page_size,
+        ),
     }
 
 
 @router.get("/employees/{owner_id}/month-plans/{plan_id}")
 async def get_department_employee_month_plan(
     owner_id: str,
-    plan_id: int,
+    plan_id: str,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取指定员工的月计划详情。
 
     响应结构：LeaderEmployeeMonthPlanDetail
     """
-    return {
-        "code": 0,
-        "data": {
-            "id": plan_id,
-            "title": "",
-            "planMonth": "",
-            "status": "DRAFT",
-            "leaderComment": "",
-            "tasks": [],
-        },
-    }
+    employee = db.get(Employee, owner_id)
+    if employee is None:
+        raise HTTPException(status_code=404, detail="员工不存在")
+    _assert_department_can_view_employee(db, current_user, employee)
+    detail = workbench_service.month_plan_detail(db, owner_id, plan_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="月计划不存在")
+    return {"code": 0, "data": detail}
 
 
 @router.get("/project-result-packages/{group_id}")

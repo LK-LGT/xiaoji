@@ -367,9 +367,19 @@ def test_root_sentinel_is_string(client: TestClient, isolated_db) -> None:
 def test_empty_summary_uses_string_sentinel(
     client: TestClient, auth_headers: dict
 ) -> None:
-    """员工摘要里的 orgId 必须是字符串 "0"（根节点哨兵）。"""
-    response = client.get(
+    """员工摘要里的 orgId 必须是字符串 "0"（根节点哨兵）。
+
+    2026-11-27 起工作项端点改为真实取数：
+    - 不存在的员工返回 404（不再用空摘要掩盖）；
+    - 用**已存在且无部门**的 CI_ADMIN 验证根节点哨兵仍是字符串 "0"。
+    """
+    missing = client.get(
         f"/v1/department/employees/{HEX_USER}/work-items", headers=auth_headers
+    )
+    assert missing.status_code == 404, missing.text
+
+    response = client.get(
+        "/v1/department/employees/CI_ADMIN/work-items", headers=auth_headers
     )
     assert response.status_code == 200, response.text
 

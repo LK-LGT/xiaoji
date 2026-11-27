@@ -23,6 +23,7 @@ from ..services import (
     ledger_service,
     plan_adjustment_service,
     plan_approval,
+    workbench_service,
 )
 from ..services.access_control import PermissionAction
 from .shared import JsonBody
@@ -422,29 +423,82 @@ async def download_leader_export_task(
 # ---------------------------------------------------------------------------
 
 
+def _leader_employee_ids(db: Session, current_user: Employee) -> list[str]:
+    """领导端「直属员工」范围（飞书 ``manager_id``）。"""
+    context = build_access_context_for_user(current_user, db)
+    return sorted(context.direct_report_ids)
+
+
+def _leader_department_ids(
+    db: Session, current_user: Employee, employee_ids: list[str]
+) -> list[str]:
+    """领导可见部门 = 直属员工所在部门 + 本人管理部门。"""
+    context = build_access_context_for_user(current_user, db)
+    ids = set(context.managed_department_ids)
+    if employee_ids:
+        rows = (
+            db.query(Employee.department_id)
+            .filter(Employee.id.in_(employee_ids))
+            .all()
+        )
+        ids.update(str(row[0]) for row in rows if row[0])
+    return sorted(ids)
+
+
+def _assert_leader_can_view(db: Session, current_user: Employee, owner_id: str) -> None:
+    """校验目标员工是否在汇报线 / 管理部门 / 代理授权范围内。"""
+    context = build_access_context_for_user(current_user, db)
+    if str(owner_id) == current_user.id:
+        return
+    if context.has_permission(PermissionAction.VIEW_ALL_SCORES):
+        return
+    if str(owner_id) in (
+        set(context.direct_report_ids)
+        | set(context.reporting_line_ids)
+        | set(context.delegated_employee_ids)
+    ):
+        return
+    if context.managed_department_ids:
+        employee = db.get(Employee, str(owner_id))
+        if employee is not None and str(employee.department_id or "") in context.managed_department_ids:
+            return
+    raise HTTPException(status_code=403, detail="无权查看该员工的工作记录")
+
+
 @router.get("/org-tree")
-async def get_leader_org_tree(db: Session = Depends(get_db)) -> dict:
+async def get_leader_org_tree(
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """获取领导侧组织树。
 
     响应结构：OrgNode[]（裸数组）
     """
-    return _ok([])
+    employee_ids = _leader_employee_ids(db, current_user)
+    department_ids = _leader_department_ids(db, current_user, employee_ids)
+    return _ok(workbench_service.org_tree(db, department_ids))
 
 
 @router.get("/workbench")
 async def get_leader_workbench(
     request: Request,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取领导工作台聚合数据。
 
     响应结构：LeaderWorkbench
     = { orgTree, metrics, dateStatuses, subordinateSummaries }
+
+    ⚠️ ``dateStatuses`` / ``subordinateSummaries`` 目前未使用（前端工作台
+    走员工列表与计划包接口）⇒ 如实返回空数组，不编造数据。
     """
+    employee_ids = _leader_employee_ids(db, current_user)
+    department_ids = _leader_department_ids(db, current_user, employee_ids)
     return _ok(
         {
-            "orgTree": [],
-            "metrics": [],
+            "orgTree": workbench_service.org_tree(db, department_ids),
+            "metrics": workbench_service.workbench_metrics(db, employee_ids),
             "dateStatuses": [],
             "subordinateSummaries": [],
         }
@@ -462,58 +516,72 @@ async def get_leader_workbench(
 async def list_leader_employees(
     request: Request,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取领导下属员工摘要列表。
 
     响应结构：LeaderEmployeeSummary[]（裸数组）
     """
-    return _ok([])
+    return _ok(
+        workbench_service.employee_summaries(
+            db, _leader_employee_ids(db, current_user)
+        )
+    )
 
 
 @router.get("/employees/{owner_id}/work-items")
 async def list_leader_employee_work_items(
     owner_id: str,
-    page_no: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
-    work_type: str | None = Query(None),
+    page_no: int = Query(1, ge=1, alias="pageNo"),
+    page_size: int = Query(20, ge=1, le=200, alias="pageSize"),
+    work_type: str | None = Query(None, alias="workType"),
+    start_date: str | None = Query(None, alias="startDate"),
+    end_date: str | None = Query(None, alias="endDate"),
+    status: str | None = Query(None),
+    keyword: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取指定员工的工作项分页。
 
     响应结构：LeaderEmployeeWorkPage
     = { employee, items, total, pageNo, pageSize }
     """
+    _assert_leader_can_view(db, current_user, owner_id)
+    employee = db.get(Employee, owner_id)
+    if employee is None:
+        raise HTTPException(status_code=404, detail="员工不存在")
     return _ok(
-        {
-            "employee": _empty_leader_employee_summary(owner_id),
-            "items": [],
-            "total": 0,
-            "pageNo": page_no,
-            "pageSize": page_size,
-        }
+        workbench_service.work_items_page(
+            db,
+            employee,
+            work_type=work_type,
+            start_date=start_date,
+            end_date=end_date,
+            status=status,
+            keyword=keyword,
+            page_no=page_no,
+            page_size=page_size,
+        )
     )
 
 
 @router.get("/employees/{owner_id}/month-plans/{plan_id}")
 async def get_leader_employee_month_plan(
     owner_id: str,
-    plan_id: int,
+    plan_id: str,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取指定员工的月计划详情。
 
     响应结构：LeaderEmployeeMonthPlanDetail
     """
-    return _ok(
-        {
-            "id": plan_id,
-            "title": "",
-            "planMonth": "",
-            "status": "DRAFT",
-            "leaderComment": "",
-            "tasks": [],
-        }
-    )
+    _assert_leader_can_view(db, current_user, owner_id)
+    detail = workbench_service.month_plan_detail(db, owner_id, plan_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="月计划不存在")
+    return _ok(detail)
 
 
 def _empty_leader_employee_summary(owner_id: str) -> dict:
