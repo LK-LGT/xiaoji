@@ -43,6 +43,12 @@ import pytest
 ROOT = Path(__file__).resolve().parent
 AGENT_SERVICE = ROOT / "agent-service"
 
+# ⚠️ 2026-11-27：Windows 控制台默认 GBK，而测试里的子进程（生产姿态核对、
+# 迁移校验、计划幻觉自检）按 UTF-8 读取输出 ⇒ 本地会出现 13 条
+# UnicodeDecodeError，CI（Ubuntu）却全绿。
+# 这里统一给测试进程与子进程指定 UTF-8，避免「本地红、CI 绿」的假故障。
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
 if AGENT_SERVICE.is_dir() and str(AGENT_SERVICE) not in sys.path:
     # ⚠️ append 而非 insert(0) —— 理由见模块 docstring。
     sys.path.append(str(AGENT_SERVICE))
