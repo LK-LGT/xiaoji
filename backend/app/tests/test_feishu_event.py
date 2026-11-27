@@ -38,7 +38,10 @@ OFFICIAL_VECTOR_CIPHER = "P37w+VZImNgPEO1RBhJ6RtKl7n6zymIbEG1pReEzghk="
 OFFICIAL_VECTOR_PLAIN = "hello world"
 
 TEST_ENCRYPT_KEY = "0uBLCvvZA0gBTMYeM6HbZlbOg1HVFWxR"
-TEST_VERIFICATION_TOKEN = "TidtYlvv8dSpdb6KpsLGYM1mWZopEjBI"
+# ⚠️ 2026-11-27：这里**绝不能**写真实 Verification Token。
+#    历史版本曾把本地 `.env` 的真实 Token 抄进测试（并进入 git 历史）
+#    ⇒ 轮换 Token 是主修复；本文件只保留**明显是假的**测试值。
+TEST_VERIFICATION_TOKEN = "test-verification-token-not-real"
 
 
 # ---------------------------------------------------------------------------

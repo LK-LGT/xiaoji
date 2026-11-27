@@ -327,3 +327,31 @@ def test_responses_do_not_echo_credential_headers():
         "X-Tenant-Token",
     ):
         assert header not in resp.headers
+
+
+def test_real_feishu_verification_token_not_hardcoded_in_tests():
+    """测试源码不得写死真实的飞书 Verification Token。
+
+    ⚠️ 2026-11-27：`test_feishu_event.py` 曾把本地 `.env` 的真实 Token
+    抄进常量并进入 git 历史 ⇒ 轮换 Token 后，用这条护栏防止再次发生。
+    """
+    from pathlib import Path
+
+    real_tokens = {
+        item
+        for item in (
+            settings.feishu_approval_webhook_token,
+            settings.feishu_contact_event_token,
+        )
+        if item
+    }
+    if not real_tokens:
+        pytest.skip("未配置飞书 Verification Token，跳过（CI 无 .env）")
+
+    tests_dir = Path(__file__).resolve().parent
+    offenders: list[str] = []
+    for path in tests_dir.glob("*.py"):
+        body = path.read_text(encoding="utf-8", errors="ignore")
+        if any(token in body for token in real_tokens):
+            offenders.append(path.name)
+    assert not offenders, f"测试文件中出现了真实飞书 Token：{offenders}"
