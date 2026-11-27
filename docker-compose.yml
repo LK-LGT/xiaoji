@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: perf
+      POSTGRES_USER: perf
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-perf_local_only}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U perf -d perf"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://perf:${POSTGRES_PASSWORD:-perf_local_only}@postgres:5432/perf
+      ALEMBIC_EXPECT_TARGET: postgresql:postgres:5432/perf
+      AUTO_CREATE_TABLES: "false"
+      AGENT_SERVICE_URL: http://agent:8800
+    volumes:
+      - ./backend/data:/app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  agent:
+    build: ./agent-service
+    env_file:
+      - ./agent-service/.env
+    environment:
+      AGENT_TOOL_BASE_URL: http://backend:8000
+    expose:
+      - "8800"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from . import dependencies, exceptions, schemas
@@ -738,6 +738,21 @@ def health() -> dict[str, Any]:
         "agent_service_url": settings.agent_service_url,
         "rating_policy": settings.rating_policy,
     }
+
+
+@app.get("/ready")
+def ready(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """就绪探针：DB 可查询 + 迁移版本可读。
+
+    ⚠️ 与 ``/health`` 分开：``/health`` 只说明进程活着，
+    ``/ready`` 说明「可以接流量」——DB 不可用时应返回 503。
+    """
+    try:
+        db.execute(text("select 1"))
+        version = db.execute(text("select version_num from alembic_version")).scalar()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail={"status": "not_ready", "error": str(exc)}) from exc
+    return {"status": "ready", "database": "ok", "alembicVersion": version}
 
 
 def _period_display(period: str | None) -> str | None:

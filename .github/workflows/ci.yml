@@ -73,7 +73,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --require-hashes -r backend/requirements.lock.txt
-          pip install ruff
+          pip install ruff==0.17.5
 
       - name: 依赖安全扫描（pip-audit）
         # ⚠️ **扫 lock 文件，不扫整个环境** ——
@@ -84,7 +84,7 @@ jobs:
         # ⚠️ --desc off / --progress-spinner off 是为了让 CI 日志可读。
         # ⚠️ 退出码非 0 = 有漏洞 ⇒ **直接让 CI 变红**（硬门槛）。
         run: |
-          pip install pip-audit
+          pip install pip-audit==2.10.1
           pip-audit -r backend/requirements.lock.txt --progress-spinner off --desc off
 
       - name: 准备 CI 数据库目录
@@ -349,11 +349,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --require-hashes -r agent-service/requirements.lock.txt
-          pip install pytest httpx ruff
+          pip install pytest httpx ruff==0.17.5
 
       - name: 依赖安全扫描（pip-audit）
         run: |
-          pip install pip-audit
+          pip install pip-audit==2.10.1
           pip-audit -r agent-service/requirements.lock.txt --progress-spinner off --desc off
 
       - name: 运行测试
