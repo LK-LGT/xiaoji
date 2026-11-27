@@ -191,6 +191,20 @@ def _batch_approve(
 #   现在 title 由**文件名推导**，前端不必再传。
 # ---------------------------------------------------------------------------
 
+#: 允许上传知识文档的角色（领导端“文档入库”）。
+_LEADER_KNOWLEDGE_ROLES = frozenset({"manager", "department_leader", "hr", "admin"})
+
+
+def _require_leader_knowledge_writer(db: Session, current_user: Employee) -> None:
+    """领导端知识上传仅限主管/部门负责人/HR/管理员。
+
+    ⚠️ 不使用全局 ``MANAGE_KNOWLEDGE`` 权限位 —— 那个位还包含
+    「停用 / 删除任意文档」，不能顺带授予主管。
+    """
+    context = build_access_context_for_user(current_user, db)
+    if not (context.roles & _LEADER_KNOWLEDGE_ROLES):
+        raise HTTPException(status_code=403, detail="无权上传知识文档")
+
 
 @router.post("/knowledge/upload")
 async def upload_leader_knowledge(
@@ -212,6 +226,7 @@ async def upload_leader_knowledge(
     ⚠️ **真的入库**
     解析 → 切块 → 落盘 → 建索引 ⇒ 上传后立刻能被 AI 检索到。
     """
+    _require_leader_knowledge_writer(db, current_user)
     data = await file.read()
     audience = [item.strip() for item in (audienceCodes or "").split(",") if item.strip()]
     scopes = [item.strip() for item in (appliesTo or "").split(",") if item.strip()]
@@ -267,6 +282,8 @@ async def list_leader_knowledge_uploads(
 
     ⚠️ **只返回该领导自己上传的**
     领导端是「我的入库台」⇒ 不该看到别人的上传记录。
+    ⚠️ 列表按 ``owner_id == 当前用户`` 过滤，普通员工看也只会看到空列表
+    ⇒ 不额外加角色闸，避免把「只看自己」误伤成 403。
     """
     from sqlalchemy import select
 
