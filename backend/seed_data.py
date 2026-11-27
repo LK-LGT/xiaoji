@@ -1,11 +1,18 @@
 """
 创建示例数据
 """
+import sys
 import uuid
 from datetime import date
+from pathlib import Path
 
-from app.core.db import get_engine, get_sessionmaker
-from app.domain.models import Base, Department, Employee
+# ⚠️ **引导到仓库根** —— 让 `backend.app.*` 可导入。
+# （顶层 `app` 会被 agent-service 的 `app` 包抢占，所以统一用全路径。）
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+from backend.app.core.db import get_engine, get_sessionmaker
+from backend.app.domain.models import Base, Department, Employee
 
 
 def seed_data():

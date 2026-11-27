@@ -9,17 +9,21 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# ⚠️ **引导到仓库根 + 用 ``backend.app.*``** —— 见
+# ``seed_department_workload.py`` 里同一问题的说明：
+# 顶层 ``app`` 会被 agent-service 的 ``app`` 包抢占。
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.core.db import get_sessionmaker  # noqa: E402
-from app.domain.models import Employee  # noqa: E402
-from app.domain.pan_workload_models import (  # noqa: E402
+from sqlalchemy import delete, select  # noqa: E402
+
+from backend.app.core.db import get_sessionmaker  # noqa: E402
+from backend.app.domain.models import Employee  # noqa: E402
+from backend.app.domain.pan_workload_models import (  # noqa: E402
     PanAccountBinding,
     PanWorkloadDaily,
     PanWorkloadFile,
 )
-from app.services.pan_workload_service import PanWorkloadService  # noqa: E402
-from sqlalchemy import delete, select  # noqa: E402
+from backend.app.services.pan_workload_service import PanWorkloadService  # noqa: E402
 
 #: 期望值 —— 来自探针脚本 ``probe_pan_rules_regression.py`` 的真实回归结果
 EXPECTED = {

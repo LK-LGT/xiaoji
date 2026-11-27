@@ -28,11 +28,11 @@ import sys
 from datetime import date
 from pathlib import Path
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(BACKEND_ROOT))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
-from app.core.config import settings  # noqa: E402
-from app.core.db import get_sessionmaker  # noqa: E402
+from backend.app.core.config import settings  # noqa: E402
+from backend.app.core.db import get_sessionmaker  # noqa: E402
 
 
 def _ok(flag: bool) -> str:
@@ -77,16 +77,17 @@ def main() -> int:
     print("\n【③ 板块 / ④ 口径】")
     db = get_sessionmaker()()
     try:
-        from app.domain.pan_workload_models import (
+        from sqlalchemy import select
+
+        from backend.app.domain.pan_workload_models import (
             DepartmentModule,
             PanFeishuMetricSource,
             PanWorkloadPolicy,
         )
-        from app.services import pan_workload_policy as policy
-        from app.services.department_modules import PAN_WORKLOAD_MODULE
-        from app.services.feishu_daily_metric_push import editors_for_push
-        from app.services.feishu_daily_push import leaders_of
-        from sqlalchemy import select
+        from backend.app.services import pan_workload_policy as policy
+        from backend.app.services.department_modules import PAN_WORKLOAD_MODULE
+        from backend.app.services.feishu_daily_metric_push import editors_for_push
+        from backend.app.services.feishu_daily_push import leaders_of
 
         # 板块开通情况
         mods = db.execute(

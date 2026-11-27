@@ -45,16 +45,42 @@ import logging
 import sys
 from pathlib import Path
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
+# ⚠️ **必须引导到「仓库根」并用 ``backend.app.*`` 导入**（2026-11-26 修复）
+#
+# 原来这里引导到 ``backend/`` 并用 ``from app.core.db import ...``。
+# 那在**单独跑脚本**时没问题，但从**仓库根**跑 pytest 时会炸：
+#
+#   ModuleNotFoundError: No module named 'app.core'
+#
+# 根因：仓库根的 ``conftest.py`` 把 ``agent-service/`` 追加进 ``sys.path``，
+# 而 ``agent-service/app/`` 里**也有一个叫 ``app`` 的包** ⇒
+# ``import app`` 解析到 **agent-service 的 app**，不是 ``backend/app``。
+# ⇒ ``app.core`` 自然找不到。
+#
+# 而根 conftest 之所以把 agent-service 放进 sys.path，是为了让
+# ``tests._test_secret`` 能解析 —— 代价就是顶层 ``app`` 被**抢占**。
+#
+# ⇒ 结论：后端脚本**一律用 ``backend.app.*`` 全路径**，
+# 并把**仓库根**（``parents[2]``）放进 ``sys.path``。
+# 这样无论从哪个目录跑、sys.path 上有什么，都不会有歧义。
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from app.core.db import get_sessionmaker  # noqa: E402
-from app.domain.models import Department, Employee  # noqa: E402
-from app.domain.pan_workload_models import DepartmentModule, PanWorkloadPolicy  # noqa: E402
-from app.services.department_modules import DEPT_WORKLOAD_MODULE  # noqa: E402
-from app.services.pan_workload_policy import ROLE_NONE, ROLE_REPORTER, ROLE_REVIEWER  # noqa: E402
 from sqlalchemy import select  # noqa: E402
+
+from backend.app.core.db import get_sessionmaker  # noqa: E402
+from backend.app.domain.models import Department, Employee  # noqa: E402
+from backend.app.domain.pan_workload_models import (  # noqa: E402
+    DepartmentModule,
+    PanWorkloadPolicy,
+)
+from backend.app.services.department_modules import DEPT_WORKLOAD_MODULE  # noqa: E402
+from backend.app.services.pan_workload_policy import (  # noqa: E402
+    ROLE_NONE,
+    ROLE_REPORTER,
+    ROLE_REVIEWER,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("seed_department_workload")

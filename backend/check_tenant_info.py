@@ -2,9 +2,16 @@
 """检查飞书企业和账户信息。"""
 
 import json
+import sys
+from pathlib import Path
 
-from app.core.config import settings
-from app.services.feishu_client import FeishuClient
+# ⚠️ **引导到仓库根** —— 让 `backend.app.*` 可导入。
+# （顶层 `app` 会被 agent-service 的 `app` 包抢占，所以统一用全路径。）
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+from backend.app.core.config import settings
+from backend.app.services.feishu_client import FeishuClient
 
 client = FeishuClient(
     app_id=settings.feishu_app_id,
