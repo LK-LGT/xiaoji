@@ -56,6 +56,13 @@ class PermissionAction(StrEnum):
     MANAGE_SYSTEM_CONFIG = "manage_system_config"
     SYNC_ORGANIZATION = "sync_organization"
     SYNC_ATTENDANCE = "sync_attendance"
+    #: ★ 2026-11-27：企业知识库的**写**操作（上传 / 换版 / 停用 / 删除 / 同步）。
+    #:
+    #: ⚠️ **为什么单独一个权限位**
+    #: 知识文档是**AI 检索的依据来源** ⇒ 停用一篇文档 =
+    #: 让 AI 少一条依据；删除一篇 = 让 AI 少一条依据。
+    #: ⇒ 这是**影响 AI 输出**的写操作，不能只校验「已登录」。
+    MANAGE_KNOWLEDGE = "manage_knowledge"
 
 
 @dataclass(frozen=True)
@@ -567,6 +574,10 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
                 # 现在 HR 也能管理算分配置；system_admin 仍然保留该权限
                 # （运维兜底），但不再是唯一入口。
                 PermissionAction.MANAGE_SYSTEM_CONFIG,
+                # ⚠️ ★ 2026-11-27：企业知识库的写操作。
+                #   知识文档是 **AI 检索的依据来源** ⇒ 停用 / 删除一篇
+                #   = 直接改变 AI 的回答依据 ⇒ 必须有独立权限位。
+                PermissionAction.MANAGE_KNOWLEDGE,
             }
         )
 
@@ -589,6 +600,10 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
                 # 与 ``system:employee:view`` ⇒ 后端动作权限必须对齐，
                 # 否则就是「前端能看、后端放行」/「前端能看、后端 403」两种漂移。
                 PermissionAction.MANAGE_EMPLOYEES,
+                # ⚠️ ★ 2026-11-27：管理员也要能管知识库
+                #   （与 HR 同口径 —— 前端菜单里 ``hr`` 与 ``admin``
+                #   都有 ``system:knowledge:view``）。
+                PermissionAction.MANAGE_KNOWLEDGE,
             }
         )
 

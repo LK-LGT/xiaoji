@@ -183,6 +183,10 @@ def test_every_background_scheduler_switch_is_disabled_in_tests() -> None:
         "FEISHU_BOT_ENABLED",
         # 计划助手开关：请求级判断，不起线程
         "PLAN_AI_ENABLED",
+        # 企业知识库开关：请求级判断（写操作前置校验），不起线程。
+        # ⚠️ 它默认 **True**（本地数据功能，默认关会让页面永远是空的），
+        #    但绝不在 startup 里起线程 ⇒ 不需要进 _TEST_SCHEDULER_OFF。
+        "KNOWLEDGE_ENABLED",
     }
 
     missing = sorted(

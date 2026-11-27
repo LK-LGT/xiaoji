@@ -37,10 +37,25 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = ROOT / "backend" / "scripts"
+#: ⚠️ ``backend/`` **根目录**下的那些 ``check_*.py`` / ``build_*.py`` /
+#: ``seed_*.py`` / ``verify_*.py`` 也是后端脚本，同样受本护栏约束。
+BACKEND_ROOT_DIR = ROOT / "backend"
 
 
 def _script_files() -> list[Path]:
     return sorted(SCRIPTS_DIR.glob("*.py"))
+
+
+def _backend_root_script_files() -> list[Path]:
+    """``backend/`` 根目录下的后端脚本。
+
+    ⚠️ 排除 ``app/`` / ``migrations/`` / ``tests/`` 等子目录 ——
+    只取 ``backend/`` 直接下面的 ``*.py``。
+    """
+    return sorted(
+        p for p in BACKEND_ROOT_DIR.glob("*.py")
+        if p.name not in {"__init__.py"}
+    )
 
 
 def _imports_backend_package(tree: ast.Module) -> bool:
@@ -352,3 +367,81 @@ def test_script_does_not_hardcode_relative_db_path(path: Path):
             f"{path.name}:{node.lineno} —— 相对数据库路径会在不同 CWD 下"
             f"打到不同的库：\n  {literal!r}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 五、后端脚本不得用顶层 ``app.*`` 导入（2026-11-26 新增）
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _top_level_app_imports(tree: ast.Module) -> list[tuple[int, str]]:
+    """找出脚本里 ``from app.x import ...`` / ``import app.x``。"""
+    hits: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "app" or alias.name.startswith("app."):
+                    hits.append((node.lineno, alias.name))
+        elif isinstance(node, ast.ImportFrom):
+            # ⚠️ ``level == 0`` 才是绝对导入；``from .app import`` 是相对导入。
+            module = node.module or ""
+            if node.level == 0 and (module == "app" or module.startswith("app.")):
+                hits.append((node.lineno, module))
+    return hits
+
+
+@pytest.mark.parametrize(
+    "path", _script_files() + _backend_root_script_files(), ids=lambda p: p.name
+)
+def test_backend_script_must_not_use_top_level_app_import(path: Path):
+    """⚠️ **后端脚本不许用顶层 ``app.*`` 导入**（2026-11-26 修复）。
+
+    回归场景（真实踩坑）：
+    ``backend/scripts/seed_department_workload.py`` 写的是
+    ``from app.core.db import get_sessionmaker``，并把 ``backend/``
+    插进 ``sys.path``。单独跑脚本没问题，但**从仓库根**跑 pytest 时：
+
+        ModuleNotFoundError: No module named 'app.core'
+
+    根因：仓库根的 ``conftest.py`` 把 ``agent-service/`` 追加进
+    ``sys.path``，而 ``agent-service/app/`` **也是一个叫 ``app`` 的包**
+    ⇒ ``import app`` 解析到 agent-service 的 app，不是 ``backend/app``。
+
+    ⇒ 后端脚本必须用**全路径** ``backend.app.*``，
+    并把**仓库根**（``parents[2]``）放进 ``sys.path``。
+
+    ⚠️ 同样适用于 ``backend/`` 根目录下的那些 ``check_*.py`` /
+    ``build_*.py`` / ``seed_*.py`` 脚本 —— 它们也用 ``app.*``。
+    """
+    source = path.read_text(encoding="utf-8")
+    hits = _top_level_app_imports(ast.parse(source))
+    assert not hits, (
+        f"{path.name} 用了顶层 ``app.*`` 导入（{hits}）—— "
+        "顶层 ``app`` 会被 agent-service 的 ``app`` 包抢占，"
+        "从仓库根运行时必然 ModuleNotFoundError。"
+        "请改用 ``backend.app.*`` 全路径 + 引导到仓库根（parents[2]）。"
+    )
+
+
+@pytest.mark.parametrize(
+    "path", _backend_root_script_files(), ids=lambda p: p.name
+)
+def test_backend_root_script_bootstraps_repo_root(path: Path):
+    """⚠️ ``backend/`` 根目录的脚本必须引导到**仓库根**。
+
+    因为它们现在统一用 ``backend.app.*`` 全路径导入 ⇒
+    ``sys.path`` 里必须有**仓库根**（``parents[1]``），
+    放 ``backend/`` 会变成 ``backend.backend`` 不存在。
+    """
+    source = path.read_text(encoding="utf-8")
+    if "from backend.app" not in source:
+        pytest.skip("该脚本不 import 后端包")
+
+    assert "sys.path.insert" in source, (
+        f"{path.name} 用 ``backend.app.*`` 导入却没有 ``sys.path`` 引导 —— "
+        "从仓库根直接运行会 ModuleNotFoundError: No module named 'backend'"
+    )
+    assert "parents[1]" in source, (
+        f"{path.name} 的 ``sys.path`` 引导应指向仓库根"
+        "（Path(__file__).resolve().parents[1]）"
+    )

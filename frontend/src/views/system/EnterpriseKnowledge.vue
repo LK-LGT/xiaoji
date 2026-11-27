@@ -13,7 +13,7 @@
       </div>
     </div>
 
-    <div class="knowledge-runtime" :class="{ 'has-error': !status.vaultAvailable || !status.vectorAvailable || status.lastSync?.status === 'FAILED' }">
+    <div class="knowledge-runtime" :class="{ 'has-error': !status.vectorAvailable || status.lastSync?.status === 'FAILED' }">
       <div class="runtime-state">
         <span class="runtime-dot" :class="runtimeClass"></span>
         <div>
@@ -22,7 +22,7 @@
         </div>
       </div>
       <div class="runtime-flow" aria-label="知识运行链路">
-        <span>Obsidian Vault</span><b>→</b><span>MySQL</span><b>→</b><span>Qdrant</span><b>→</b><span>AI</span>
+        <span>Obsidian Vault</span><b>→</b><span>MySQL</span><b>→</b><span>内置索引</span><b>→</b><span>AI</span>
       </div>
       <code :title="status.vaultPath">{{ status.vaultPath || '未配置 Vault 路径' }}</code>
     </div>
@@ -32,7 +32,7 @@
       <div><span>已停用</span><strong>{{ countOf('DISABLED') }}</strong></div>
       <div><span>待审核</span><strong>{{ countOf('IN_REVIEW') + countOf('APPROVED') }}</strong></div>
       <div><span>知识分块</span><strong>{{ status.chunkCount }}</strong></div>
-      <div><span>Qdrant 向量点</span><strong>{{ status.vectorPointCount }}</strong></div>
+      <div><span>可检索段落</span><strong>{{ status.vectorPointCount }}</strong></div>
       <div><span>图谱关系</span><strong>{{ status.relationCount }}</strong></div>
     </div>
 
@@ -42,9 +42,9 @@
       type="error"
       :closable="false"
       show-icon
-      title="Qdrant 向量库不可用，知识上传和 AI 检索已停止"
+      title="知识索引不可用，知识上传和 AI 检索已停止"
     >
-      <template #default><p>{{ status.vectorError || '请检查 Qdrant 服务和连接配置' }}</p></template>
+      <template #default><p>{{ status.vectorError || '请检查知识索引服务状态' }}</p></template>
     </el-alert>
 
     <el-alert
@@ -378,7 +378,7 @@ import {
 import KnowledgeBatchUpload from '@/components/knowledge/KnowledgeBatchUpload.vue'
 import { getSystemOptions, type SystemOptions } from '@/api/system'
 
-const emptyStatus = (): KnowledgeStatus => ({ enabled: false, vaultPath: '', vaultAvailable: false, documentCounts: {}, chunkCount: 0, relationCount: 0, vectorEngine: 'Qdrant', vectorAvailable: false, vectorCollections: [], vectorPointCount: 0, vectorError: null, lastSync: null })
+const emptyStatus = (): KnowledgeStatus => ({ enabled: false, vaultPath: '', vaultAvailable: false, documentCounts: {}, chunkCount: 0, relationCount: 0, vectorEngine: 'builtin-bm25', vectorAvailable: false, vectorCollections: [], vectorPointCount: 0, vectorError: null, lastSync: null })
 const loading = ref(false)
 const syncing = ref(false)
 const listLoading = ref(false)
@@ -426,13 +426,16 @@ const filteredDocuments = computed(() => {
       && (!filters.binding || item.binding === filters.binding)
   })
 })
-const runtimeClass = computed(() => status.vaultAvailable && status.vectorAvailable && status.lastSync?.status !== 'FAILED' ? 'is-ok' : 'is-error')
+// ⚠️ **Vault 没配 ≠ 故障**
+//   「页面上传」这条链路完全不需要 Vault ⇒ 只有配置了 Vault 却连不上，
+//   才是真故障。Vault 未配置时只提示「未配置 Vault 路径」。
+const runtimeClass = computed(() => status.vectorAvailable && status.lastSync?.status !== 'FAILED' ? 'is-ok' : 'is-error')
 const runtimeTitle = computed(() => {
-  if (!status.enabled) return '知识同步已关闭'
-  if (!status.vaultAvailable) return 'Vault 不可用'
-  if (!status.vectorAvailable) return 'Qdrant 不可用'
+  if (!status.enabled) return '知识库未启用'
+  if (!status.vectorAvailable) return '知识索引不可用'
   if (status.lastSync?.status === 'FAILED') return '最近同步失败'
   if (status.lastSync?.status === 'PARTIAL') return '部分文档同步失败'
+  if (!status.vaultAvailable) return 'Vault 未配置（仅支持页面上传）'
   return '知识运行正常'
 })
 
@@ -602,7 +605,7 @@ function documentStatusLabel(row: KnowledgeDocument) { return row.manuallyDisabl
 function documentStatusTag(row: KnowledgeDocument) { return row.manuallyDisabled ? statusTag('DISABLED') : statusTag(row.status) }
 function bindingLabel(value: string) { return ({ NORMATIVE: '正式规范', REFERENCE: '参考资料', EXAMPLE: '案例' } as Record<string, string>)[value] || value }
 function bindingTag(value: string) { return value === 'NORMATIVE' ? 'danger' : value === 'REFERENCE' ? 'primary' : 'info' }
-function indexLabel(value: string) { return ({ READY: '已入 Qdrant', PENDING: '待索引', FAILED: '索引失败', NOT_REQUIRED: '无需索引' } as Record<string, string>)[value] || value }
+function indexLabel(value: string) { return ({ READY: '已建索引', PENDING: '待索引', FAILED: '索引失败', NOT_REQUIRED: '无需索引' } as Record<string, string>)[value] || value }
 function indexTag(value: string) { return ({ READY: 'success', PENDING: 'warning', FAILED: 'danger', NOT_REQUIRED: 'info' } as Record<string, 'success' | 'warning' | 'danger' | 'info'>)[value] || 'info' }
 function scopeLabel(value: string) { return scopes.find((item) => item.value === value)?.label || value }
 function knowledgeTypeLabel(value: string) { return ({ HISTORICAL_PLAN: '历史计划', JOB_DESCRIPTION: '岗位说明', DEPARTMENT_GOAL: '部门目标', LEADER_REQUIREMENT: '领导要求', PROJECT_MATERIAL: '项目资料', POLICY: '制度规范', ACCEPTANCE_STANDARD: '验收标准', REFERENCE_CASE: '参考案例', UPLOADED_REFERENCE: '上传资料' } as Record<string, string>)[value] || value }

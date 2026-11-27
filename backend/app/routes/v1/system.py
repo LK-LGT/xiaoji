@@ -6,7 +6,6 @@
 
 import csv
 import io
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -15,7 +14,8 @@ from sqlalchemy.orm import Session
 
 from ...core.db import get_db
 from ...dependencies import get_current_user
-from ...services import system_views, workday_rule
+from ...domain.models import Employee
+from ...services import knowledge_parser, knowledge_service, system_views, workday_rule
 from ...services.access_control import PermissionAction, build_access_context
 from ..shared import JsonBody
 
@@ -25,6 +25,20 @@ router = APIRouter(prefix="/v1/system", tags=["system"], dependencies=[Depends(g
 def _require_audit_viewer(user, db: Session) -> None:
     if not build_access_context(db, user).has_permission(PermissionAction.VIEW_AUDIT_LOG):
         raise HTTPException(status_code=403, detail="无权查看审计日志")
+
+
+def _require_knowledge_manager(user, db: Session) -> None:
+    """⚠️ **企业知识库的写操作需要独立权限位**（2026-11-27）。
+
+    为什么：知识文档是 **AI 检索的依据来源** ⇒
+    停用一篇 = AI 少一条依据；删除一篇 = AI 少一条依据。
+    ⇒ 这不是「普通员工能做的事」，必须校验 ``MANAGE_KNOWLEDGE``。
+
+    读接口（列表 / 详情 / 检索 / 状态）**不设闸** ——
+    它们是 AI 回答的依据，员工侧本来就要用到。
+    """
+    if not build_access_context(db, user).has_permission(PermissionAction.MANAGE_KNOWLEDGE):
+        raise HTTPException(status_code=403, detail="无权管理企业知识库")
 
 
 # ─────────────────────────────────────────────────────
@@ -434,14 +448,20 @@ async def update_week_plan_standard_supplement(
 
 @router.get("/knowledge")
 async def get_knowledge(db: Session = Depends(get_db)) -> dict:
-    """获取企业知识库（概览，保留旧路径兼容）"""
+    """获取企业知识库（概览，保留旧路径兼容）。
+
+    ⚠️ **不再返回空壳**
+    原实现恒返回 ``records: []`` / ``total: 0`` ⇒ 概览页永远是空的。
+    现在返回**真实**的文档分页概览。
+    """
+    rows = knowledge_service.list_documents(db, limit=200)
     return {
         "code": 0,
         "data": {
-            "records": [],
-            "total": 0,
+            "records": [knowledge_service.serialize_document(db, row) for row in rows],
+            "total": len(rows),
             "pageNo": 1,
-            "pageSize": 20,
+            "pageSize": 200,
         },
     }
 
@@ -451,6 +471,10 @@ async def get_knowledge(db: Session = Depends(get_db)) -> dict:
 #
 # 分页约定：前端 KnowledgeDocumentList 用裸数组（直接 .map()），
 # 故列表端点返回裸数组而非分页对象。
+#
+# ⚠️ **2026-11-27：这 10 个端点原先全是空壳**
+#   （恒返回空数组 / 恒返回 chunkCount: 0），
+#   现已接入 :mod:`services.knowledge_service` 真正落库。
 # ─────────────────────────────────────────────────────
 
 
@@ -462,20 +486,7 @@ async def get_knowledge_status(db: Session = Depends(get_db)) -> dict:
     """
     return {
         "code": 0,
-        "data": {
-            "enabled": True,
-            "vaultPath": "",
-            "vaultAvailable": False,
-            "documentCounts": {},
-            "chunkCount": 0,
-            "relationCount": 0,
-            "vectorEngine": "none",
-            "vectorAvailable": False,
-            "vectorCollections": [],
-            "vectorPointCount": 0,
-            "vectorError": None,
-            "lastSync": None,
-        },
+        "data": knowledge_service.build_status(db),
     }
 
 
@@ -485,9 +496,10 @@ async def list_knowledge_documents(db: Session = Depends(get_db)) -> dict:
 
     响应结构：KnowledgeDocument[]（裸数组）
     """
+    rows = knowledge_service.list_documents(db)
     return {
         "code": 0,
-        "data": [],
+        "data": [knowledge_service.serialize_document(db, row) for row in rows],
     }
 
 
@@ -496,13 +508,22 @@ async def get_knowledge_document(document_id: int, db: Session = Depends(get_db)
     """获取知识库文档详情。
 
     响应结构：KnowledgeDocumentDetail = { document, chunks, relations }
+
+    ⚠️ 文档不存在 ⇒ **404**（原先恒返回 ``document: None``，
+    前端只能显示空抽屉，看不出是「没数据」还是「文档没了」）。
     """
+    document = knowledge_service.get_document(db, document_id)
+    if document is None or document.status == "DELETED":
+        raise HTTPException(status_code=404, detail="知识文档不存在")
+
+    chunks = knowledge_service.document_chunks(db, document_id)
+    relations = knowledge_service.document_relations(db, document_id)
     return {
         "code": 0,
         "data": {
-            "document": None,
-            "chunks": [],
-            "relations": [],
+            "document": knowledge_service.serialize_document(db, document),
+            "chunks": [knowledge_service.serialize_chunk(chunk) for chunk in chunks],
+            "relations": [knowledge_service.serialize_relation(row) for row in relations],
         },
     }
 
@@ -516,9 +537,12 @@ async def get_knowledge_document_history(
 
     响应结构：KnowledgeDocumentHistory[]（裸数组）
     """
+    if knowledge_service.get_document(db, document_id) is None:
+        raise HTTPException(status_code=404, detail="知识文档不存在")
+    rows = knowledge_service.document_history(db, document_id)
     return {
         "code": 0,
-        "data": [],
+        "data": [knowledge_service.serialize_history(row) for row in rows],
     }
 
 
@@ -527,117 +551,117 @@ async def create_knowledge_document_version(
     document_id: int,
     file: UploadFile = File(...),
     version: str = Form(...),
-    changeNote: str = Form(...),
+    changeNote: str = Form(""),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """上传知识库文档新版本。
 
     响应结构：KnowledgeUploadResult
+
+    ⚠️ **真的换版**
+    原实现只回显文件名和 0 段数 —— 文件**根本没存**。
+    现在：解析 → 切块 → 落盘 → 旧版归档 → 新版入库 → 建索引。
     """
-    return {
-        "code": 0,
-        "data": {
-            "documentId": document_id,
-            "knowledgeId": "",
-            "title": "",
-            "fileName": file.filename or "",
-            "fileType": "",
-            "chunkCount": 0,
-            "vectorCount": 0,
-            "embeddingModels": [],
-            "uploadedAt": datetime.utcnow().isoformat(),
-        },
-    }
+    _require_knowledge_manager(current_user, db)
+    data = await file.read()
+    try:
+        result = knowledge_service.replace_version(
+            db,
+            document_id,
+            data=data,
+            filename=file.filename or "",
+            version=version,
+            change_note=changeNote,
+            operator_id=current_user.id,
+            operator_name=current_user.name or current_user.id,
+        )
+    except knowledge_service.KnowledgeServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except knowledge_parser.KnowledgeParseError as exc:
+        raise HTTPException(status_code=422, detail=f"文档解析失败：{exc}") from exc
+    return {"code": 0, "data": result}
 
 
 @router.post("/knowledge/documents/{document_id}/disable")
 async def disable_knowledge_document(
     document_id: int,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """停用知识库文档。
 
     响应结构：KnowledgeActionResult
     """
-    return {
-        "code": 0,
-        "data": {
-            "documentId": document_id,
-            "knowledgeId": "",
-            "action": "DISABLE",
-            "vectorCleanupSucceeded": True,
-            "message": "",
-            "operatedAt": datetime.utcnow().isoformat(),
-        },
-    }
+    _require_knowledge_manager(current_user, db)
+    try:
+        result = knowledge_service.disable_document(
+            db, document_id, current_user.id, current_user.name or current_user.id
+        )
+    except knowledge_service.KnowledgeServiceError as exc:
+        status_code = 404 if "不存在" in str(exc) else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return {"code": 0, "data": result}
 
 
 @router.post("/knowledge/documents/{document_id}/enable")
 async def enable_knowledge_document(
     document_id: int,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """启用知识库文档。
 
     响应结构：KnowledgeActionResult
     """
-    return {
-        "code": 0,
-        "data": {
-            "documentId": document_id,
-            "knowledgeId": "",
-            "action": "ENABLE",
-            "vectorCleanupSucceeded": True,
-            "message": "",
-            "operatedAt": datetime.utcnow().isoformat(),
-        },
-    }
+    _require_knowledge_manager(current_user, db)
+    try:
+        result = knowledge_service.enable_document(
+            db, document_id, current_user.id, current_user.name or current_user.id
+        )
+    except knowledge_service.KnowledgeServiceError as exc:
+        status_code = 404 if "不存在" in str(exc) else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return {"code": 0, "data": result}
 
 
 @router.delete("/knowledge/documents/{document_id}")
 async def delete_knowledge_document(
     document_id: int,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """删除知识库文档。
 
     响应结构：KnowledgeActionResult
     """
-    return {
-        "code": 0,
-        "data": {
-            "documentId": document_id,
-            "knowledgeId": "",
-            "action": "DELETE",
-            "vectorCleanupSucceeded": True,
-            "message": "",
-            "operatedAt": datetime.utcnow().isoformat(),
-        },
-    }
+    _require_knowledge_manager(current_user, db)
+    try:
+        result = knowledge_service.delete_document(
+            db, document_id, current_user.id, current_user.name or current_user.id
+        )
+    except knowledge_service.KnowledgeServiceError as exc:
+        status_code = 404 if "不存在" in str(exc) else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return {"code": 0, "data": result}
 
 
 @router.post("/knowledge/sync")
-async def sync_knowledge(db: Session = Depends(get_db)) -> dict:
+async def sync_knowledge(
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """触发知识库同步。
 
     响应结构：KnowledgeSyncResult
+
+    ⚠️ **没配 Vault 时必须明确失败**
+    原实现恒返回 ``SUCCESS`` + ``scannedCount: 0``
+    ⇒ 管理员以为同步成功了，其实一篇都没进。
     """
-    now = datetime.utcnow().isoformat()
-    return {
-        "code": 0,
-        "data": {
-            "id": None,
-            "triggerSource": "MANUAL",
-            "status": "SUCCESS",
-            "vaultPath": "",
-            "scannedCount": 0,
-            "publishedCount": 0,
-            "failedCount": 0,
-            "errors": [],
-            "startedAt": now,
-            "finishedAt": now,
-        },
-    }
+    _require_knowledge_manager(current_user, db)
+    result = knowledge_service.sync_from_vault(db, trigger_source="MANUAL")
+    return {"code": 0, "data": result}
 
 
 @router.get("/knowledge/preview")
@@ -650,12 +674,17 @@ async def preview_knowledge(
     """预览知识库检索结果。
 
     响应结构：KnowledgeHit[]（裸数组）
+
+    ⚠️ **「查不到」必须如实返回空数组**
+    这是防幻觉的关键 ⇒ 空结果不能让模型「就近编一段」。
     """
+    hits = knowledge_service.search(
+        db, query=query, applies_to=appliesTo, dept_id=deptId
+    )
     return {
         "code": 0,
-        "data": [],
+        "data": hits,
     }
-
 
 
 @router.get("/audits/options")
