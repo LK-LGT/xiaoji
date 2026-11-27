@@ -66,6 +66,14 @@ export async function fetchMySelfReviewRecords(params: {
   return res.items || []
 }
 
+/** 保存自评草稿（允许未填完；不改变记录状态）。 */
+export async function saveSelfReviewDraft(
+  recordId: string,
+  payload: Omit<SelfReviewSubmitPayload, 'dedup_key'>,
+) {
+  return http.put(`/assessment/records/${recordId}/self-review/draft`, payload)
+}
+
 /** 提交自评。 */
 export async function submitSelfReview(
   recordId: string,

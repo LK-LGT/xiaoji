@@ -136,6 +136,10 @@
     >
       <div v-if="editingRecord" class="self-review-form">
         <el-form :model="reviewForm" label-width="120px">
+          <el-form-item label="自评分">
+            <el-rate v-model="reviewForm.selfScore" :max="5" show-score />
+            <span class="self-score-hint">1 分最低，5 分最高；最终等级仍由主管/HR 确认。</span>
+          </el-form-item>
           <el-form-item label="业绩总结" required>
             <el-input
               v-model="reviewForm.performanceSummary"
@@ -268,6 +272,7 @@ import {
   fetchMySelfReviewRecords,
   fetchSelfReviewDetail,
   normalizeSelfReviewText,
+  saveSelfReviewDraft,
   submitSelfReview,
 } from '@/api/selfReview'
 import type { SelfReviewDetail } from '@/api/selfReview'
@@ -332,6 +337,7 @@ function toViewModel(record: PendingAssessmentRecord) {
 const records = computed(() => allRecords.value.map(toViewModel))
 
 const reviewForm = reactive({
+  selfScore: 4,
   performanceSummary: '',
   achievements: '',
   challenges: '',
@@ -411,15 +417,31 @@ async function loadRecords() {
   }
 }
 
-function editSelfReview(recordId: string, taskId: string) {
+async function editSelfReview(recordId: string, taskId: string) {
   editingRecordId.value = recordId
   editingTaskId.value = taskId
 
+  reviewForm.selfScore = 4
   reviewForm.performanceSummary = ''
   reviewForm.achievements = ''
   reviewForm.challenges = ''
   reviewForm.improvements = ''
   reviewForm.remarks = ''
+
+  try {
+    const detail = await fetchSelfReviewDetail(recordId)
+    const saved = (detail.self_review || {}) as Record<string, unknown>
+    reviewForm.selfScore = Number(saved.self_score) >= 1 && Number(saved.self_score) <= 5
+      ? Number(saved.self_score)
+      : 4
+    reviewForm.performanceSummary = normalizeSelfReviewText(saved.performance_summary)
+    reviewForm.achievements = normalizeSelfReviewText(saved.achievements)
+    reviewForm.challenges = normalizeSelfReviewText(saved.challenges)
+    reviewForm.improvements = normalizeSelfReviewText(saved.improvements)
+    reviewForm.remarks = normalizeSelfReviewText(saved.remarks)
+  } catch {
+    // 草稿不存在 / 尚未保存过时，保持空表单
+  }
 
   showEditDrawer.value = true
 }
@@ -440,7 +462,7 @@ function handleDrawerClose() {
 function buildPayload(recordId: string) {
   const comment = buildSelfReviewComment(reviewForm)
   return {
-    self_score: 4,
+    self_score: reviewForm.selfScore,
     self_comment: comment,
     highlights: reviewForm.achievements.trim() || null,
     improvement_areas: reviewForm.improvements.trim() || null,
@@ -460,11 +482,15 @@ async function saveDraft() {
 
   saving.value = true
   try {
-    // 后端自评提交接口没有单独的"草稿"入口，
-    // 且草稿状态（in_progress）会被后端视为非法中间态，
-    // 因此这里只做本地留痕 —— **不**伪造"已保存到服务端"的假象。
-    // 真正落库请点「提交自评」。
-    ElMessage.info('草稿仅保留在当前页面，提交后才会保存到服务器')
+    const payload = buildPayload(editingRecord.value.id)
+    await saveSelfReviewDraft(editingRecord.value.id, {
+      self_score: payload.self_score,
+      self_comment: payload.self_comment,
+      highlights: payload.highlights,
+      improvement_areas: payload.improvement_areas,
+      answers: payload.answers,
+    })
+    ElMessage.success('草稿已保存')
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '保存失败')
   } finally {
@@ -723,6 +749,12 @@ onMounted(loadRecords)
   font-size: 13px;
   font-weight: 600;
   color: #606266;
+}
+
+.self-score-hint {
+  margin-left: 10px;
+  font-size: 12px;
+  color: #909399;
 }
 
 .detail-block p {

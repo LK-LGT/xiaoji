@@ -84,6 +84,18 @@ class SelfReviewSubmitRequest(BaseModel):
     )
 
 
+class SelfReviewDraftRequest(BaseModel):
+    """自评草稿（允许未填完，不做长度/完整性校验）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    self_score: int | None = Field(None, ge=1, le=5)
+    self_comment: str = Field("", max_length=4000)
+    highlights: str | None = Field(None, max_length=2000)
+    improvement_areas: str | None = Field(None, max_length=2000)
+    answers: list[SelfReviewAnswerItem] | None = None
+
+
 class SelfReviewSubmitResponse(BaseModel):
     """自评提交成功响应。"""
 

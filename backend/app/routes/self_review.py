@@ -22,8 +22,9 @@ from sqlalchemy.orm import Session
 
 from .. import dependencies, exceptions
 from ..core.db import get_db
-from ..domain.models import Employee
+from ..domain.models import AssessmentRecord, Employee
 from ..schemas_self_review import (
+    SelfReviewDraftRequest,
     SelfReviewErrorResponse,
     SelfReviewSubmitRequest,
     SelfReviewSubmitResponse,
@@ -33,6 +34,49 @@ from ..services import self_review_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/assessment", tags=["self_review"])
+
+
+@router.put(
+    "/records/{record_id}/self-review/draft",
+    summary="【自研前端】保存自评草稿",
+)
+async def save_self_review_draft(
+    record_id: str = Path(..., description="考核记录 ID"),
+    request: SelfReviewDraftRequest = None,
+    current_user: Employee = Depends(dependencies.get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """保存自评草稿（允许未填完；不改记录状态）。"""
+    if request is None:
+        raise HTTPException(status_code=422, detail="请求体不能为空")
+    record = db.get(AssessmentRecord, record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="考核记录不存在")
+    if record.employee_id != current_user.id:
+        raise HTTPException(status_code=403, detail="只能保存自己的自评草稿")
+    if record.submit_locked or record.status in {"self_review_submitted", "confirmed", "archived"}:
+        raise HTTPException(status_code=409, detail="自评已提交，不能再保存草稿")
+
+    draft = dict(record.self_review_content or {})
+    if request.self_score is not None:
+        draft["self_score"] = request.self_score
+    draft["self_comment"] = request.self_comment
+    draft["highlights"] = request.highlights
+    draft["improvement_areas"] = request.improvement_areas
+    for item in request.answers or []:
+        draft[item.field_key] = item.text
+    record.self_review_content = draft
+    db.commit()
+    db.refresh(record)
+    return {
+        "code": 0,
+        "data": {
+            "record_id": record.id,
+            "status": record.status,
+            "saved_at": record.updated_at.isoformat() if record.updated_at else None,
+            "message": "草稿已保存",
+        },
+    }
 
 
 @router.post(

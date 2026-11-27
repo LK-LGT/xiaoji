@@ -72,6 +72,32 @@
       <ResultApprovalTimeline v-else-if="activeTab === 'approval'" :events="approvalEvents" />
       <ResultVersionHistory v-else :versions="versions" @compare="compareVersion" />
     </template>
+    <el-dialog v-model="compareVisible" title="版本比较" width="86%" destroy-on-close>
+      <div v-loading="compareLoading" class="version-compare-grid">
+        <section>
+          <h4>当前版本</h4>
+          <dl>
+            <dt>标题</dt><dd>{{ compareField(detail, 'title') }}</dd>
+            <dt>内容</dt><dd>{{ compareField(detail, 'content') }}</dd>
+            <dt>交付物</dt><dd>{{ compareField(detail, 'deliverable') }}</dd>
+            <dt>备注</dt><dd>{{ compareField(detail, 'remark') }}</dd>
+            <dt>完成状态</dt><dd>{{ compareField(detail, 'completionStatus') }}</dd>
+            <dt>提交时间</dt><dd>{{ submittedAt || '—' }}</dd>
+          </dl>
+        </section>
+        <section>
+          <h4>对比版本</h4>
+          <dl>
+            <dt>标题</dt><dd>{{ compareField(compareTarget, 'title') }}</dd>
+            <dt>内容</dt><dd>{{ compareField(compareTarget, 'content') }}</dd>
+            <dt>交付物</dt><dd>{{ compareField(compareTarget, 'deliverable') }}</dd>
+            <dt>备注</dt><dd>{{ compareField(compareTarget, 'remark') }}</dd>
+            <dt>完成状态</dt><dd>{{ compareField(compareTarget, 'completionStatus') }}</dd>
+            <dt>提交时间</dt><dd>{{ compareField(compareTarget, 'submittedAt') }}</dd>
+          </dl>
+        </section>
+      </div>
+    </el-dialog>
   </main>
 </template>
 
@@ -126,11 +152,43 @@ function backToArchive() {
 }
 function handleRejection() { void router.push({ path: `${resultBasePath.value}/workspace/${type.value}/${route.query.planId}`, query: { taskId: route.query.taskId, month: route.query.archiveMonth } }) }
 async function downloadEvidence(id: string) { const resultId = detail.value?.id; if (!resultId) return; try { const blob = type.value === 'MONTH' ? await downloadEmployeeResultEvidenceApi(resultId, id) : await downloadWeekResultEvidenceApi(resultId, id); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = '成果证明材料'; link.click(); URL.revokeObjectURL(url) } catch (error) { errorMessage.value = error instanceof Error ? error.message : '附件下载失败' } }
-function printDetail() { window.print() }; function compareVersion() { ElMessage.info('当前版本暂无可比较的相邻版本') }
+function printDetail() { window.print() }
+const compareVisible = ref(false)
+const compareLoading = ref(false)
+const compareTarget = ref<ArchiveResultDetail | null>(null)
+
+async function compareVersion(resultId: string) {
+  compareVisible.value = true
+  compareLoading.value = true
+  compareTarget.value = null
+  try {
+    compareTarget.value = type.value === 'WEEK'
+      ? await getEmployeeWeekResultDetailApi(resultId)
+      : await getEmployeeResultDetailApi(resultId)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '加载历史版本失败')
+  } finally {
+    compareLoading.value = false
+  }
+}
+
+function compareField(item: ArchiveResultDetail | null, key: string): string {
+  if (!item) return '—'
+  const value = (item as unknown as Record<string, unknown>)[key]
+  if (value === null || value === undefined || value === '') return '—'
+  return String(value)
+}
 onMounted(() => { if (type.value === 'WEEK') void loadDetail() })
 </script>
 
 <style scoped>
+.version-compare-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+.version-compare-grid section { border:1px solid #d8e1dc; border-radius:8px; padding:14px; }
+.version-compare-grid h4 { margin:0 0 12px; }
+.version-compare-grid dl { margin:0; display:grid; grid-template-columns:72px 1fr; gap:8px 10px; }
+.version-compare-grid dt { color:#75847d; font-size:12px; }
+.version-compare-grid dd { margin:0; white-space:pre-wrap; word-break:break-word; }
+
 .archive-detail { width:100%; max-width:1320px; min-height:calc(100vh - 132px); margin:0 auto; padding:16px 24px 64px; box-sizing:border-box; color:#263a34; background:#fff; }
 .detail-header { padding-bottom:20px; border-bottom:1px solid #d8e1dc; }
 .detail-command-row { display:flex; align-items:center; justify-content:space-between; min-height:40px; }
