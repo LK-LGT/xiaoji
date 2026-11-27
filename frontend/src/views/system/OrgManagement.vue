@@ -1,9 +1,18 @@
 <template>
   <section class="page-panel" v-loading="loading">
     <div class="page-header">
-      <div><span class="eyebrow">ORGANIZATION</span><h1 class="page-title">部门/项目组</h1><p class="page-subtitle">维护组织树、节点负责人和启用状态，为计划归属、审批链和统计口径提供基础。</p></div>
-      <el-button type="primary" @click="openCreate">新增节点</el-button>
+      <div><span class="eyebrow">ORGANIZATION</span><h1 class="page-title">部门/项目组</h1><p class="page-subtitle">组织架构以飞书通讯录为准，本页只读；调整请到飞书修改后等待同步。</p></div>
+      <el-tag type="info" effect="plain">只读 · 以飞书为准</el-tag>
     </div>
+
+    <el-alert
+      class="org-readonly-tip"
+      type="info"
+      :closable="false"
+      show-icon
+      title="本地不提供组织增删改"
+      description="组织树、负责人和启用状态由飞书通讯录同步；本地修改会与飞书分叉，影响计划归属、审批链和统计口径。"
+    />
 
     <div class="split-layout org-management-layout">
       <aside class="section-card org-card">
@@ -15,11 +24,7 @@
 
       <section class="section-card org-detail-panel">
         <div class="section-header">
-          <div><h2>{{ selected ? selected.name : '全部组织节点' }}</h2><p>{{ selected ? `${typeLabel(selected.orgType)} · ${selected.code}` : '选择左侧节点查看详情，或直接编辑列表。' }}</p></div>
-          <div v-if="selected" class="toolbar">
-            <el-button @click="openEdit(selected)">编辑当前节点</el-button>
-            <el-button type="danger" plain @click="removeDepartment(selected)">删除当前节点</el-button>
-          </div>
+          <div><h2>{{ selected ? selected.name : '全部组织节点' }}</h2><p>{{ selected ? `${typeLabel(selected.orgType)} · ${selected.code}` : '选择左侧节点查看详情。组织调整请到飞书通讯录完成。' }}</p></div>
         </div>
         <el-table :data="visibleRows" empty-text="暂无组织节点">
           <el-table-column prop="name" label="节点" min-width="170"><template #default="{ row }"><strong>{{ '　'.repeat(row.depth) }}{{ row.name }}</strong></template></el-table-column>
@@ -27,7 +32,7 @@
           <el-table-column prop="leaderName" label="负责人" width="140"><template #default="{ row }">{{ row.leaderName || '未配置' }}</template></el-table-column>
           <el-table-column prop="employeeCount" label="员工数" width="90" />
           <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.status === 1 ? 'success' : 'info'">{{ row.status === 1 ? '启用' : '禁用' }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" width="140"><template #default="{ row }"><el-button link type="primary" @click="openEdit(row)">编辑</el-button><el-button link type="danger" @click="removeDepartment(row)">删除</el-button></template></el-table-column>
+          <el-table-column label="操作" width="100"><template #default><el-tag type="info" effect="plain">只读</el-tag></template></el-table-column>
         </el-table>
       </section>
     </div>

@@ -829,37 +829,35 @@ async def export_audits(
 
 @router.post("/departments")
 async def create_department(data: dict, db: Session = Depends(get_db)) -> dict:
-    """创建新部门"""
-    new_id = 100 + int(__import__('time').time() * 1000) % 1000
-    return {
-        "id": new_id,
-        "name": data.get("name", "新部门"),
-        "code": data.get("code", "NEW_DEPT"),
-        "orgType": data.get("orgType", "DEPARTMENT"),
-        "status": 1,
-        "children": [],
-    }
+    """创建新部门 —— **已停用**。
+
+    ⚠️ 2026-11-27：原实现返回一个临时 ``id`` 但不写库（假成功），
+    而组织架构的**唯一事实源是飞书通讯录**。
+    ⇒ 本地增删改会与飞书分叉，且所有审批链/统计口径都依赖飞书组织树。
+    ⇒ 这里改为明确失败，前端同步改为只读。
+    """
+    raise HTTPException(
+        status_code=405,
+        detail="组织架构以飞书通讯录为准，本系统不支持本地新增；请在飞书调整后等待同步",
+    )
 
 
 @router.put("/departments/{dept_id}")
 async def update_department(dept_id: str, data: dict, db: Session = Depends(get_db)) -> dict:
-    """更新部门信息
-
-    ⚠️ `dept_id` 是飞书 `department_id`（长十六进制字符串），
-    转 int 会超出 `Number.MAX_SAFE_INTEGER` 之类的精度边界，故为 str。
-    """
-    return {
-        "id": dept_id,
-        "name": data.get("name", "更新的部门"),
-        "code": data.get("code", "UPDATED_DEPT"),
-        "status": data.get("status", 1),
-    }
+    """更新部门信息 —— **已停用**（组织以飞书为准）。"""
+    raise HTTPException(
+        status_code=405,
+        detail="组织架构以飞书通讯录为准，本系统不支持本地编辑；请在飞书调整后等待同步",
+    )
 
 
 @router.delete("/departments/{dept_id}")
 async def delete_department(dept_id: str, db: Session = Depends(get_db)) -> dict:
-    """删除部门"""
-    return {"code": 0, "message": "部门已删除"}
+    """删除部门 —— **已停用**（组织以飞书为准）。"""
+    raise HTTPException(
+        status_code=405,
+        detail="组织架构以飞书通讯录为准，本系统不支持本地删除；请在飞书调整后等待同步",
+    )
 
 
 # ─────────────────────────────────────────────────────

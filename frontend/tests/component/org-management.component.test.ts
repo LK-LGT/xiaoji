@@ -272,174 +272,32 @@ describe('状态与负责人显示', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 3. ⭐⭐ 编码规则
+// 3. ⭐ 组织架构只读（2026-11-27）
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('组织编码规则', () => {
+describe('组织架构只读', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  test('⚠️ 新增态 → 编码输入框**可编辑**', async () => {
+  test('页头明确说明「以飞书为准 / 只读」', async () => {
     const wrapper = await mountOrg()
-
-    await wrapper.findAll('button').find((b) => b.text().includes('新增节点'))!.trigger('click')
-    await nextTick()
-
-    const codeInput = wrapper.findAll('input').find((i) => i.attributes('maxlength') === '50')
-    expect(codeInput).toBeDefined()
-    expect(codeInput!.attributes('disabled')).toBeUndefined()
+    const text = wrapper.text()
+    expect(text).toContain('以飞书')
+    expect(text).toContain('只读')
   })
 
-  test('⚠️ 编辑态 → 编码输入框**禁用**（编码建后不可改）', async () => {
-    // ⚠️ **数据完整性规则** —— 编码变了会导致历史数据对不上。
+  test('没有「新增节点」入口', async () => {
     const wrapper = await mountOrg()
-
-    // ⚠️ 点行内「编辑」按钮。
-    const editBtn = rows(wrapper)[0].findAll('button').find((b) => b.text().trim() === '编辑')
-    expect(editBtn).toBeDefined()
-    await editBtn!.trigger('click')
-    await nextTick()
-
-    const codeInput = wrapper.findAll('input').find((i) => i.attributes('maxlength') === '50')
-    expect(codeInput).toBeDefined()
-    expect(codeInput!.attributes('disabled')).toBeDefined()
+    const createBtn = wrapper.findAll('button').find((b) => b.text().includes('新增节点'))
+    expect(createBtn).toBeUndefined()
   })
 
-  test('⚠️ 编码必须大写 —— 小写编码被校验拦下', async () => {
+  test('行内没有编辑/删除按钮，操作列显示只读', async () => {
     const wrapper = await mountOrg()
-
-    await wrapper.findAll('button').find((b) => b.text().includes('新增节点'))!.trigger('click')
-    await nextTick()
-
-    // ⚠️ 表单规则：``/^[A-Z][A-Z0-9_]{1,49}$/`` —— 小写字母不接受。
-    //
-    // ⚠️ **直接测规则本身**，而不是指望 ``formRef.validate()``：
-    //    Element Plus 的 validate 依赖字段已渲染 + 异步校验器，
-    //    在 jsdom 下的时序不稳定 ⇒ 改为验证**规则的正则**。
-    const form = wrapper.findComponent({ name: 'ElForm' })
-    const rules = form.props('rules') as { code: Array<{ pattern?: RegExp }> }
-    const pattern = rules.code[0].pattern!
-
-    expect(pattern.test('EDIT_GROUP')).toBe(true)
-    // ⚠️ **小写必须被拒**。
-    expect(pattern.test('edit_group')).toBe(false)
-    // ⚠️ 数字开头也不接受（必须字母开头）。
-    expect(pattern.test('1EDIT')).toBe(false)
-  })
-
-  test('⚠️ 抽屉标题区分「新增」与「编辑」', async () => {
-    // ⚠️ **可见行为** —— 用户从标题就知道自己在新增还是编辑。
-    const wrapper = await mountOrg()
-
-    await wrapper.findAll('button').find((b) => b.text().includes('新增节点'))!.trigger('click')
-    await nextTick()
-    expect(wrapper.find('.el-drawer__title').text()).toBe('新增组织节点')
-
-    await wrapper.findAll('button').find((b) => b.text().includes('取消'))!.trigger('click')
-    await nextTick()
-
-    const editBtn = rows(wrapper)[0].findAll('button').find((b) => b.text().trim() === '编辑')
-    await editBtn!.trigger('click')
-    await nextTick()
-    expect(wrapper.find('.el-drawer__title').text()).toBe('编辑组织节点')
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 4. ⭐ 新增时父节点默认 = 当前选中
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe('新增节点的父节点默认值', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  test('⚠️ 未选中任何节点 → 父节点是根节点', async () => {
-    const wrapper = await mountOrg()
-
-    await wrapper.findAll('button').find((b) => b.text().includes('新增节点'))!.trigger('click')
-    await nextTick()
-
-    // ⚠️ 根节点是 ``ROOT_DEPARTMENT_ID = '0'``（字符串！）。
-    const treeSelect = wrapper.findComponent({ name: 'ElTreeSelect' })
-    expect(treeSelect.props('modelValue')).toBe('0')
-  })
-
-  test('⚠️ 选中「内容中心」后新增 → 父节点自动是它', async () => {
-    // ⚠️ **业务规则** —— 在某个部门下新增，其父级应当默认就是那个部门。
-    const wrapper = await mountOrg()
-
-    await wrapper.findComponent({ name: 'ElTree' }).vm.$emit('node-click', tree()[0])
-    await nextTick()
-
-    await wrapper.findAll('button').find((b) => b.text().includes('新增节点'))!.trigger('click')
-    await nextTick()
-
-    const treeSelect = wrapper.findComponent({ name: 'ElTreeSelect' })
-    expect(treeSelect.props('modelValue')).toBe('D1')
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 5. 删除前二次确认
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe('删除节点', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    // ⚠️ **确认框一直不 resolve** —— 模拟「用户还没点确定」。
-    //    ⇒ 组件停在 ``await ElMessageBox.confirm(...)``，
-    //      **不该走到 deleteDepartment**。
-    confirmMock.mockReturnValue(new Promise(() => {}))
-    deleteDepartment.mockResolvedValue(undefined)
-  })
-
-  test('⚠️ 点删除 → 先弹确认框，**不直接删**', async () => {
-    const wrapper = await mountOrg()
-
-    const delBtn = rows(wrapper)[0].findAll('button').find((b) => b.text().trim() === '删除')
-    await delBtn!.trigger('click')
-    await flushPromises()
-
-    expect(confirmMock).toHaveBeenCalled()
-    // ⚠️ **确认前不该真删** —— 这是防误删的核心。
-    expect(deleteDepartment).not.toHaveBeenCalled()
-  })
-
-  test('⚠️ 确认后才真正删', async () => {
-    confirmMock.mockResolvedValue('confirm' as unknown)
-    const wrapper = await mountOrg()
-
-    const delBtn = rows(wrapper)[0].findAll('button').find((b) => b.text().trim() === '删除')
-    await delBtn!.trigger('click')
-    await flushPromises()
-
-    expect(deleteDepartment).toHaveBeenCalledWith('D1')
-  })
-
-  test('⚠️ 取消确认 → 不删', async () => {
-    confirmMock.mockRejectedValue('cancel')
-    const wrapper = await mountOrg()
-
-    const delBtn = rows(wrapper)[0].findAll('button').find((b) => b.text().trim() === '删除')
-    await delBtn!.trigger('click')
-    await flushPromises()
-
-    expect(deleteDepartment).not.toHaveBeenCalled()
-    // ⚠️ **取消不是错误** ⇒ 不该弹错误提示。
-    expect(messageMock.error).not.toHaveBeenCalled()
-  })
-
-  test('⚠️ 确认框文案含节点名 + 「仅空节点可删除」提示', async () => {
-    const wrapper = await mountOrg()
-
-    const delBtn = rows(wrapper)[0].findAll('button').find((b) => b.text().trim() === '删除')
-    await delBtn!.trigger('click')
-    await nextTick()
-
-    const msg = String(confirmMock.mock.calls[0][0])
-    expect(msg).toContain('内容中心')
-    expect(msg).toContain('仅空节点可删除')
+    const rowButtons = rows(wrapper)[0].findAll('button')
+    expect(rowButtons.some((b) => b.text().trim() === '编辑')).toBe(false)
+    expect(rowButtons.some((b) => b.text().trim() === '删除')).toBe(false)
+    expect(rowTexts(wrapper)[0]).toContain('只读')
   })
 })
