@@ -13,23 +13,108 @@ import re
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
 from ..core.db import get_db
 from ..dependencies import build_access_context_for_user, get_current_user
-from ..domain.config_models import ExportTaskRow
+from ..domain.config_models import (
+    AcceptanceStandardRow,
+    DeliverableTemplateRow,
+    ExportTaskRow,
+    ScoreRuleRow,
+    TodoRow,
+)
 from ..domain.models import DayPlan, Department, Employee, MonthPlan, MonthPlanItem, WeekPlan
 from ..domain.plan_models import PlanApproval
 from ..domain.result_models import Result
 from ..services import department_config_service, ledger_service, plan_approval
+from ..services.access_control import PermissionAction
 from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/department", tags=["department"], dependencies=[Depends(get_current_user)])
+router = APIRouter(
+    prefix="/v1/department",
+    tags=["department"],
+    dependencies=[Depends(get_current_user)],
+)
+
+
+# ---------------------------------------------------------------------------
+# 部门级配置的写权限
+#
+# 2026-11-27 安全审计：「假成功」修好之后，写端点仍然只校验了「已登录」
+# ⇒ 任何员工都能改全公司交付物模板 / 验收标准 / 参考分规则 / 待办。
+# 这里按路径统一加闸，避免以后新增端点又漏。
+# ---------------------------------------------------------------------------
+
+_CONFIG_WRITE_PREFIXES = (
+    "/v1/department/templates",
+    "/v1/department/acceptance-standards",
+    "/v1/department/score-rules",
+    "/v1/department/todos",
+    "/v1/department/export-tasks",
+)
+
+
+def _require_department_config_manager(db: Session, current_user: Employee):
+    """要求部门级配置管理权限，否则 403。"""
+    context = build_access_context_for_user(current_user, db)
+    if not context.has_permission(PermissionAction.MANAGE_DEPARTMENT_CONFIG):
+        raise HTTPException(status_code=403, detail="无权管理部门配置")
+    return context
+
+
+async def _guard_department_config_write(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> None:
+    """只拦截配置类写请求；审批/查询等其它写端点不受影响。"""
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return
+    path = request.url.path
+    if not any(path == prefix or path.startswith(prefix + "/") for prefix in _CONFIG_WRITE_PREFIXES):
+        return
+    _require_department_config_manager(db, current_user)
+
+
+# 路由级依赖必须在本函数定义后才能注册。
+router.dependencies.append(Depends(_guard_department_config_write))
+
+
+def _assert_org_in_scope(context, org_id: str | None) -> None:
+    """部门级配置只能写自己管理的部门；HR/管理员不受限。"""
+    if not org_id:
+        return
+    if context.has_permission(PermissionAction.MANAGE_SYSTEM_CONFIG):
+        return
+    if str(org_id) not in context.managed_department_ids:
+        raise HTTPException(status_code=403, detail="无权管理该部门配置")
+
+
+def _assert_employee_in_scope(db: Session, context, employee_id: str | None) -> None:
+    """待办接收人必须在本部门范围内；HR/管理员不受限。"""
+    if not employee_id:
+        return
+    if context.has_permission(PermissionAction.MANAGE_SYSTEM_CONFIG):
+        return
+    employee = db.get(Employee, str(employee_id))
+    if employee is None or str(employee.department_id or "") not in context.managed_department_ids:
+        raise HTTPException(status_code=403, detail="无权处理该部门待办")
+
+
+def _assert_todo_scope(db: Session, current_user: Employee, todo_id: str) -> TodoRow:
+    """待办存在且接收人在当前管理范围内。"""
+    context = _require_department_config_manager(db, current_user)
+    row = db.get(TodoRow, str(todo_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail="待办不存在")
+    _assert_employee_in_scope(db, context, row.receiver_id)
+    return row
 
 
 def _normalize_plan_month(plan_month: str | None) -> str:
@@ -1077,6 +1162,38 @@ async def list_export_tasks(
     }
 
 
+def _export_department_ids(db: Session, current_user: Employee) -> list[str] | None:
+    """导出可见部门；``None`` 表示全公司（HR）。"""
+    context = build_access_context_for_user(current_user, db)
+    if context.has_permission(PermissionAction.VIEW_ALL_SCORES):
+        return None
+    managed = sorted(context.managed_department_ids)
+    if managed:
+        return managed
+    return [current_user.department_id] if current_user.department_id else []
+
+
+def _assert_export_task_access(
+    db: Session, current_user: Employee, task_id: str
+) -> ExportTaskRow:
+    """导出任务只对申请人 / HR / 该部门负责人可见。"""
+    context = build_access_context_for_user(current_user, db)
+    row = db.get(ExportTaskRow, task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="导出任务不存在")
+    if row.requested_by == current_user.id:
+        return row
+    if context.has_permission(PermissionAction.VIEW_ALL_SCORES):
+        return row
+    if (
+        context.has_permission(PermissionAction.MANAGE_DEPARTMENT_CONFIG)
+        and row.dimension_id
+        and row.dimension_id in context.managed_department_ids
+    ):
+        return row
+    raise HTTPException(status_code=403, detail="无权访问该导出任务")
+
+
 @router.post("/export-tasks")
 async def create_export_task(
     data: JsonBody,
@@ -1098,7 +1215,7 @@ async def create_export_task(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    content, file_name = _build_export_artifact(db, row)
+    content, file_name = _build_export_artifact(db, row, current_user)
     if content is None:
         department_config_service.mark_export_failed(
             db, row, "该维度暂无可导出的数据"
@@ -1114,7 +1231,9 @@ async def create_export_task(
     return {"code": 0, "data": department_config_service.serialize_export_task(row)}
 
 
-def _build_export_artifact(db: Session, row) -> tuple[bytes | None, str]:
+def _build_export_artifact(
+    db: Session, row: ExportTaskRow, current_user: Employee
+) -> tuple[bytes | None, str]:
     """生成导出产物（CSV 文本）。
 
     ⚠️ **为什么用 CSV 而不是 PDF**
@@ -1129,7 +1248,11 @@ def _build_export_artifact(db: Session, row) -> tuple[bytes | None, str]:
     writer = csv.writer(output)
     writer.writerow(["员工ID", "姓名", "登录账号", "部门", "岗位", "在职状态", "账号状态"])
 
-    employees = db.query(Employee).order_by(Employee.name).all()
+    department_ids = _export_department_ids(db, current_user)
+    query = db.query(Employee)
+    if department_ids is not None:
+        query = query.filter(Employee.department_id.in_(department_ids or ["__none__"]))
+    employees = query.order_by(Employee.name).all()
     for employee in employees:
         department = db.get(Department, employee.department_id) if employee.department_id else None
         writer.writerow([
@@ -1156,9 +1279,7 @@ async def get_export_task(
 
     响应结构：ExportTask
     """
-    row = db.get(ExportTaskRow, task_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="导出任务不存在")
+    row = _assert_export_task_access(db, current_user, task_id)
     return {"code": 0, "data": department_config_service.serialize_export_task(row)}
 
 
@@ -1176,6 +1297,7 @@ async def check_export_task(
     **根本没碰文件** ⇒ 校验是假的。
     ⇒ 现在真的把产物读回来算 SHA-256 并比对。
     """
+    _assert_export_task_access(db, current_user, task_id)
     row = department_config_service.check_export_task(db, task_id)
     if row is None:
         raise HTTPException(status_code=404, detail="导出任务不存在")
@@ -1199,6 +1321,7 @@ async def retry_export_task(
 
     响应结构：ActionResult
     """
+    _assert_export_task_access(db, current_user, task_id)
     row = department_config_service.retry_export_task(db, task_id)
     if row is None:
         raise HTTPException(status_code=404, detail="导出任务不存在")
@@ -1215,9 +1338,7 @@ async def get_export_download_info(
 
     响应结构：ExportDownload
     """
-    row = db.get(ExportTaskRow, task_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="导出任务不存在")
+    row = _assert_export_task_access(db, current_user, task_id)
     return {"code": 0, "data": department_config_service.export_download_info(row)}
 
 
@@ -1231,6 +1352,7 @@ async def download_export_task(
 
     响应结构：二进制文件流
     """
+    _assert_export_task_access(db, current_user, task_id)
     result = department_config_service.get_export_artifact(db, task_id)
     if result is None:
         raise HTTPException(status_code=404, detail="导出产物不存在或已过期")
@@ -1417,7 +1539,11 @@ def _package_result_items(
 
 
 @router.post("/todos/{todo_id}/remind")
-async def remind_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
+async def remind_todo(
+    todo_id: str,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """催办待办事项。
 
     响应结构：ActionResult
@@ -1425,6 +1551,7 @@ async def remind_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
     ⚠️ **2026-11-26：原实现只回一个字符串** —— 催办次数恒为 0。
     ⇒ 现在真的 ``remind_count += 1`` 并在影响说明里留痕。
     """
+    _assert_todo_scope(db, current_user, todo_id)
     row = department_config_service.remind_todo(db, todo_id)
     if row is None:
         raise HTTPException(status_code=404, detail="待办不存在")
@@ -1437,11 +1564,16 @@ async def remind_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/todos/{todo_id}/read")
-async def read_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
+async def read_todo(
+    todo_id: str,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """标记待办已读。
 
     响应结构：ActionResult
     """
+    _assert_todo_scope(db, current_user, todo_id)
     row = department_config_service.read_todo(db, todo_id)
     if row is None:
         raise HTTPException(status_code=404, detail="待办不存在")
@@ -1449,11 +1581,16 @@ async def read_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/todos/{todo_id}/escalate")
-async def escalate_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
+async def escalate_todo(
+    todo_id: str,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """升级待办事项。
 
     响应结构：ActionResult
     """
+    _assert_todo_scope(db, current_user, todo_id)
     row = department_config_service.escalate_todo(db, todo_id)
     if row is None:
         raise HTTPException(status_code=404, detail="待办不存在")
@@ -1461,11 +1598,16 @@ async def escalate_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/todos/{todo_id}/done")
-async def complete_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
+async def complete_todo(
+    todo_id: str,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """完成待办事项。
 
     响应结构：ActionResult
     """
+    _assert_todo_scope(db, current_user, todo_id)
     row = department_config_service.complete_todo(db, todo_id)
     if row is None:
         raise HTTPException(status_code=404, detail="待办不存在")
@@ -1473,7 +1615,11 @@ async def complete_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/todos/batch-remind")
-async def batch_remind_todos(data: dict, db: Session = Depends(get_db)) -> dict:
+async def batch_remind_todos(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """批量催办待办事项。
 
     请求体：{ ids: string[] }
@@ -1484,6 +1630,7 @@ async def batch_remind_todos(data: dict, db: Session = Depends(get_db)) -> dict:
         ids = []
     results = []
     for todo_id in ids:
+        _assert_todo_scope(db, current_user, str(todo_id))
         row = department_config_service.remind_todo(db, str(todo_id))
         if row is None:
             continue
@@ -1494,7 +1641,11 @@ async def batch_remind_todos(data: dict, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/todos/batch-escalate")
-async def batch_escalate_todos(data: dict, db: Session = Depends(get_db)) -> dict:
+async def batch_escalate_todos(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """批量升级待办事项。
 
     请求体：{ ids: string[] }
@@ -1505,6 +1656,7 @@ async def batch_escalate_todos(data: dict, db: Session = Depends(get_db)) -> dic
         ids = []
     results = []
     for todo_id in ids:
+        _assert_todo_scope(db, current_user, str(todo_id))
         row = department_config_service.escalate_todo(db, str(todo_id))
         if row is None:
             continue
@@ -1516,7 +1668,11 @@ async def batch_escalate_todos(data: dict, db: Session = Depends(get_db)) -> dic
 
 
 @router.post("/templates")
-async def create_deliverable_template(data: dict, db: Session = Depends(get_db)) -> dict:
+async def create_deliverable_template(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """创建交付物模板。
 
     请求体：DeliverableTemplatePayload
@@ -1525,6 +1681,8 @@ async def create_deliverable_template(data: dict, db: Session = Depends(get_db))
     ⚠️ **2026-11-26：原实现返回 ``id: 0`` 的空壳** —— 库里什么都没写。
     ⇒ 现在**真落库**并返回真实条目。
     """
+    context = _require_department_config_manager(db, current_user)
+    _assert_org_in_scope(context, str(data.get("orgId") or data.get("org_id") or ""))
     try:
         item = department_config_service.create_template(db, dict(data))
     except ValueError as exc:
@@ -1537,12 +1695,19 @@ async def update_deliverable_template(
     template_id: int,
     data: JsonBody,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """更新交付物模板。
 
     请求体：DeliverableTemplatePayload
     响应结构：DeliverableTemplate
     """
+    context = _require_department_config_manager(db, current_user)
+    row = db.get(DeliverableTemplateRow, template_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="交付物模板不存在")
+    _assert_org_in_scope(context, row.org_id)
+    _assert_org_in_scope(context, str(data.get("orgId") or data.get("org_id") or ""))
     try:
         item = department_config_service.update_template(db, template_id, dict(data))
     except ValueError as exc:
@@ -1557,12 +1722,18 @@ async def toggle_deliverable_template(
     template_id: int,
     action: str,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """启用/停用交付物模板。
 
     路径参数：action = enable | disable
     响应结构：ActionResult
     """
+    context = _require_department_config_manager(db, current_user)
+    existing = db.get(DeliverableTemplateRow, template_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="交付物模板不存在")
+    _assert_org_in_scope(context, existing.org_id)
     status = "ENABLED" if action == "enable" else "DISABLED"
     row = department_config_service.set_template_status(db, template_id, status)
     if row is None:
@@ -1578,12 +1749,22 @@ async def toggle_deliverable_template(
 
 
 @router.post("/acceptance-standards")
-async def create_acceptance_standard(data: dict, db: Session = Depends(get_db)) -> dict:
+async def create_acceptance_standard(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """创建验收标准。
 
     请求体：AcceptanceStandardPayload
     响应结构：AcceptanceStandard
     """
+    context = _require_department_config_manager(db, current_user)
+    template = db.get(DeliverableTemplateRow, data.get("templateId") or data.get("template_id"))
+    if template is None:
+        # 保持既有契约：引用不存在的模板按参数错误 422 返回。
+        raise HTTPException(status_code=422, detail="交付物模板不存在")
+    _assert_org_in_scope(context, template.org_id)
     try:
         item = department_config_service.create_standard(db, dict(data))
     except ValueError as exc:
@@ -1596,12 +1777,19 @@ async def update_acceptance_standard(
     standard_id: int,
     data: JsonBody,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """更新验收标准。
 
     请求体：AcceptanceStandardPayload
     响应结构：AcceptanceStandard
     """
+    context = _require_department_config_manager(db, current_user)
+    existing = db.get(AcceptanceStandardRow, standard_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="验收标准不存在")
+    template = db.get(DeliverableTemplateRow, existing.template_id)
+    _assert_org_in_scope(context, template.org_id if template else None)
     try:
         item = department_config_service.update_standard(db, standard_id, dict(data))
     except ValueError as exc:
@@ -1616,12 +1804,19 @@ async def toggle_acceptance_standard(
     standard_id: int,
     action: str,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """启用/停用验收标准。
 
     路径参数：action = enable | disable
     响应结构：ActionResult
     """
+    context = _require_department_config_manager(db, current_user)
+    existing = db.get(AcceptanceStandardRow, standard_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="验收标准不存在")
+    template = db.get(DeliverableTemplateRow, existing.template_id)
+    _assert_org_in_scope(context, template.org_id if template else None)
     status = "ENABLED" if action == "enable" else "DISABLED"
     row = department_config_service.set_standard_status(db, standard_id, status)
     if row is None:
@@ -1637,12 +1832,18 @@ async def toggle_acceptance_standard(
 
 
 @router.post("/score-rules")
-async def create_score_rule(data: dict, db: Session = Depends(get_db)) -> dict:
+async def create_score_rule(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """创建参考分规则。
 
     请求体：ScoreRulePayload
     响应结构：ScoreRule
     """
+    context = _require_department_config_manager(db, current_user)
+    _assert_org_in_scope(context, str(data.get("orgId") or data.get("org_id") or ""))
     try:
         item = department_config_service.create_score_rule(db, dict(data))
     except ValueError as exc:
@@ -1655,12 +1856,19 @@ async def update_score_rule(
     rule_id: int,
     data: JsonBody,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """更新参考分规则。
 
     请求体：ScoreRulePayload
     响应结构：ScoreRule
     """
+    context = _require_department_config_manager(db, current_user)
+    existing = db.get(ScoreRuleRow, rule_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="参考分规则不存在")
+    _assert_org_in_scope(context, existing.org_id)
+    _assert_org_in_scope(context, str(data.get("orgId") or data.get("org_id") or ""))
     try:
         item = department_config_service.update_score_rule(db, rule_id, dict(data))
     except ValueError as exc:
@@ -1671,11 +1879,20 @@ async def update_score_rule(
 
 
 @router.post("/score-rules/{rule_id}/enable")
-async def enable_score_rule(rule_id: int, db: Session = Depends(get_db)) -> dict:
+async def enable_score_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """启用参考分规则。
 
     响应结构：ActionResult
     """
+    context = _require_department_config_manager(db, current_user)
+    existing = db.get(ScoreRuleRow, rule_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="参考分规则不存在")
+    _assert_org_in_scope(context, existing.org_id)
     row = department_config_service.enable_score_rule(db, rule_id)
     if row is None:
         raise HTTPException(status_code=404, detail="参考分规则不存在")
@@ -1687,6 +1904,7 @@ async def simulate_score_rule(
     rule_id: int,
     data: JsonBody,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """模拟参考分规则。
 
@@ -1697,6 +1915,11 @@ async def simulate_score_rule(
     ⇒ 前端「模拟」面板永远显示 0 分，用户无法判断规则是否合理。
     ⇒ 现在**按规则真算**。
     """
+    context = _require_department_config_manager(db, current_user)
+    existing = db.get(ScoreRuleRow, rule_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="参考分规则不存在")
+    _assert_org_in_scope(context, existing.org_id)
     try:
         result = department_config_service.simulate_score_rule(db, rule_id, dict(data))
     except LookupError as exc:

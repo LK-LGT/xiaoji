@@ -106,7 +106,10 @@ def create_adjustment(
     if not reason:
         raise ValueError("请填写调整原因")
 
-    plan_no, work_content = _resolve_plan(db, plan_type, plan_id)
+    plan_no, work_content, plan_owner_id = _resolve_plan(db, plan_type, plan_id)
+    # ⚠️ 只能调整**自己的**计划 —— 否则员工可以借他人计划发起暂停/撤销。
+    if str(plan_owner_id or "") != str(owner_id):
+        raise ValueError("只能调整自己的计划")
 
     row = PlanAdjustmentRow(
         adjustment_no="",
@@ -130,8 +133,8 @@ def create_adjustment(
     return serialize_adjustment(row)
 
 
-def _resolve_plan(db: Session, plan_type: str, plan_id: str) -> tuple[str, str]:
-    """取原计划的编号与工作内容。找不到抛 ``LookupError``。"""
+def _resolve_plan(db: Session, plan_type: str, plan_id: str) -> tuple[str, str, str]:
+    """取原计划的编号、工作内容与归属人。找不到抛 ``LookupError``。"""
     from ..domain.models import DayPlan, MonthPlan, WeekPlan
 
     if plan_type == "MONTH":
@@ -140,18 +143,18 @@ def _resolve_plan(db: Session, plan_type: str, plan_id: str) -> tuple[str, str]:
             raise LookupError("月计划不存在")
         items = sorted(plan.items, key=lambda item: item.sort_no)
         content = items[0].task_name if items else plan.title
-        return plan.id, content
+        return plan.id, content, str(plan.owner_id or "")
     if plan_type == "WEEK":
         plan = db.get(WeekPlan, plan_id)
         if plan is None:
             raise LookupError("周计划不存在")
         items = sorted(plan.items, key=lambda item: item.sort_no)
         content = items[0].content if items else plan.title
-        return plan.id, content
+        return plan.id, content, str(plan.owner_id or "")
     plan = db.get(DayPlan, plan_id)
     if plan is None:
         raise LookupError("日计划不存在")
-    return plan.id, plan.content
+    return plan.id, plan.content, str(plan.owner_id or "")
 
 
 def list_adjustments(

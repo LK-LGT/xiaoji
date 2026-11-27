@@ -75,7 +75,9 @@ def org(db):
     db.add_all([
         Department(id="D_ROOT", name="总部", parent_id=None, active=True),
         Department(id="D_HR", name="人事行政部", parent_id="D_ROOT", active=True),
-        Department(id="D_OTHER", name="其它部门", parent_id="D_ROOT", active=True),
+        # E_LEADER 必须是部门负责人 —— 2026-11-27 起部门配置写端点
+        # 要求 MANAGE_DEPARTMENT_CONFIG（部门负责人 / HR / 管理员）。
+        Department(id="D_OTHER", name="其它部门", parent_id="D_ROOT", leader_id="E_LEADER", active=True),
     ])
     db.add_all([
         Employee(id="E_LEADER", name="主管", department_id="D_OTHER",

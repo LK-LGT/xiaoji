@@ -63,6 +63,12 @@ class PermissionAction(StrEnum):
     #: 让 AI 少一条依据；删除一篇 = 让 AI 少一条依据。
     #: ⇒ 这是**影响 AI 输出**的写操作，不能只校验「已登录」。
     MANAGE_KNOWLEDGE = "manage_knowledge"
+    #: ★ 2026-11-27：部门级绩效配置（交付物模板 / 验收标准 / 参考分规则 / 待办 / 导出）。
+    #:
+    #: ⚠️ **为什么单独一个权限位**
+    #: 这些写操作会改变**全部门**的填报口径与参考分规则，
+    #: 不是「登录了就能改」。授予：部门负责人（限本部门）、HR、系统管理员。
+    MANAGE_DEPARTMENT_CONFIG = "manage_department_config"
 
 
 @dataclass(frozen=True)
@@ -550,6 +556,9 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
             {
                 PermissionAction.VIEW_DIRECT_REPORT_SCORE,
                 PermissionAction.SUBMIT_DIRECT_REPORT_REVIEW,
+                # 部门级配置（模板 / 验收标准 / 参考分规则 / 待办 / 导出）。
+                # ⚠️ 仅限**本部门及下级部门** —— 范围校验在路由层。
+                PermissionAction.MANAGE_DEPARTMENT_CONFIG,
             }
         )
 
@@ -574,6 +583,8 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
                 # 现在 HR 也能管理算分配置；system_admin 仍然保留该权限
                 # （运维兜底），但不再是唯一入口。
                 PermissionAction.MANAGE_SYSTEM_CONFIG,
+                # 部门级配置（HR 跨部门管理）。
+                PermissionAction.MANAGE_DEPARTMENT_CONFIG,
                 # ⚠️ ★ 2026-11-27：企业知识库的写操作。
                 #   知识文档是 **AI 检索的依据来源** ⇒ 停用 / 删除一篇
                 #   = 直接改变 AI 的回答依据 ⇒ 必须有独立权限位。
@@ -585,6 +596,8 @@ def build_access_context(db: Session, employee: Employee) -> AccessContext:
         permissions.update(
             {
                 PermissionAction.MANAGE_SYSTEM_CONFIG,
+                # 部门级配置（管理员跨部门管理）。
+                PermissionAction.MANAGE_DEPARTMENT_CONFIG,
                 PermissionAction.SYNC_ORGANIZATION,
                 PermissionAction.SYNC_ATTENDANCE,
                 PermissionAction.VIEW_AUDIT_LOG,

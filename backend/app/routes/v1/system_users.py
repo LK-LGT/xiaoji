@@ -134,13 +134,18 @@ async def list_users(
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取用户列表（真实数据）。
 
     响应结构：PageResult<UserItem> = { records, total, pageNo, pageSize }
 
     数据来源：飞书同步落库的 employee 表。
+
+    ⚠️ **2026-11-27：仅 HR / 系统管理员可拉全员通讯录**
+    该接口返回手机号、邮箱、直属负责人与角色 ⇒ 不能对任意登录用户开放。
     """
+    _require_employee_admin(db, current_user)
     return _ok(
         system_views.list_user_items(
             db,

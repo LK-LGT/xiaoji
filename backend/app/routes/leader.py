@@ -24,6 +24,7 @@ from ..services import (
     plan_adjustment_service,
     plan_approval,
 )
+from ..services.access_control import PermissionAction
 from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
@@ -952,6 +953,37 @@ async def batch_mark_daily_reviews_risk(data: dict, db: Session = Depends(get_db
 # ---------------------------------------------------------------------------
 
 
+def _adjustment_owner_scope(db: Session, current_user: Employee) -> list[str] | None:
+    """计划调整可见的申请人范围；``None`` 表示 HR 可见全部。"""
+    context = build_access_context_for_user(current_user, db)
+    if context.has_permission(PermissionAction.VIEW_ALL_SCORES):
+        return None
+    ids = (
+        set(context.direct_report_ids)
+        | set(context.reporting_line_ids)
+        | set(context.delegated_employee_ids)
+    )
+    if context.managed_department_ids:
+        rows = (
+            db.query(Employee.id)
+            .filter(Employee.department_id.in_(context.managed_department_ids))
+            .all()
+        )
+        ids.update(str(row[0]) for row in rows)
+    return sorted(ids)
+
+
+def _assert_can_manage_adjustment(
+    db: Session, current_user: Employee, owner_id: str
+) -> None:
+    """只有申请人本人、其主管/部门负责人或 HR 能读/处理该申请。"""
+    context = build_access_context_for_user(current_user, db)
+    if str(owner_id) == current_user.id:
+        return
+    if not context.can_write_score_of(str(owner_id), db=db):
+        raise HTTPException(status_code=403, detail="无权处理该计划调整申请")
+
+
 @router.get("/plan-adjustments")
 async def list_leader_plan_adjustments(
     scopeOrgId: str | None = Query(None),
@@ -967,10 +999,17 @@ async def list_leader_plan_adjustments(
     ⚠️ **2026-11-26：原实现恒返回 ``[]``** —— 领导端永远看不到员工的调整申请
     ⇒ 整个「计划调整」功能是断的。
     ⇒ 现在从 ``plan_adjustment`` 表**真实读取**。
+
+    ⚠️ **2026-11-27：列表必须按汇报线过滤** —— 否则任何领导都能看到全公司申请。
     """
+    context = build_access_context_for_user(current_user, db)
+    is_hr = context.has_permission(PermissionAction.VIEW_ALL_SCORES)
+    if scopeOrgId and not is_hr and scopeOrgId not in context.managed_department_ids:
+        raise HTTPException(status_code=403, detail="无权查看该部门的计划调整")
     return _ok(
         plan_adjustment_service.list_adjustments(
             db,
+            owner_ids=_adjustment_owner_scope(db, current_user),
             scope_org_id=scopeOrgId,
             status=status,
             period_month=periodMonth,
@@ -982,6 +1021,7 @@ async def list_leader_plan_adjustments(
 async def get_leader_plan_adjustment(
     adjustment_id: str,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取计划调整申请详情。
 
@@ -990,6 +1030,7 @@ async def get_leader_plan_adjustment(
     item = plan_adjustment_service.get_adjustment(db, adjustment_id)
     if item is None:
         raise HTTPException(status_code=404, detail="计划调整申请不存在")
+    _assert_can_manage_adjustment(db, current_user, str(item.get("ownerId") or ""))
     return _ok(item)
 
 
@@ -1007,7 +1048,14 @@ async def process_leader_plan_adjustment(
     ⚠️ **2026-11-26：原实现只回一个字符串** —— 状态**根本没变**，
     员工端永远看不到「已处理」。
     ⇒ 现在真的改状态 + 写处理说明 + **把原计划置为暂停/撤销**。
+
+    ⚠️ **2026-11-27：必须校验「这一条」是否在我管辖范围内** ——
+    「是主管」不等于「是这条申请的主管」。
     """
+    item = plan_adjustment_service.get_adjustment(db, adjustment_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="计划调整申请不存在")
+    _assert_can_manage_adjustment(db, current_user, str(item.get("ownerId") or ""))
     try:
         row = plan_adjustment_service.process_adjustment(
             db, adjustment_id, dict(data), operator_id=current_user.id

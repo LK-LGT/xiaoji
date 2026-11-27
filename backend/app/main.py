@@ -1677,12 +1677,22 @@ def add_metric_to_record(
         if not record:
             raise exceptions.RecordNotFound("AssessmentRecord", record_id)
 
+        # ⚠️ 2026-11-27：指标实测值是**算分集的唯一输入** ——
+        #    只有对该员工有「写成绩」权限的人（本人 / 主管 / 部门负责人 / HR）
+        #    才能写入。原实现只校验了「已登录」，任何员工都能改别人的指标。
+        access = access_control.build_access_context(db, current_user)
+        if not access.can_write_score_of(record.employee_id, db=db):
+            raise HTTPException(status_code=403, detail="无权为该员工写入指标值")
+
+        task = db.get(AssessmentTask, record.task_id)
+        period = str(task.period) if task is not None else ""
+
         # 添加指标值（决策②检查内置）
         metric_value = evidence_service.add_metric_value(
             db,
             employee_id=record.employee_id,
             metric_code=request.metric_code,
-            period="",
+            period=period,
             value=request.value,
             source=request.source,
             as_of=request.collected_at
