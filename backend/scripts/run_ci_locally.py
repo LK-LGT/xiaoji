@@ -75,6 +75,22 @@ class Check:
         return self.ok
 
 
+def _purge_ci_db(db_path: Path) -> None:
+    """删除本地 CI 用的 SQLite 库及其 WAL/SHM 附属文件。
+
+    ⚠️ SQLite 的 WAL 模式下，``.db`` 旁边会有 ``.db-wal`` / ``.db-shm``。
+    只删主文件、留着 WAL ⇒ 旧事务日志可能残留 ⇒ 库「看起来还在」。
+    ⇒ 三个文件必须一起删。
+    """
+    for suffix in ("", "-wal", "-shm"):
+        target = Path(str(db_path) + suffix)
+        try:
+            if target.exists():
+                target.unlink()
+        except OSError as exc:  # pragma: no cover
+            print(f"  ⚠️ 无法删除 {target}: {exc}")
+
+
 def backend_checks() -> list[Check]:
     # ⚠️ 必须用**绝对路径**：
     #    - 应用（仓库根运行）解析 `sqlite:///./data/x.db` → `<root>/data/x.db`
@@ -83,6 +99,25 @@ def backend_checks() -> list[Check]:
     #    用绝对路径可保证无论从哪个 CWD 运行都指向同一个文件。
     db_path = (REPO_ROOT / "data" / "_ci_local.db").resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    # ⚠️⚠️ **每次跑之前必须清库**（2026-11-27）
+    #
+    # ⚠️ **这是「Alembic 往返无损」间歇性挂掉的根因**
+    #   本脚本**从不删库** ⇒ ``data/_ci_local.db`` 会跨多次运行**一直复用**。
+    #   而 ``alembic_version`` 只记版本号、**不记表结构** ⇒
+    #   一旦某张表在版本号之下被后加进来（例如 ``plan_adjustment_seq``：
+    #   迁移 ``0048`` 建的、但 ORM ``create_all()`` 之后的版本才有），
+    #   库里就会缺这张表，而 ``alembic_version`` 仍是 ``0048``。
+    #   ⇒ 随后的 ``downgrade -1`` 执行 ``DROP TABLE plan_adjustment_seq``
+    #      ⇒ ``sqlite3.OperationalError: no such table`` ⇒ 该项永久变红。
+    #
+    # ⚠️ **为什么「删库后」又全绿**
+    #   全新库由迁移脚本逐级建表 ⇒ 表结构与版本号**严格一致**
+    #   ⇒ 降级/升级往返必然无损。
+    #
+    # ⚠️ **为什么「不清库」是错的**
+    #   复用旧库 ⇒ CI 结果取决于**上一轮跑之前的历史**，不可复现。
+    #   ⇒ 迁移往返这种「结构一致性」检查必须**从零**验证。
+    _purge_ci_db(db_path)
     ci_db = f"sqlite:///{db_path.as_posix()}"
     env = {
         "DATABASE_URL": ci_db,
