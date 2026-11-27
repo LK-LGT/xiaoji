@@ -123,6 +123,15 @@
 
       <div class="employee-workbench-main">
         <section class="dashboard-section workbench-calendar-stage">
+          <el-alert
+            v-if="summary.unassignedDayCount"
+            class="workbench-unassigned-alert"
+            type="warning"
+            :closable="false"
+            show-icon
+            :title="`本月有 ${summary.unassignedDayCount} 天飞书未排班`"
+            description="未排班不计入应填天数；请联系主管/HR 在飞书考勤补排。"
+          />
           <div class="workbench-calendar-scroll">
             <el-calendar v-model="selectedDate">
               <template #header>
@@ -265,6 +274,7 @@ const summary = reactive<EmployeeDashboardResp['summary']>({
   averageCompletionRate: 0,
   openAppealCount: 0,
   missingRequiredDayPlanCount: 0,
+  unassignedDayCount: 0,
 })
 
 const planStatusMap = {

@@ -1461,6 +1461,7 @@ from . import plan_models as _plan_models  # noqa: E402,F401
 from . import result_models as _result_models  # noqa: E402,F401
 from . import review_models as _review_models  # noqa: E402,F401
 from . import scheme_models as _scheme_models  # noqa: E402,F401
+from . import shift_models as _shift_models  # noqa: E402,F401
 from . import workday_models as _workday_models  # noqa: E402,F401
 
 __all__ = [name for name in dir() if not name.startswith("_")]

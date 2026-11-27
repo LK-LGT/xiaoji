@@ -23,7 +23,7 @@ export interface EmployeeDayPlanCalendarItem {
 
 export interface EmployeeWorkdayCalendarItem {
   date: string
-  ruleType: 'WORKDAY' | 'WEEKEND' | 'HOLIDAY' | 'LEAVE' | 'BUSINESS_TRIP' | 'SPECIAL_SHIFT'
+  ruleType: 'WORKDAY' | 'WEEKEND' | 'HOLIDAY' | 'LEAVE' | 'BUSINESS_TRIP' | 'SPECIAL_SHIFT' | 'UNASSIGNED'
   forceReport: boolean
   description?: string
   ruleId?: number
@@ -44,6 +44,7 @@ export interface EmployeeDashboardResp {
     averageCompletionRate: number
     openAppealCount: number
     missingRequiredDayPlanCount: number
+    unassignedDayCount: number
   }
 }
 

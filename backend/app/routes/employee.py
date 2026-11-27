@@ -119,13 +119,17 @@ async def get_employee_dashboard(
     )
     existing_dates = set(db.execute(plan_stmt).scalars().all())
 
-    # 标注「应填未填」
+    # 标注「应填未填」与「未排班」
     missing_required_count = 0
+    unassigned_count = 0
     day_plan_calendar: list[dict[str, Any]] = []
     for item in calendar:
         day = date.fromisoformat(item["date"])
         has_plan = day in existing_dates
-        if item["forceReport"] and not has_plan:
+        if item.get("ruleType") == "UNASSIGNED":
+            unassigned_count += 1
+            item["missingRequired"] = False
+        elif item["forceReport"] and not has_plan:
             item["missingRequired"] = True
             missing_required_count += 1
         else:
@@ -146,6 +150,7 @@ async def get_employee_dashboard(
                 "averageCompletionRate": 0,
                 "openAppealCount": 0,
                 "missingRequiredDayPlanCount": missing_required_count,
+                "unassignedDayCount": unassigned_count,
             },
         }
     )

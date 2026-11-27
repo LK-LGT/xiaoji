@@ -1200,6 +1200,52 @@ class FeishuClient:
         )
         return results
 
+    def fetch_user_daily_shifts(
+        self,
+        user_ids: list[str],
+        start_date: str,
+        end_date: str,
+        *,
+        employee_type: str = "employee_id",
+    ) -> list[dict[str, Any]]:
+        """查询排班表（POST /attendance/v1/user_daily_shifts/query）。
+
+        返回员工 × 日期的排班结果；``shift_id == "0"`` 表示休息/未排班。
+        飞书限制：单次 ≤50 人、日期跨度 ≤30 天（含首尾）。
+        """
+        if not user_ids:
+            return []
+        if len(start_date) != 8 or len(end_date) != 8:
+            raise ValueError("排班查询日期必须为 yyyyMMdd 格式")
+
+        start = datetime.strptime(start_date, "%Y%m%d").date()
+        end = datetime.strptime(end_date, "%Y%m%d").date()
+        if end < start:
+            raise ValueError("排班查询的结束日期不能早于起始日期")
+        if (end - start).days + 1 > self.ATTENDANCE_MAX_DATE_RANGE_DAYS:
+            raise ValueError(
+                f"排班查询日期跨度不得超过 {self.ATTENDANCE_MAX_DATE_RANGE_DAYS} 天"
+            )
+
+        results: list[dict[str, Any]] = []
+        for i in range(0, len(user_ids), self.ATTENDANCE_MAX_USERS_PER_REQUEST):
+            chunk = user_ids[i : i + self.ATTENDANCE_MAX_USERS_PER_REQUEST]
+            data = self._request(
+                "POST",
+                "/attendance/v1/user_daily_shifts/query",
+                params={"employee_type": employee_type},
+                json={
+                    "user_ids": chunk,
+                    "check_date_from": int(start_date),
+                    "check_date_to": int(end_date),
+                },
+            )
+            results.extend(data.get("user_daily_shifts") or [])
+        logger.info(
+            "飞书排班拉取完成，用户数=%s，返回条数=%s", len(user_ids), len(results)
+        )
+        return results
+
     def __enter__(self) -> FeishuClient:
         return self
 

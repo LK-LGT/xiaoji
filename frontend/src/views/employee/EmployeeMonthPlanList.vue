@@ -105,6 +105,7 @@ const summary = reactive<EmployeeDashboardResp['summary']>({
   averageCompletionRate: 0,
   openAppealCount: 0,
   missingRequiredDayPlanCount: 0,
+  unassignedDayCount: 0,
 })
 
 const planStatusMap = {

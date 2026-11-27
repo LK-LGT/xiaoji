@@ -118,10 +118,11 @@ test('规则描述追加在末尾', () => {
   assert.ok(notice.includes('；年假'))
 })
 
-test('规则标签表覆盖 6 种排班类型', () => {
-  assert.equal(Object.keys(DAY_PLAN_RULE_LABELS).length, 6)
+test('规则标签表覆盖 7 种排班类型', () => {
+  assert.equal(Object.keys(DAY_PLAN_RULE_LABELS).length, 7)
   assert.equal(DAY_PLAN_RULE_LABELS.WORKDAY, '工作日')
   assert.equal(DAY_PLAN_RULE_LABELS.SPECIAL_SHIFT, '特殊排班')
+  assert.equal(DAY_PLAN_RULE_LABELS.UNASSIGNED, '未排班')
 })
 
 // ═══════════════════════════════════════════════════════════════════════════

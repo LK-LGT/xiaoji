@@ -576,6 +576,16 @@ def _startup() -> None:
         start_feishu_approval_compensation()
     except Exception:
         logging.getLogger(__name__).exception("启动飞书审批补偿失败")
+    try:
+        # ★ 飞书排班 → 员工排班日历（2026-11-27）
+        # ⚠️ **默认关闭**（``feishu_workday_sync_enabled``）——
+        #    开启后每天同步当月 + 下月排班。
+        from .services.feishu_workday_scheduler import (
+            start as start_feishu_workday_scheduler,
+        )
+        start_feishu_workday_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("启动飞书排班同步失败")
 
 
 @app.on_event("shutdown")
@@ -646,6 +656,14 @@ def _shutdown() -> None:
         stop_feishu_approval_compensation()
     except Exception:
         logging.getLogger(__name__).exception("停止飞书审批补偿失败")
+    try:
+        # ★ 飞书排班同步（2026-11-27）
+        from .services.feishu_workday_scheduler import (
+            stop as stop_feishu_workday_scheduler,
+        )
+        stop_feishu_workday_scheduler()
+    except Exception:
+        logging.getLogger(__name__).exception("停止飞书排班同步失败")
 
 
 # ---------------------------------------------------------------------------

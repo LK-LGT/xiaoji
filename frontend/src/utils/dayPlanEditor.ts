@@ -143,6 +143,7 @@ export const DAY_PLAN_RULE_LABELS: Record<string, string> = {
   WORKDAY: '工作日',
   WEEKEND: '周末',
   HOLIDAY: '节假日',
+  UNASSIGNED: '未排班',
   LEAVE: '请假',
   BUSINESS_TRIP: '出差',
   SPECIAL_SHIFT: '特殊排班',

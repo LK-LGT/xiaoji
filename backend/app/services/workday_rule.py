@@ -29,6 +29,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..domain.shift_models import EmployeeShiftDay, ShiftSyncRun
 from ..domain.workday_models import (
     PERSONAL_RULE_TYPES,
     RULE_STATUS_DISABLED,
@@ -455,7 +456,7 @@ def resolve_rule(
     )
     latest = _latest_by_key(rules)
 
-    # 1) 个人规则优先
+    # 1) 人工例外优先：请假 / 出差永远覆盖排班
     if employee_id:
         personal = latest.get((day, RULE_TYPE_LEAVE, employee_id))
         if personal is None:
@@ -463,7 +464,19 @@ def resolve_rule(
         if personal is not None:
             return _to_calendar_item(day, personal, explicit=True)
 
-    # 2) 全局规则：按"特殊 > 节假日 > 周末 > 工作日"的语义优先级
+        # 2) 飞书排班（事实源）
+        shift = db.execute(
+            select(EmployeeShiftDay).where(
+                EmployeeShiftDay.employee_id == str(employee_id),
+                EmployeeShiftDay.work_date == day,
+            )
+        ).scalar_one_or_none()
+        if shift is not None:
+            return _shift_calendar_item(day, shift)
+        if _month_synced(db, day):
+            return _unassigned_calendar_item(day)
+
+    # 3) 没有排班数据时，回退历史全局规则
     global_priority = (
         RULE_TYPE_SPECIAL_SHIFT,
         RULE_TYPE_HOLIDAY,
@@ -475,11 +488,55 @@ def resolve_rule(
         if rule is not None:
             return _to_calendar_item(day, rule, explicit=True)
 
-    # 3) 默认推导
+    # 4) 最后才用旧的默认推导（仅覆盖“未同步过排班”的历史区间）
     item = default_rule_for(day)
     item["date"] = day.isoformat()
     item["missingRequired"] = False
+    item["source"] = "default"
     return item
+
+
+def _month_synced(db: Session, day: date) -> bool:
+    period = day.strftime("%Y-%m")
+    return (
+        db.execute(
+            select(ShiftSyncRun.id).where(
+                ShiftSyncRun.period == period,
+                ShiftSyncRun.status == "SUCCESS",
+            )
+        ).first()
+        is not None
+    )
+
+
+def _shift_calendar_item(day: date, shift: EmployeeShiftDay) -> dict[str, Any]:
+    is_workday = bool(shift.is_workday)
+    return {
+        "date": day.isoformat(),
+        "ruleType": RULE_TYPE_WORKDAY if is_workday else RULE_TYPE_WEEKEND,
+        "forceReport": is_workday,
+        "description": f"飞书排班（班次 {shift.shift_id}）",
+        "ruleId": None,
+        "versionNo": None,
+        "explicit": True,
+        "missingRequired": False,
+        "source": "feishu",
+        "shiftId": shift.shift_id,
+    }
+
+
+def _unassigned_calendar_item(day: date) -> dict[str, Any]:
+    return {
+        "date": day.isoformat(),
+        "ruleType": "UNASSIGNED",
+        "forceReport": False,
+        "description": "飞书未排班，不计入应填天数",
+        "ruleId": None,
+        "versionNo": None,
+        "explicit": True,
+        "missingRequired": False,
+        "source": "unassigned",
+    }
 
 
 def _to_calendar_item(
@@ -519,11 +576,42 @@ def build_calendar(
     )
     latest = _latest_by_key(rules)
 
+    shifts: dict[date, EmployeeShiftDay] = {}
+    synced_months: set[str] = set()
+    if employee_id:
+        shifts = {
+            row.work_date: row
+            for row in db.execute(
+                select(EmployeeShiftDay).where(
+                    EmployeeShiftDay.employee_id == str(employee_id),
+                    EmployeeShiftDay.work_date >= start,
+                    EmployeeShiftDay.work_date <= end,
+                )
+            )
+            .scalars()
+            .all()
+        }
+        periods = {
+            (start + timedelta(days=offset)).strftime("%Y-%m")
+            for offset in range((end - start).days + 1)
+        }
+        synced_months = {
+            str(period)
+            for period in db.execute(
+                select(ShiftSyncRun.period).where(
+                    ShiftSyncRun.period.in_(periods),
+                    ShiftSyncRun.status == "SUCCESS",
+                )
+            ).scalars()
+        }
+
     # 按 (日期, 类型, 归属) 建索引，便于逐日查
     calendar: list[dict[str, Any]] = []
     day = start
     while day <= end:
-        item = _resolve_from_index(day, employee_id, latest)
+        item = _resolve_from_index(
+            day, employee_id, latest, shifts, synced_months
+        )
         calendar.append(item)
         day += timedelta(days=1)
     return calendar
@@ -533,6 +621,8 @@ def _resolve_from_index(
     day: date,
     employee_id: str | None,
     latest: dict[tuple, WorkdayRule],
+    shifts: dict[date, EmployeeShiftDay] | None = None,
+    synced_months: set[str] | None = None,
 ) -> dict[str, Any]:
     """用预取的规则索引解析某天（避免 N+1 查询）。"""
     if employee_id:
@@ -540,6 +630,12 @@ def _resolve_from_index(
             rule = latest.get((day, rtype, employee_id))
             if rule is not None:
                 return _to_calendar_item(day, rule, explicit=True)
+
+        shift = (shifts or {}).get(day)
+        if shift is not None:
+            return _shift_calendar_item(day, shift)
+        if day.strftime("%Y-%m") in (synced_months or set()):
+            return _unassigned_calendar_item(day)
 
     for rtype in (
         RULE_TYPE_SPECIAL_SHIFT,
@@ -554,6 +650,7 @@ def _resolve_from_index(
     item = default_rule_for(day)
     item["date"] = day.isoformat()
     item["missingRequired"] = False
+    item["source"] = "default"
     return item
 
 

@@ -109,6 +109,8 @@ _TEST_SCHEDULER_OFF = {
     # ★ 飞书审批回流定时补偿（2026-11-24，FS-7）
     #    ⚠️ 后台线程 + 首轮就真去拉飞书审批实例 ⇒ 必须关。
     "FEISHU_APPROVAL_COMPENSATION_ENABLED": "false",
+    # ★ 飞书排班同步（2026-11-27）
+    "FEISHU_WORKDAY_SYNC_ENABLED": "false",
 }
 for _key, _value in _TEST_SCHEDULER_OFF.items():
     # ⚠️ 用直接赋值，不用 setdefault ——
