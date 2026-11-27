@@ -51,6 +51,24 @@ class JsonBody(BaseModel):
     def __getitem__(self, key: str) -> Any:
         return self.get(key)
 
+    def has(self, key: str) -> bool:
+        """判断字段**是否存在**（含未声明的多余字段）。
+
+        ⚠️ **为什么不能用 `key in payload`**
+        ``JsonBody`` 继承自 Pydantic ``BaseModel``，而 ``BaseModel``
+        **没有** ``__contains__`` ⇒ ``in`` 会退化成对 ``__iter__``
+        （产出 ``(key, value)`` 二元组）的成员判断
+        ⇒ **恒为 False** ⇒ 依赖它做「字段是否提交」的分支
+        会**永远走 else 分支**。
+
+        ⚠️ 这不是理论问题：``routes/v1/system_users.py`` 的
+        ``update_user`` 曾用 ``if "deptId" in payload`` 判断是否改部门
+        ⇒ **部门/直属负责人/角色永远改不了**，前端却弹「已保存」。
+        """
+        if key in (self.model_fields or {}):
+            return True
+        return key in (self.model_extra or {})
+
     def get_extra(self, key: str, default: Any = None) -> Any:
         """只读取未声明的多余字段。"""
         extra = self.model_extra or {}

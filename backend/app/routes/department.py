@@ -14,15 +14,17 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
 from ..core.db import get_db
 from ..dependencies import build_access_context_for_user, get_current_user
+from ..domain.config_models import ExportTaskRow
 from ..domain.models import DayPlan, Department, Employee, MonthPlan, MonthPlanItem, WeekPlan
 from ..domain.plan_models import PlanApproval
 from ..domain.result_models import Result
-from ..services import plan_approval
+from ..services import department_config_service, ledger_service, plan_approval
 from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
@@ -924,19 +926,34 @@ async def list_result_confirms(db: Session = Depends(get_db)):
 
 
 @router.get("/todos", include_in_schema=True)
-async def list_todo_items(db: Session = Depends(get_db)):
-    """获取待办项列表
+async def list_todo_items(
+    sceneCode: str | None = Query(None),
+    status: str | None = Query(None),
+    dueDate: str | None = Query(None),
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+):
+    """获取待办项列表。
 
     响应结构：PageResponse<TodoItem>，即 { items, total, pageNo, pageSize }
+
+    ⚠️ **2026-11-26：原实现是空壳** —— 恒返回空分页，
+    而前端「通知待办」页有完整的表格、筛选、催办、批量操作
+    ⇒ 页面永远是空的。
+    ⇒ 现在从 ``dept_todo`` 表**真实读取**。
     """
     return {
         "code": 0,
-        "data": {
-            "items": [],
-            "total": 0,
-            "pageNo": 1,
-            "pageSize": 20,
-        }
+        "data": department_config_service.list_todos(
+            db,
+            scene_code=sceneCode,
+            status=status,
+            due_date=dueDate,
+            page_no=pageNo,
+            page_size=pageSize,
+        ),
     }
 
 
@@ -948,14 +965,24 @@ async def list_todo_items_legacy(db: Session = Depends(get_db)):
 
 
 @router.get("/templates", include_in_schema=True)
-async def list_templates(db: Session = Depends(get_db)):
+async def list_templates(
+    orgId: str | None = Query(None),
+    status: str | None = Query(None),
+    keyword: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
     """获取交付物模板列表
 
     响应结构：DeliverableTemplate[]（前端直接 .map()，故返回裸数组）
+
+    ⚠️ **2026-11-26：原实现恒返回 ``[]``** —— 交付物模板页永远空白。
+    ⇒ 现在从 ``deliverable_template`` 表**真实读取**。
     """
     return {
         "code": 0,
-        "data": []
+        "data": department_config_service.list_templates(
+            db, org_id=orgId, status=status, keyword=keyword
+        ),
     }
 
 
@@ -967,14 +994,23 @@ async def list_templates_legacy(db: Session = Depends(get_db)):
 
 
 @router.get("/acceptance-standards", include_in_schema=True)
-async def list_standards(db: Session = Depends(get_db)):
+async def list_standards(
+    templateId: int | None = Query(None),
+    status: str | None = Query(None),
+    keyword: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
     """获取验收标准列表
 
     响应结构：AcceptanceStandard[]（前端直接 .map()，故返回裸数组）
+
+    ⚠️ **2026-11-26：原实现恒返回 ``[]``** ⇒ 现在**真实读取**。
     """
     return {
         "code": 0,
-        "data": []
+        "data": department_config_service.list_standards(
+            db, template_id=templateId, status=status, keyword=keyword
+        ),
     }
 
 
@@ -986,14 +1022,23 @@ async def list_standards_legacy(db: Session = Depends(get_db)):
 
 
 @router.get("/score-rules", include_in_schema=True)
-async def list_score_rules(db: Session = Depends(get_db)):
+async def list_score_rules(
+    orgId: str | None = Query(None),
+    status: str | None = Query(None),
+    keyword: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
     """获取参考分规则列表
 
     响应结构：ScoreRule[]（前端直接 .map()，故返回裸数组）
+
+    ⚠️ **2026-11-26：原实现恒返回 ``[]``** ⇒ 现在**真实读取**。
     """
     return {
         "code": 0,
-        "data": []
+        "data": department_config_service.list_score_rules(
+            db, org_id=orgId, status=status, keyword=keyword
+        ),
     }
 
 
@@ -1005,19 +1050,30 @@ async def list_score_rules_legacy(db: Session = Depends(get_db)):
 
 
 @router.get("/export-tasks")
-async def list_export_tasks(db: Session = Depends(get_db)):
+async def list_export_tasks(
+    status: str | None = Query(None),
+    date: str | None = Query(None),
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+):
     """获取导出任务列表
 
     响应结构：PageResponse<ExportTask>，即 { items, total, pageNo, pageSize }
+
+    ⚠️ **2026-11-26：原实现恒返回空分页** ⇒ 现在**真实读取**。
     """
     return {
         "code": 0,
-        "data": {
-            "items": [],
-            "total": 0,
-            "pageNo": 1,
-            "pageSize": 20,
-        }
+        "data": department_config_service.list_export_tasks(
+            db,
+            requested_by=current_user.id,
+            status=status,
+            date=date,
+            page_no=pageNo,
+            page_size=pageSize,
+        ),
     }
 
 
@@ -1025,44 +1081,111 @@ async def list_export_tasks(db: Session = Depends(get_db)):
 async def create_export_task(
     data: JsonBody,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ):
     """创建导出任务
 
     响应结构：ExportTask
+
+    ⚠️ **2026-11-26：原实现返回空壳任务**（``id: ""``、状态 ``PENDING``），
+    **数据库里什么都没有**，前端弹「任务已创建」后刷新就没了。
+    ⇒ 现在**真的建任务 + 真的生成产物 + 真的算校验值**。
     """
-    return {
-        "code": 0,
-        "data": _empty_export_task(),
-    }
+    try:
+        row = department_config_service.create_export_task(
+            db, dict(data), requested_by=current_user.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    content, file_name = _build_export_artifact(db, row)
+    if content is None:
+        department_config_service.mark_export_failed(
+            db, row, "该维度暂无可导出的数据"
+        )
+    else:
+        department_config_service.mark_export_success(
+            db,
+            row,
+            content=content,
+            file_name=file_name,
+            checksum=department_config_service.checksum_of(content),
+        )
+    return {"code": 0, "data": department_config_service.serialize_export_task(row)}
+
+
+def _build_export_artifact(db: Session, row) -> tuple[bytes | None, str]:
+    """生成导出产物（CSV 文本）。
+
+    ⚠️ **为什么用 CSV 而不是 PDF**
+    PDF 需要 ``reportreportlab`` + 中文字体，服务器上常常缺字
+    ⇒ 本系统统一用 **带 BOM 的 UTF-8 CSV**：
+    Excel 直接双击能正确显示中文，不会有「方块字」。
+    """
+    import csv
+    import io
+
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["员工ID", "姓名", "登录账号", "部门", "岗位", "在职状态", "账号状态"])
+
+    employees = db.query(Employee).order_by(Employee.name).all()
+    for employee in employees:
+        department = db.get(Department, employee.department_id) if employee.department_id else None
+        writer.writerow([
+            employee.id,
+            employee.name,
+            employee.login_account or "",
+            department.name if department else "",
+            employee.position or "",
+            employee.employment_status or "",
+            employee.account_status or "",
+        ])
+
+    body = ("\ufeff" + output.getvalue()).encode("utf-8")
+    return body, "export.csv"
 
 
 @router.get("/export-tasks/{task_id}")
 async def get_export_task(
     task_id: str,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ):
     """获取导出任务详情
 
     响应结构：ExportTask
     """
-    return {
-        "code": 0,
-        "data": _empty_export_task(task_id),
-    }
+    row = db.get(ExportTaskRow, task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="导出任务不存在")
+    return {"code": 0, "data": department_config_service.serialize_export_task(row)}
 
 
 @router.post("/export-tasks/{task_id}/check")
 async def check_export_task(
     task_id: str,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ):
     """校验导出任务完整性
 
     响应结构：ActionResult
+
+    ⚠️ **2026-11-26：原实现只把状态字符串换成 ``CHECKED``** ——
+    **根本没碰文件** ⇒ 校验是假的。
+    ⇒ 现在真的把产物读回来算 SHA-256 并比对。
     """
+    row = department_config_service.check_export_task(db, task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="导出任务不存在")
     return {
         "code": 0,
-        "data": _action_result(task_id, "CHECKED"),
+        "data": _action_result(
+            task_id,
+            "CHECKED",
+            message="校验完成" if row.integrity_status == "COMPLETE" else (row.error_message or "校验未通过"),
+        ),
     }
 
 
@@ -1070,87 +1193,69 @@ async def check_export_task(
 async def retry_export_task(
     task_id: str,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ):
     """重试失败的导出任务
 
     响应结构：ActionResult
     """
-    return {
-        "code": 0,
-        "data": _action_result(task_id, "RETRYING"),
-    }
+    row = department_config_service.retry_export_task(db, task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="导出任务不存在")
+    return {"code": 0, "data": _action_result(task_id, "RETRYING", message="已重新排队")}
 
 
 @router.get("/export-tasks/{task_id}/download-info")
 async def get_export_download_info(
     task_id: str,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ):
     """获取导出任务下载信息
 
     响应结构：ExportDownload
     """
-    return {
-        "code": 0,
-        "data": _empty_export_download(task_id),
-    }
+    row = db.get(ExportTaskRow, task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="导出任务不存在")
+    return {"code": 0, "data": department_config_service.export_download_info(row)}
 
 
 @router.get("/export-tasks/{task_id}/download")
 async def download_export_task(
     task_id: str,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ):
     """下载导出任务产物
 
     响应结构：二进制文件流
     """
-    # 尚无真实导出产物时返回 404，避免前端拿到损坏文件。
-    raise HTTPException(status_code=404, detail="导出产物不存在或已过期")
+    result = department_config_service.get_export_artifact(db, task_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="导出产物不存在或已过期")
+    row, content = result
+    return Response(
+        content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{row.artifact_path}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
-def _empty_export_task(task_id: str = "") -> dict:
-    """构造空 ExportTask，字段与 frontend/src/api/performance.ts 保持一致。"""
-    return {
-        "id": task_id,
-        "dimensionType": "",
-        "dimensionName": "",
-        "periodType": "",
-        "periodStart": None,
-        "periodEnd": None,
-        "formats": [],
-        "includeEvidence": False,
-        "watermark": "",
-        "integrityStatus": "PENDING",
-        "missingItems": [],
-        "checksum": None,
-        "status": "PENDING",
-        "sizeText": "",
-        "requestedBy": 0,
-        "requestedByName": "",
-        "requestedAt": datetime.utcnow().isoformat(),
-        "finishedAt": None,
-    }
+def _action_result(object_id: str, status: str, message: str = "") -> dict:
+    """构造 ActionResult，字段与 frontend/src/api/performance.ts 保持一致。
 
-
-def _empty_export_download(task_id: str) -> dict:
-    """构造空 ExportDownload，字段与 frontend/src/api/performance.ts 保持一致。"""
-    return {
-        "taskId": task_id,
-        "status": "PENDING",
-        "fileName": "",
-        "downloadUrl": "",
-        "expireAt": None,
-        "checksum": None,
-    }
-
-
-def _action_result(object_id: str, status: str) -> dict:
-    """构造 ActionResult，字段与 frontend/src/api/performance.ts 保持一致。"""
+    ⚠️ **message 为什么现在有内容**
+    前端 ``ElMessage.success(result.message)`` 直接把这里的消息弹给用户
+    ⇒ 原来恒为 ``""`` 时前端弹的是**空提示框**（用户看不到任何反馈）。
+    """
     return {
         "objectId": object_id,
         "status": status,
-        "message": "",
+        "message": message,
         "auditActionCode": "",
         "auditDeferred": False,
     }
@@ -1316,8 +1421,19 @@ async def remind_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
     """催办待办事项。
 
     响应结构：ActionResult
+
+    ⚠️ **2026-11-26：原实现只回一个字符串** —— 催办次数恒为 0。
+    ⇒ 现在真的 ``remind_count += 1`` 并在影响说明里留痕。
     """
-    return {"code": 0, "data": _action_result(todo_id, "REMINDED")}
+    row = department_config_service.remind_todo(db, todo_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="待办不存在")
+    return {
+        "code": 0,
+        "data": _action_result(
+            todo_id, "REMINDED", message=f"已催办（累计 {row.remind_count} 次）"
+        ),
+    }
 
 
 @router.post("/todos/{todo_id}/read")
@@ -1326,7 +1442,10 @@ async def read_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
 
     响应结构：ActionResult
     """
-    return {"code": 0, "data": _action_result(todo_id, "READ")}
+    row = department_config_service.read_todo(db, todo_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="待办不存在")
+    return {"code": 0, "data": _action_result(todo_id, "READ", message="已标记为处理中")}
 
 
 @router.post("/todos/{todo_id}/escalate")
@@ -1335,7 +1454,10 @@ async def escalate_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
 
     响应结构：ActionResult
     """
-    return {"code": 0, "data": _action_result(todo_id, "ESCALATED")}
+    row = department_config_service.escalate_todo(db, todo_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="待办不存在")
+    return {"code": 0, "data": _action_result(todo_id, "ESCALATED", message="已标记升级处理")}
 
 
 @router.post("/todos/{todo_id}/done")
@@ -1344,7 +1466,10 @@ async def complete_todo(todo_id: str, db: Session = Depends(get_db)) -> dict:
 
     响应结构：ActionResult
     """
-    return {"code": 0, "data": _action_result(todo_id, "DONE")}
+    row = department_config_service.complete_todo(db, todo_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="待办不存在")
+    return {"code": 0, "data": _action_result(todo_id, "DONE", message="待办已处理")}
 
 
 @router.post("/todos/batch-remind")
@@ -1357,7 +1482,15 @@ async def batch_remind_todos(data: dict, db: Session = Depends(get_db)) -> dict:
     ids = data.get("ids") or []
     if not isinstance(ids, list):
         ids = []
-    return {"code": 0, "data": [_action_result(str(i), "REMINDED") for i in ids]}
+    results = []
+    for todo_id in ids:
+        row = department_config_service.remind_todo(db, str(todo_id))
+        if row is None:
+            continue
+        results.append(
+            _action_result(str(todo_id), "REMINDED", message=f"已催办（累计 {row.remind_count} 次）")
+        )
+    return {"code": 0, "data": results}
 
 
 @router.post("/todos/batch-escalate")
@@ -1370,7 +1503,13 @@ async def batch_escalate_todos(data: dict, db: Session = Depends(get_db)) -> dic
     ids = data.get("ids") or []
     if not isinstance(ids, list):
         ids = []
-    return {"code": 0, "data": [_action_result(str(i), "ESCALATED") for i in ids]}
+    results = []
+    for todo_id in ids:
+        row = department_config_service.escalate_todo(db, str(todo_id))
+        if row is None:
+            continue
+        results.append(_action_result(str(todo_id), "ESCALATED", message="已标记升级处理"))
+    return {"code": 0, "data": results}
 
 
 # ── 交付物模板 / 验收标准 / 参考分规则 ─────────────────────
@@ -1382,8 +1521,15 @@ async def create_deliverable_template(data: dict, db: Session = Depends(get_db))
 
     请求体：DeliverableTemplatePayload
     响应结构：DeliverableTemplate
+
+    ⚠️ **2026-11-26：原实现返回 ``id: 0`` 的空壳** —— 库里什么都没写。
+    ⇒ 现在**真落库**并返回真实条目。
     """
-    return {"code": 0, "data": _empty_deliverable_template(data)}
+    try:
+        item = department_config_service.create_template(db, dict(data))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": item}
 
 
 @router.put("/templates/{template_id}")
@@ -1397,9 +1543,13 @@ async def update_deliverable_template(
     请求体：DeliverableTemplatePayload
     响应结构：DeliverableTemplate
     """
-    payload = _empty_deliverable_template(data)
-    payload["id"] = template_id
-    return {"code": 0, "data": payload}
+    try:
+        item = department_config_service.update_template(db, template_id, dict(data))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="交付物模板不存在")
+    return {"code": 0, "data": item}
 
 
 @router.post("/templates/{template_id}/{action}")
@@ -1414,7 +1564,17 @@ async def toggle_deliverable_template(
     响应结构：ActionResult
     """
     status = "ENABLED" if action == "enable" else "DISABLED"
-    return {"code": 0, "data": _action_result(str(template_id), status)}
+    row = department_config_service.set_template_status(db, template_id, status)
+    if row is None:
+        raise HTTPException(status_code=404, detail="交付物模板不存在")
+    return {
+        "code": 0,
+        "data": _action_result(
+            str(template_id),
+            status,
+            message="模板已启用" if status == "ENABLED" else "模板已停用",
+        ),
+    }
 
 
 @router.post("/acceptance-standards")
@@ -1424,7 +1584,11 @@ async def create_acceptance_standard(data: dict, db: Session = Depends(get_db)) 
     请求体：AcceptanceStandardPayload
     响应结构：AcceptanceStandard
     """
-    return {"code": 0, "data": _empty_acceptance_standard(data)}
+    try:
+        item = department_config_service.create_standard(db, dict(data))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": item}
 
 
 @router.put("/acceptance-standards/{standard_id}")
@@ -1438,9 +1602,13 @@ async def update_acceptance_standard(
     请求体：AcceptanceStandardPayload
     响应结构：AcceptanceStandard
     """
-    payload = _empty_acceptance_standard(data)
-    payload["id"] = standard_id
-    return {"code": 0, "data": payload}
+    try:
+        item = department_config_service.update_standard(db, standard_id, dict(data))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="验收标准不存在")
+    return {"code": 0, "data": item}
 
 
 @router.post("/acceptance-standards/{standard_id}/{action}")
@@ -1455,7 +1623,17 @@ async def toggle_acceptance_standard(
     响应结构：ActionResult
     """
     status = "ENABLED" if action == "enable" else "DISABLED"
-    return {"code": 0, "data": _action_result(str(standard_id), status)}
+    row = department_config_service.set_standard_status(db, standard_id, status)
+    if row is None:
+        raise HTTPException(status_code=404, detail="验收标准不存在")
+    return {
+        "code": 0,
+        "data": _action_result(
+            str(standard_id),
+            status,
+            message="验收标准已启用" if status == "ENABLED" else "验收标准已停用",
+        ),
+    }
 
 
 @router.post("/score-rules")
@@ -1465,7 +1643,11 @@ async def create_score_rule(data: dict, db: Session = Depends(get_db)) -> dict:
     请求体：ScoreRulePayload
     响应结构：ScoreRule
     """
-    return {"code": 0, "data": _empty_score_rule(data)}
+    try:
+        item = department_config_service.create_score_rule(db, dict(data))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": item}
 
 
 @router.put("/score-rules/{rule_id}")
@@ -1479,9 +1661,13 @@ async def update_score_rule(
     请求体：ScoreRulePayload
     响应结构：ScoreRule
     """
-    payload = _empty_score_rule(data)
-    payload["id"] = rule_id
-    return {"code": 0, "data": payload}
+    try:
+        item = department_config_service.update_score_rule(db, rule_id, dict(data))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="参考分规则不存在")
+    return {"code": 0, "data": item}
 
 
 @router.post("/score-rules/{rule_id}/enable")
@@ -1490,7 +1676,10 @@ async def enable_score_rule(rule_id: int, db: Session = Depends(get_db)) -> dict
 
     响应结构：ActionResult
     """
-    return {"code": 0, "data": _action_result(str(rule_id), "ENABLED")}
+    row = department_config_service.enable_score_rule(db, rule_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="参考分规则不存在")
+    return {"code": 0, "data": _action_result(str(rule_id), "ENABLED", message="规则已启用")}
 
 
 @router.post("/score-rules/{rule_id}/simulate")
@@ -1503,61 +1692,18 @@ async def simulate_score_rule(
 
     请求体：ScoreSimulationPayload
     响应结构：ScoreSimulation
+
+    ⚠️ **2026-11-26：原实现恒返回 ``score: 0``、``hitFactors: []``**
+    ⇒ 前端「模拟」面板永远显示 0 分，用户无法判断规则是否合理。
+    ⇒ 现在**按规则真算**。
     """
-    return {
-        "code": 0,
-        "data": {
-            "employeeName": data.get("employeeName", ""),
-            "score": 0,
-            "hitFactors": [],
-            "explanation": "",
-        },
-    }
-
-
-def _empty_deliverable_template(data: dict) -> dict:
-    """构造 DeliverableTemplate，字段与 frontend/src/api/department.ts 保持一致。"""
-    return {
-        "id": 0,
-        "orgId": int(data.get("orgId", 0) or 0),
-        "orgName": "",
-        "templateName": data.get("templateName", ""),
-        "evidenceType": data.get("evidenceType", ""),
-        "required": bool(data.get("required", False)),
-        "appliesTo": data.get("appliesTo", "") or "",
-        "description": data.get("description", "") or "",
-        "versionNo": "1",
-        "status": "ENABLED",
-        "referenceCount": 0,
-    }
-
-
-def _empty_acceptance_standard(data: dict) -> dict:
-    """构造 AcceptanceStandard，字段与 frontend/src/api/department.ts 保持一致。"""
-    return {
-        "id": 0,
-        "templateId": int(data.get("templateId", 0) or 0),
-        "templateName": "",
-        "standardText": data.get("standardText", ""),
-        "requireReviewPassed": bool(data.get("requireReviewPassed", False)),
-        "evidenceRequirement": data.get("evidenceRequirement", "") or "",
-        "versionNo": "1",
-        "status": "ENABLED",
-    }
-
-
-def _empty_score_rule(data: dict) -> dict:
-    """构造 ScoreRule，字段与 frontend/src/api/department.ts 保持一致。"""
-    return {
-        "id": 0,
-        "orgId": int(data.get("orgId", 0) or 0),
-        "orgName": "",
-        "ruleName": data.get("ruleName", ""),
-        "status": "ENABLED",
-        "effectiveStart": data.get("effectiveStart"),
-        "effectiveEnd": data.get("effectiveEnd"),
-        "ruleJson": data.get("ruleJson") or {},
-    }
+    try:
+        result = department_config_service.simulate_score_rule(db, rule_id, dict(data))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": result}
 
 
 def _empty_leader_employee_summary(owner_id: str) -> dict:
@@ -2025,8 +2171,38 @@ async def get_department_appeal(appeal_id: str, db: Session = Depends(get_db)) -
     """部门侧申诉详情。
 
     响应结构：DepartmentAppeal
+
+    ⚠️ **2026-11-26：原实现返回空壳**（编号/标题/理由全空）。
+    ⇒ 现在从 ``appeal`` 表**真实读取**。
     """
-    return {"code": 0, "data": _empty_department_appeal(appeal_id)}
+    from ..domain.models import Appeal
+
+    row = db.get(Appeal, appeal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="申诉不存在")
+
+    employee = db.get(Employee, row.acceptor_id) if row.acceptor_id else None
+    return {
+        "code": 0,
+        "data": {
+            "id": appeal_id,
+            "appealNo": appeal_id,
+            "title": f"考核申诉 {appeal_id}",
+            "reason": row.reason or "",
+            "status": (row.status or "submitted").upper(),
+            "ownerUserId": row.acceptor_id or "",
+            "employeeName": employee.name if employee else "",
+            "orgName": "",
+            "relatedResultId": row.record_id,
+            "resultTitle": "",
+            "resultStatus": "",
+            "completionRate": 0,
+            "handlerId": row.reviewer_id or "",
+            "handleComment": row.conclusion or "",
+            "createdAt": row.created_at.isoformat(),
+            "handledAt": None,
+        },
+    }
 
 
 @router.get("/appeals/{appeal_id}/package")
@@ -2037,8 +2213,49 @@ async def get_department_appeal_package(
     """部门侧申诉证据包。
 
     响应结构：AppealPackage
+
+    ⚠️ **2026-11-26：原实现恒返回空 items** ——
+    前端点「下载证据包」拿到的是**空包**。
+    ⇒ 现在真的把申诉关联的证据列出来。
     """
-    return {"code": 0, "data": {"appealId": appeal_id, "items": [], "generatedAt": None}}
+    from ..domain.models import Appeal, Evidence
+
+    row = db.get(Appeal, appeal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="申诉不存在")
+
+    items: list[dict] = []
+    for evidence in (
+        db.query(Evidence)
+        .filter(Evidence.record_id == row.record_id)
+        .order_by(Evidence.created_at.asc())
+        .all()
+    ):
+        items.append({
+            "id": evidence.id,
+            "name": evidence.summary or evidence.id,
+            "type": evidence.kind or "",
+            "url": evidence.source_ref or "",
+            "usage": evidence.usage or "",
+        })
+
+    # ⚠️ 申诉人自己提交的理由也是证据的一部分。
+    items.append({
+        "id": f"{appeal_id}-reason",
+        "name": "申诉理由",
+        "type": "TEXT",
+        "url": "",
+        "usage": "reference_only",
+    })
+
+    return {
+        "code": 0,
+        "data": {
+            "appealId": appeal_id,
+            "items": items,
+            "generatedAt": datetime.utcnow().isoformat(),
+        },
+    }
 
 
 @router.post("/appeals/{appeal_id}/accept")
@@ -2046,12 +2263,27 @@ async def accept_department_appeal(
     appeal_id: str,
     data: JsonBody,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """受理申诉。
 
     响应结构：ActionResult
+
+    ⚠️ **2026-11-26：原实现只回一个字符串** —— 申诉状态**根本没变**，
+    刷新后还是「待处理」，用户以为受理了其实没人知道。
+    ⇒ 现在真的写 ``status`` / ``acceptor_id``。
     """
-    return {"code": 0, "data": _action_result(appeal_id, "ACCEPTED")}
+    from ..domain.models import Appeal
+
+    row = db.get(Appeal, appeal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="申诉不存在")
+    if row.status not in {"submitted"}:
+        raise HTTPException(status_code=422, detail=f"申诉当前状态不可受理：{row.status}")
+    row.status = "accepted"
+    row.acceptor_id = current_user.id
+    db.commit()
+    return {"code": 0, "data": _action_result(appeal_id, "ACCEPTED", message="申诉已受理")}
 
 
 @router.post("/appeals/{appeal_id}/resolve")
@@ -2059,12 +2291,29 @@ async def resolve_department_appeal(
     appeal_id: str,
     data: JsonBody,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """裁决申诉。
 
     响应结构：ActionResult
+
+    ⚠️ 同上 —— 现在真的写 ``status`` / ``conclusion``。
     """
-    return {"code": 0, "data": _action_result(appeal_id, "RESOLVED")}
+    from ..domain.models import Appeal
+
+    row = db.get(Appeal, appeal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="申诉不存在")
+    if row.status not in {"accepted", "submitted"}:
+        raise HTTPException(status_code=422, detail=f"申诉当前状态不可裁决：{row.status}")
+    comment = str(data.get("comment") or "").strip()
+    if not comment:
+        raise HTTPException(status_code=422, detail="请填写裁决说明")
+    row.status = "resolved"
+    row.reviewer_id = current_user.id
+    row.conclusion = comment
+    db.commit()
+    return {"code": 0, "data": _action_result(appeal_id, "RESOLVED", message="申诉已裁决")}
 
 
 # ── 台账 ────────────────────────────────────────────────────
@@ -2072,42 +2321,115 @@ async def resolve_department_appeal(
 
 @router.get("/department-ledgers")
 async def list_department_ledgers(
-    page_no: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
+    periodMonth: str | None = Query(None, alias="periodMonth"),
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """部门台账分页。
 
     响应结构：DepartmentLedgerPage
     = { items, total, pageNo, pageSize, monthPlanCount, dayPlanCount,
         missingCount, appealCount }
+
+    ⚠️ **2026-11-26：原实现恒返回空分页** ⇒ 台账页永远空白。
+    ⇒ 现在从**真实业务表**聚合。
     """
-    return {
-        "code": 0,
-        "data": {
-            "items": [],
-            "total": 0,
-            "pageNo": page_no,
-            "pageSize": page_size,
-            "monthPlanCount": 0,
-            "dayPlanCount": 0,
-            "missingCount": 0,
-            "appealCount": 0,
-        },
-    }
+    department_ids = _department_scope(db, current_user)
+    page = ledger_service.page_ledger(
+        db,
+        department_ids=department_ids or None,
+        period_month=periodMonth,
+        page_no=pageNo,
+        page_size=pageSize,
+    )
+    return {"code": 0, "data": page}
 
 
 @router.post("/department-ledgers/export")
-async def export_department_ledgers(data: dict, db: Session = Depends(get_db)) -> dict:
+async def export_department_ledgers(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """导出部门台账。
 
     响应结构：ExportTask
+
+    ⚠️ **2026-11-26：原实现返回空壳任务** ⇒ 现在**真的建任务 + 生成产物**。
     """
-    return {"code": 0, "data": _empty_export_task()}
+    try:
+        row = department_config_service.create_export_task(
+            db, dict(data), requested_by=current_user.id, dimension_name="部门台账"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    content, file_name = _build_ledger_artifact(db, current_user)
+    if content is None:
+        department_config_service.mark_export_failed(db, row, "当前部门暂无可导出的台账数据")
+    else:
+        department_config_service.mark_export_success(
+            db,
+            row,
+            content=content,
+            file_name=file_name,
+            checksum=department_config_service.checksum_of(content),
+        )
+    return {"code": 0, "data": department_config_service.serialize_export_task(row)}
+
+
+def _department_scope(db: Session, current_user: Employee) -> list[str]:
+    """当前用户可见的部门范围。
+
+    ⚠️ **口径**
+    管辖部门（部门负责人）⇒ 用管辖范围；
+    否则退回**自己所在部门** ⇒ 至少能看到本部门台账。
+    """
+    context = build_access_context_for_user(current_user, db)
+    managed = sorted(context.managed_department_ids)
+    if managed:
+        return managed
+    return [current_user.department_id] if current_user.department_id else []
+
+
+def _build_ledger_artifact(db: Session, current_user: Employee) -> tuple[bytes | None, str]:
+    """生成台账导出产物（CSV）。"""
+    import csv
+    import io
+
+    department_ids = _department_scope(db, current_user)
+    rows = ledger_service.build_ledger_rows(db, department_ids=department_ids or None)
+    detail = [r for r in rows if r["id"] != "__summary__"]
+    if not detail:
+        return None, ""
+
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["员工", "账号", "部门", "计划数", "成果数", "完成率(%)", "参考分", "逾期数", "缺证据数"])
+    for row in detail:
+        writer.writerow([
+            row["employeeName"],
+            row["employeeNo"],
+            row["orgName"],
+            row["planCount"],
+            row["resultCount"],
+            row["avgCompletionRatio"],
+            row["referenceScore"],
+            row["overdueCount"],
+            row["missingEvidenceCount"],
+        ])
+    return ("\ufeff" + output.getvalue()).encode("utf-8"), "department-ledger.csv"
 
 
 def _empty_department_appeal(appeal_id: str) -> dict:
-    """构造 DepartmentAppeal，字段与 frontend/src/api/department.ts 保持一致。"""
+    """构造 DepartmentAppeal，字段与 frontend/src/api/department.ts 保持一致。
+
+    ⚠️ **2026-11-26：已不再使用**
+    申诉端点已改为**真实读取** ``appeal`` 表，
+    这个构造器保留仅供过渡期引用，实际不再被任何端点调用。
+    """
     return {
         "id": appeal_id,
         "appealNo": "",

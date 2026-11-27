@@ -75,6 +75,16 @@ class Employee(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     email: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 手机号（★ 2026-11-26 新增）。
+    #
+    # ⚠️ **为什么本地建号的员工需要手机号**
+    #   飞书同步来的员工自带手机号，本地「员工注册」页则要求管理员填手机号
+    #   ⇒ 没有这一列，注册时填的手机号就**无处可存**（只能丢弃）。
+    #
+    # ⚠️ **为什么允许为空**
+    #   存量员工（飞书同步来的）不一定在本地库里留了手机号
+    #   ⇒ nullable，不回填。
+    mobile: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # ⚠️ 四个飞书身份列**都**要唯一。
     #    `migrations/versions/0002_phase2_feishu.py` 明确声明了
     #    uq_employee_feishu_user_id / uq_employee_feishu_union_id /
@@ -1366,6 +1376,68 @@ class CaseLibraryEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False, index=True)
 
 
+class AiModelConfigRow(Base):
+    """AI 模型配置（★ 2026-11-26 新增）。
+
+    ⚠️ **为什么需要这张表**
+    ``routes/v1/system_ai.py`` 的模型配置端点原先**全是空壳**
+    （返回 ``_empty_model_config(...)``，**什么都没存**），
+    而前端「AI 控制中心」能看到「新增配置 / 启用 / 测试连接」按钮
+    ⇒ 页面看起来能用，**数据库里什么都没有**。
+
+    ⚠️ **API Key 绝不回传**
+    ``api_key`` 存**加密后**的值；对外只暴露 ``api_key_configured`` 布尔位。
+    ⇒ 列表接口永远不会把凭据送到浏览器。
+    """
+
+    __tablename__ = "ai_model_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    config_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider_code: Mapped[str] = mapped_column(String(64), default="OPENAI_COMPATIBLE", nullable=False)
+    base_url: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+    #: 加密后的 API Key（**永不回传**）。
+    api_key_enc: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    model_name: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    global_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    draft_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    optimize_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    check_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    allowed_user_ids: Mapped[str] = mapped_column(String(1024), default="", nullable=False)
+    allowed_org_ids: Mapped[str] = mapped_column(String(1024), default="", nullable=False)
+    draft_daily_limit: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    optimize_daily_limit: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    check_daily_limit: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    #: ENABLED / DISABLED
+    status: Mapped[str] = mapped_column(String(16), default="DISABLED", nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+
+class AiPromptRow(Base):
+    """AI 提示词版本（★ 2026-11-26 新增）。
+
+    ⚠️ 同 ``AiModelConfigRow`` —— 原先是空壳，返回的 ``id`` 恒为 0，
+    库里没有任何提示词记录。
+    """
+
+    __tablename__ = "ai_prompt"
+    __table_args__ = (
+        UniqueConstraint("scene_code", "version_no", name="uq_aiprompt_scene_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scene_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version_no: Mapped[str] = mapped_column(String(64), nullable=False)
+    system_prompt: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    user_template: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    output_schema_version: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="PUBLISHED", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
 # ---------------------------------------------------------------------------
 # 计划 / 争议 / AI / 成果 / 工作日规则域模型
 #
@@ -1380,7 +1452,9 @@ class CaseLibraryEntry(Base):
 
 from . import baidu_pan_models as _baidu_pan_models  # noqa: E402,F401
 from . import bot_models as _bot_models  # noqa: E402,F401
+from . import config_models as _config_models  # noqa: E402,F401
 from . import feishu_scheme_models as _feishu_scheme_models  # noqa: E402,F401
+from . import knowledge_models as _knowledge_models  # noqa: E402,F401
 from . import notification_models as _notification_models  # noqa: E402,F401
 from . import pan_workload_models as _pan_workload_models  # noqa: E402,F401
 from . import plan_models as _plan_models  # noqa: E402,F401

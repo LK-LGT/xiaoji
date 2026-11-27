@@ -11,19 +11,41 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
 from ...dependencies import get_current_user
+from ...domain.models import Employee
+from ...services import ai_call_log_service, ai_model_config_service
+from ...services.access_control import PermissionAction, build_access_context
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/system/ai", tags=["system-ai"], dependencies=[Depends(get_current_user)])
+
+
+def _require_ai_admin(db: Session, current_user: Employee) -> None:
+    """🔴 要求「系统配置」权限（HR / 系统管理员），否则 403。
+
+    ⚠️ **为什么必须有（2026-11-26）**
+    本模块原先**只校验登录态** ⇒ 任何员工都能：
+    - ``POST /configs`` 写入 **API Key**（含供应商凭据）；
+    - ``POST /configs/{id}/enable`` 切换**全局启用**的模型配置。
+
+    ⇒ AI 供应商凭据 + 全局开关是**系统级配置**，
+    与「谁能看绩效数据」无关，必须走配置权限。
+
+    ⚠️ **权限位口径**
+    用 ``MANAGE_SYSTEM_CONFIG``（**动作权限**）——
+    ``access_control`` 里只授予 HR 与系统管理员。
+    """
+    context = build_access_context(db, current_user)
+    if not context.has_permission(PermissionAction.MANAGE_SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="无权管理 AI 模型配置")
 
 
 # ---------------------------------------------------------------------------
@@ -83,24 +105,30 @@ def _ok(data: Any) -> dict:
 
 
 @router.get("/configs")
-async def list_ai_configs(db: Session = Depends(get_db)) -> dict:
+async def list_ai_configs(
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """获取 AI 模型配置列表。
 
     响应结构：AiModelConfig[]（裸数组）
     """
-    return _ok([])
+    _require_ai_admin(db, current_user)
+    return _ok(_list_model_configs(db))
 
 
 @router.post("/configs")
 async def create_ai_config(
     payload: AiModelConfigPayload,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """创建 AI 模型配置。
 
     响应结构：AiModelConfig
     """
-    return _ok(_empty_model_config(payload))
+    _require_ai_admin(db, current_user)
+    return _ok(_create_model_config(db, payload))
 
 
 @router.put("/configs/{config_id}")
@@ -108,44 +136,42 @@ async def update_ai_config(
     config_id: int,
     payload: AiModelConfigPayload,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """更新 AI 模型配置。
 
     响应结构：AiModelConfig
     """
-    return _ok(_empty_model_config(payload, config_id))
+    _require_ai_admin(db, current_user)
+    return _ok(_update_model_config(db, config_id, payload))
 
 
 @router.post("/configs/{config_id}/enable")
 async def enable_ai_config(
     config_id: int,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """启用 AI 模型配置。
 
     响应结构：AiModelConfig
     """
-    return _ok(_empty_model_config(AiModelConfigPayload(), config_id, status="ENABLED"))
+    _require_ai_admin(db, current_user)
+    return _ok(_enable_model_config(db, config_id))
 
 
 @router.post("/configs/{config_id}/test")
 async def test_ai_config(
     config_id: int,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """测试 AI 模型配置的连通性。
 
     响应结构：{ success, providerCode, modelName, latencyMs, message }
     """
-    return _ok(
-        {
-            "success": False,
-            "providerCode": "",
-            "modelName": "",
-            "latencyMs": 0,
-            "message": "尚未配置可用的模型",
-        }
-    )
+    _require_ai_admin(db, current_user)
+    return _ok(_test_model_config(db, config_id))
 
 
 # ---------------------------------------------------------------------------
@@ -156,24 +182,30 @@ async def test_ai_config(
 
 
 @router.get("/prompts")
-async def list_ai_prompts(db: Session = Depends(get_db)) -> dict:
+async def list_ai_prompts(
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """获取 AI 提示词列表。
 
     响应结构：AiPrompt[]（裸数组）
     """
-    return _ok([])
+    _require_ai_admin(db, current_user)
+    return _ok(_list_prompts(db))
 
 
 @router.post("/prompts/publish")
 async def publish_ai_prompt(
     payload: AiPromptPayload,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """发布 AI 提示词版本。
 
     响应结构：AiPrompt
     """
-    return _ok(_empty_prompt(payload))
+    _require_ai_admin(db, current_user)
+    return _ok(_publish_prompt(db, payload))
 
 
 # ---------------------------------------------------------------------------
@@ -187,24 +219,14 @@ async def publish_ai_prompt(
 async def get_ai_metrics(
     days: int = Query(7, ge=1, le=90),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取 AI 调用指标。
 
     响应结构：AiMetrics
     """
-    return _ok(
-        {
-            "totalCalls": 0,
-            "successCalls": 0,
-            "successRate": 0,
-            "inputTokens": 0,
-            "outputTokens": 0,
-            "averageLatencyMs": 0,
-            "adoptedSuggestions": 0,
-            "adoptionRate": 0,
-            "byScene": [],
-        }
-    )
+    _require_ai_admin(db, current_user)
+    return _ok(_collect_metrics(db, days))
 
 
 # ---------------------------------------------------------------------------
@@ -227,18 +249,30 @@ async def list_ai_call_logs(
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取 AI 调用日志列表。
 
     响应结构：AiCallLogPage = { items, total, pageNo, pageSize }
+
+    ⚠️ **权限**：调用日志含「谁问了什么」的审计信息
+    ⇒ 与审计日志同级，要求配置权限（HR / 系统管理员）。
     """
+    _require_ai_admin(db, current_user)
     return _ok(
-        {
-            "items": [],
-            "total": 0,
-            "pageNo": pageNo,
-            "pageSize": pageSize,
-        }
+        _list_call_logs(
+            db,
+            start=start,
+            end=end,
+            scene_code=sceneCode,
+            success=success,
+            user_id=userId,
+            org_id=orgId,
+            request_id=requestId,
+            suggestion_id=suggestionId,
+            page_no=pageNo,
+            page_size=pageSize,
+        )
     )
 
 
@@ -246,81 +280,73 @@ async def list_ai_call_logs(
 async def get_ai_call_log(
     log_id: int,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取 AI 调用日志详情。
 
     响应结构：AiCallLogDetail
     """
-    return _ok(_empty_call_log_detail(log_id))
+    _require_ai_admin(db, current_user)
+    return _ok(_get_call_log(db, log_id))
 
 
-def _empty_model_config(
-    payload: AiModelConfigPayload,
-    config_id: int = 0,
-    status: str = "DISABLED",
-) -> dict:
-    """构造 AiModelConfig，字段与 frontend/src/api/aiManagement.ts 保持一致。"""
-    return {
-        "id": config_id,
-        "configName": payload.configName,
-        "providerCode": payload.providerCode,
-        "baseUrl": payload.baseUrl,
-        # apiKey 永不回传，只暴露是否已配置。
-        "apiKeyConfigured": bool(payload.apiKey),
-        "modelName": payload.modelName,
-        "timeoutSeconds": payload.timeoutSeconds,
-        "globalEnabled": payload.globalEnabled,
-        "draftEnabled": payload.draftEnabled,
-        "optimizeEnabled": payload.optimizeEnabled,
-        "checkEnabled": payload.checkEnabled,
-        "allowedUserIds": payload.allowedUserIds,
-        "allowedOrgIds": payload.allowedOrgIds,
-        "draftDailyLimit": payload.draftDailyLimit,
-        "optimizeDailyLimit": payload.optimizeDailyLimit,
-        "checkDailyLimit": payload.checkDailyLimit,
-        "versionNo": payload.versionNo,
-        "status": status,
-    }
+def _list_model_configs(db: Session) -> list[dict]:
+    """模型配置列表（真实数据）。"""
+    return ai_model_config_service.list_configs(db)
 
 
-def _empty_prompt(payload: AiPromptPayload) -> dict:
-    """构造 AiPrompt，字段与 frontend/src/api/aiManagement.ts 保持一致。"""
-    return {
-        "id": 0,
-        "sceneCode": payload.sceneCode,
-        "versionNo": payload.versionNo,
-        "systemPrompt": payload.systemPrompt,
-        "userTemplate": payload.userTemplate,
-        "outputSchemaVersion": payload.outputSchemaVersion,
-        "status": payload.status,
-        "createdAt": datetime.utcnow().isoformat(),
-    }
+def _create_model_config(db: Session, payload: AiModelConfigPayload) -> dict:
+    """新建模型配置（真实落库）。"""
+    return ai_model_config_service.create_config(db, payload.model_dump())
 
 
-def _empty_call_log_detail(log_id: int) -> dict:
-    """构造 AiCallLogDetail，字段与 frontend/src/api/aiManagement.ts 保持一致。"""
-    return {
-        "id": log_id,
-        "createdAt": datetime.utcnow().isoformat(),
-        "sceneCode": "",
-        "success": False,
-        "userId": 0,
-        "orgId": None,
-        "bizType": None,
-        "bizId": None,
-        "providerCode": None,
-        "modelName": None,
-        "promptVersion": None,
-        "inputTokens": 0,
-        "outputTokens": 0,
-        "latencyMs": 0,
-        "errorCode": None,
-        "errorMessage": None,
-        "requestId": "",
-        "suggestionId": "",
-        "inputHash": "",
-        "inputSummary": None,
-        "outputJson": None,
-        "suggestionAction": None,
-        "traceEvents": [],
-    }
+def _update_model_config(db: Session, config_id: int, payload: AiModelConfigPayload) -> dict:
+    """更新模型配置（真实落库）。"""
+    result = ai_model_config_service.update_config(db, config_id, payload.model_dump())
+    if result is None:
+        raise HTTPException(status_code=404, detail="模型配置不存在")
+    return result
+
+
+def _enable_model_config(db: Session, config_id: int) -> dict:
+    """启用模型配置（真实落库，并停用其它配置）。"""
+    result = ai_model_config_service.enable_config(db, config_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="模型配置不存在")
+    return result
+
+
+def _test_model_config(db: Session, config_id: int) -> dict:
+    """测试模型配置连通性。"""
+    return ai_model_config_service.test_config(db, config_id)
+
+
+def _list_prompts(db: Session) -> list[dict]:
+    """提示词列表（真实数据）。"""
+    return ai_model_config_service.list_prompts(db)
+
+
+def _publish_prompt(db: Session, payload: AiPromptPayload) -> dict:
+    """发布提示词版本（真实落库）。"""
+    try:
+        return ai_model_config_service.publish_prompt(db, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _collect_metrics(db: Session, days: int) -> dict:
+    """AI 调用指标（真实数据，来自 ai_trace / ai_feedback）。"""
+    return ai_call_log_service.collect_metrics(db, days)
+
+
+def _list_call_logs(db: Session, **kwargs: Any) -> dict:
+    """AI 调用日志分页（真实数据，来自 ai_trace / ai_tool_call）。"""
+    return ai_call_log_service.list_call_logs(db, **kwargs)
+
+
+def _get_call_log(db: Session, log_id: int) -> dict:
+    """AI 调用日志详情。"""
+    result = ai_call_log_service.get_call_log(db, log_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="调用日志不存在")
+    return result

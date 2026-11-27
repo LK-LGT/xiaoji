@@ -7,16 +7,23 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..dependencies import build_access_context_for_user, get_current_user
 from ..domain.models import Employee
-from ..services import plan_approval
+from ..services import (
+    department_config_service,
+    knowledge_parser,
+    knowledge_service,
+    ledger_service,
+    plan_adjustment_service,
+    plan_approval,
+)
 from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
@@ -170,47 +177,112 @@ def _batch_approve(
 # 企业知识库 —— 领导侧上传
 #
 # 响应结构：KnowledgeUploadResult / UploadedKnowledgeDocument[]（裸数组）
+#
+# ⚠️ **2026-11-27：这两个端点原先是空壳**
+#   上传恒返回 ``documentId: 0`` / ``chunkCount: 0``，
+#   列表恒返回 ``[]`` ⇒ 文件**根本没存**。
+#   现已接入 :mod:`services.knowledge_service` 真正落库。
+#
+# ⚠️ **表单字段与前端一致**
+#   前端 ``uploadLeaderKnowledgeApi`` 提交的是
+#   ``audienceCodes / scopeType / scopeOrgId / knowledgeType / appliesTo / bindingLevel``
+#   （**没有 title**）⇒ 后端原来必填 ``title`` ⇒ 必定 422。
+#   现在 title 由**文件名推导**，前端不必再传。
 # ---------------------------------------------------------------------------
 
 
 @router.post("/knowledge/upload")
 async def upload_leader_knowledge(
     file: UploadFile = File(...),
-    title: str = Form(...),
-    knowledgeType: str = Form(...),
-    appliesTo: str = Form(...),
-    bindingLevel: str = Form(...),
+    audienceCodes: str = Form(""),
+    scopeType: str = Form("GLOBAL"),
+    scopeOrgId: str = Form(""),
+    knowledgeType: str = Form(""),
+    appliesTo: str = Form(""),
+    bindingLevel: str = Form("REFERENCE"),
+    title: str = Form(""),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """领导上传知识库文档。
 
     响应结构：KnowledgeUploadResult
+
+    ⚠️ **真的入库**
+    解析 → 切块 → 落盘 → 建索引 ⇒ 上传后立刻能被 AI 检索到。
     """
-    return _ok(
-        {
-            "documentId": 0,
-            "knowledgeId": "",
-            "title": title,
-            "fileName": file.filename or "",
-            "fileType": "",
-            "chunkCount": 0,
-            "vectorCount": 0,
-            "embeddingModels": [],
-            "uploadedAt": datetime.utcnow().isoformat(),
-        }
-    )
+    data = await file.read()
+    audience = [item.strip() for item in (audienceCodes or "").split(",") if item.strip()]
+    scopes = [item.strip() for item in (appliesTo or "").split(",") if item.strip()]
+
+    if not audience:
+        raise HTTPException(status_code=422, detail="请选择至少一个适用角色")
+    if not scopes:
+        raise HTTPException(status_code=422, detail="请选择至少一个适用业务")
+    if (scopeType or "GLOBAL") != "GLOBAL" and not (scopeOrgId or "").strip():
+        raise HTTPException(status_code=422, detail="指定部门或项目时必须选择范围")
+
+    scope_org_value = (scopeOrgId or "").strip() or None
+    scope_org_name = None
+    if scope_org_value:
+        from ..domain.models import Department
+
+        department = db.get(Department, scope_org_value)
+        scope_org_name = department.name if department else None
+
+    try:
+        result = knowledge_service.ingest_document(
+            db,
+            data=data,
+            filename=file.filename or "",
+            title=title,
+            knowledge_type=knowledgeType,
+            applies_to=scopes,
+            audience_codes=audience,
+            binding=bindingLevel,
+            scope_type=scopeType or "GLOBAL",
+            scope_org_id=scope_org_value,
+            scope_org_name=scope_org_name,
+            source_type="UPLOAD",
+            owner_id=current_user.id,
+            owner_name=current_user.name or current_user.id,
+        )
+    except knowledge_service.KnowledgeServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except knowledge_parser.KnowledgeParseError as exc:
+        raise HTTPException(status_code=422, detail=f"文档解析失败：{exc}") from exc
+    return _ok(result)
 
 
 @router.get("/knowledge/uploads")
 async def list_leader_knowledge_uploads(
     limit: int = Query(12, ge=1, le=100),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取领导上传的知识库文档列表。
 
     响应结构：UploadedKnowledgeDocument[]（裸数组）
+
+    ⚠️ **只返回该领导自己上传的**
+    领导端是「我的入库台」⇒ 不该看到别人的上传记录。
     """
-    return _ok([])
+    from sqlalchemy import select
+
+    from ..domain.knowledge_models import KnowledgeDocumentRow
+
+    rows = db.execute(
+        select(KnowledgeDocumentRow)
+        .where(
+            KnowledgeDocumentRow.owner_id == current_user.id,
+            KnowledgeDocumentRow.status != "DELETED",
+        )
+        .order_by(
+            KnowledgeDocumentRow.created_at.desc(), KnowledgeDocumentRow.id.desc()
+        )
+        .limit(limit)
+    ).scalars().all()
+    return _ok([knowledge_service.serialize_uploaded_document(row) for row in rows])
 
 
 # ---------------------------------------------------------------------------
@@ -224,12 +296,65 @@ async def list_leader_knowledge_uploads(
 async def create_leader_export_task(
     data: JsonBody,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """创建领导侧导出任务。
 
     响应结构：ExportTask
+
+    ⚠️ **2026-11-26：原实现返回空壳任务** —— 库里什么都没有，
+    前端拿到 ``id: ""`` 去下载必然 404。
+    ⇒ 现在**真的建任务 + 真的生成产物 + 真的算校验值**。
     """
-    return _ok(_empty_export_task())
+    try:
+        row = department_config_service.create_export_task(
+            db, dict(data), requested_by=current_user.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    content, file_name = _build_leader_export_artifact(db, current_user)
+    if content is None:
+        department_config_service.mark_export_failed(db, row, "暂无可导出的数据")
+    else:
+        department_config_service.mark_export_success(
+            db,
+            row,
+            content=content,
+            file_name=file_name,
+            checksum=department_config_service.checksum_of(content),
+        )
+    return _ok(department_config_service.serialize_export_task(row))
+
+
+def _build_leader_export_artifact(db: Session, current_user: Employee) -> tuple[bytes | None, str]:
+    """生成领导侧导出产物（CSV —— 团队台账）。"""
+    import csv
+    import io
+
+    context = build_access_context_for_user(current_user, db)
+    employee_ids = sorted(context.reporting_line_ids) or sorted(context.direct_report_ids)
+    rows = ledger_service.build_ledger_rows(db, employee_ids=employee_ids or None)
+    detail = [r for r in rows if r["id"] != "__summary__"]
+    if not detail:
+        return None, ""
+
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["员工", "账号", "部门", "计划数", "成果数", "完成率(%)", "参考分", "逾期数", "缺证据数"])
+    for row in detail:
+        writer.writerow([
+            row["employeeName"],
+            row["employeeNo"],
+            row["orgName"],
+            row["planCount"],
+            row["resultCount"],
+            row["avgCompletionRatio"],
+            row["referenceScore"],
+            row["overdueCount"],
+            row["missingEvidenceCount"],
+        ])
+    return ("\ufeff" + output.getvalue()).encode("utf-8"), "leader-export.csv"
 
 
 @router.get("/export-tasks/{task_id}/download-info")
@@ -241,7 +366,12 @@ async def get_leader_export_download_info(
 
     响应结构：ExportDownload
     """
-    return _ok(_empty_export_download(task_id))
+    from ..domain.config_models import ExportTaskRow
+
+    row = db.get(ExportTaskRow, task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="导出任务不存在")
+    return _ok(department_config_service.export_download_info(row))
 
 
 @router.get("/export-tasks/{task_id}/download")
@@ -253,44 +383,18 @@ async def download_leader_export_task(
 
     响应结构：二进制文件流
     """
-    # 尚无真实导出产物时返回 404，避免前端拿到损坏文件。
-    raise HTTPException(status_code=404, detail="导出产物不存在或已过期")
-
-
-def _empty_export_task() -> dict:
-    """构造空 ExportTask，字段与 frontend/src/api/performance.ts 保持一致。"""
-    return {
-        "id": "",
-        "dimensionType": "",
-        "dimensionName": "",
-        "periodType": "",
-        "periodStart": None,
-        "periodEnd": None,
-        "formats": [],
-        "includeEvidence": False,
-        "watermark": "",
-        "integrityStatus": "PENDING",
-        "missingItems": [],
-        "checksum": None,
-        "status": "PENDING",
-        "sizeText": "",
-        "requestedBy": 0,
-        "requestedByName": "",
-        "requestedAt": datetime.utcnow().isoformat(),
-        "finishedAt": None,
-    }
-
-
-def _empty_export_download(task_id: str) -> dict:
-    """构造空 ExportDownload，字段与 frontend/src/api/performance.ts 保持一致。"""
-    return {
-        "taskId": task_id,
-        "status": "PENDING",
-        "fileName": "",
-        "downloadUrl": "",
-        "expireAt": None,
-        "checksum": None,
-    }
+    result = department_config_service.get_export_artifact(db, task_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="导出产物不存在或已过期")
+    row, content = result
+    return Response(
+        content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{row.artifact_path}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -850,14 +954,28 @@ async def batch_mark_daily_reviews_risk(data: dict, db: Session = Depends(get_db
 
 @router.get("/plan-adjustments")
 async def list_leader_plan_adjustments(
-    request: Request,
+    scopeOrgId: str | None = Query(None),
+    status: str | None = Query(None),
+    periodMonth: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取计划调整申请列表。
 
     响应结构：PlanAdjustmentItem[]（裸数组）
+
+    ⚠️ **2026-11-26：原实现恒返回 ``[]``** —— 领导端永远看不到员工的调整申请
+    ⇒ 整个「计划调整」功能是断的。
+    ⇒ 现在从 ``plan_adjustment`` 表**真实读取**。
     """
-    return _ok([])
+    return _ok(
+        plan_adjustment_service.list_adjustments(
+            db,
+            scope_org_id=scopeOrgId,
+            status=status,
+            period_month=periodMonth,
+        )
+    )
 
 
 @router.get("/plan-adjustments/{adjustment_id}")
@@ -869,7 +987,10 @@ async def get_leader_plan_adjustment(
 
     响应结构：PlanAdjustmentItem
     """
-    return _ok(_empty_plan_adjustment_item(adjustment_id))
+    item = plan_adjustment_service.get_adjustment(db, adjustment_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="计划调整申请不存在")
+    return _ok(item)
 
 
 @router.post("/plan-adjustments/{adjustment_id}/process")
@@ -877,12 +998,27 @@ async def process_leader_plan_adjustment(
     adjustment_id: str,
     data: JsonBody,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """处理计划调整申请。
 
     响应结构：ActionResult
+
+    ⚠️ **2026-11-26：原实现只回一个字符串** —— 状态**根本没变**，
+    员工端永远看不到「已处理」。
+    ⇒ 现在真的改状态 + 写处理说明 + **把原计划置为暂停/撤销**。
     """
-    return _ok(_action_result(adjustment_id, "PROCESSED"))
+    try:
+        row = plan_adjustment_service.process_adjustment(
+            db, adjustment_id, dict(data), operator_id=current_user.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="计划调整申请不存在")
+
+    message = "原计划已暂停" if row.status == "PAUSED" else "原计划已撤销"
+    return _ok(_action_result(adjustment_id, row.status, message=message))
 
 
 # ---------------------------------------------------------------------------
@@ -894,24 +1030,92 @@ async def process_leader_plan_adjustment(
 
 @router.get("/team-ledgers")
 async def list_leader_team_ledgers(
-    page_no: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
+    periodMonth: str | None = Query(None, alias="periodMonth"),
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """团队台账分页。
 
     响应结构：PageResponse<LedgerItem> = { items, total, pageNo, pageSize }
+
+    ⚠️ **2026-11-26：原实现恒返回空分页** ⇒ 团队台账页永远空白。
+    ⇒ 现在从**真实业务表**聚合，且**只包含自己的下属**。
     """
-    return _ok({"items": [], "total": 0, "pageNo": page_no, "pageSize": page_size})
+    context = build_access_context_for_user(current_user, db)
+    employee_ids = sorted(context.reporting_line_ids) or sorted(context.direct_report_ids)
+    page = ledger_service.page_ledger(
+        db,
+        employee_ids=employee_ids or None,
+        period_month=periodMonth,
+        page_no=pageNo,
+        page_size=pageSize,
+    )
+    return _ok(page)
 
 
 @router.post("/team-ledgers/export")
-async def export_leader_team_ledgers(data: dict, db: Session = Depends(get_db)) -> dict:
+async def export_leader_team_ledgers(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """导出团队台账。
 
     响应结构：ExportTask
+
+    ⚠️ **2026-11-26：原实现返回空壳任务** ⇒ 现在**真的建任务 + 生成产物**。
     """
-    return _ok(_empty_export_task())
+    try:
+        row = department_config_service.create_export_task(
+            db, dict(data), requested_by=current_user.id, dimension_name="团队台账"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    content, file_name = _build_team_ledger_artifact(db, current_user)
+    if content is None:
+        department_config_service.mark_export_failed(db, row, "当前团队暂无可导出的台账数据")
+    else:
+        department_config_service.mark_export_success(
+            db,
+            row,
+            content=content,
+            file_name=file_name,
+            checksum=department_config_service.checksum_of(content),
+        )
+    return _ok(department_config_service.serialize_export_task(row))
+
+
+def _build_team_ledger_artifact(db: Session, current_user: Employee) -> tuple[bytes | None, str]:
+    """生成团队台账导出产物（CSV）。"""
+    import csv
+    import io
+
+    context = build_access_context_for_user(current_user, db)
+    employee_ids = sorted(context.reporting_line_ids) or sorted(context.direct_report_ids)
+    rows = ledger_service.build_ledger_rows(db, employee_ids=employee_ids or None)
+    detail = [r for r in rows if r["id"] != "__summary__"]
+    if not detail:
+        return None, ""
+
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["员工", "账号", "部门", "计划数", "成果数", "完成率(%)", "参考分", "逾期数", "缺证据数"])
+    for row in detail:
+        writer.writerow([
+            row["employeeName"],
+            row["employeeNo"],
+            row["orgName"],
+            row["planCount"],
+            row["resultCount"],
+            row["avgCompletionRatio"],
+            row["referenceScore"],
+            row["overdueCount"],
+            row["missingEvidenceCount"],
+        ])
+    return ("\ufeff" + output.getvalue()).encode("utf-8"), "team-ledger.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -919,12 +1123,17 @@ async def export_leader_team_ledgers(data: dict, db: Session = Depends(get_db)) 
 # ---------------------------------------------------------------------------
 
 
-def _action_result(object_id: str, status: str) -> dict:
-    """构造 ActionResult，字段与 frontend/src/api/performance.ts 保持一致。"""
+def _action_result(object_id: str, status: str, message: str = "") -> dict:
+    """构造 ActionResult，字段与 frontend/src/api/performance.ts 保持一致。
+
+    ⚠️ **message 现在有内容**
+    前端多处直接 ``ElMessage.success(result.message)``
+    ⇒ 原来恒为 ``""`` 时用户看到的是**空提示框**。
+    """
     return {
         "objectId": object_id,
         "status": status,
-        "message": "",
+        "message": message,
         "auditActionCode": "",
         "auditDeferred": False,
     }

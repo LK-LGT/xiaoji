@@ -13,6 +13,7 @@ import logging
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import NoSuchTableError, OperationalError
 
 from ..domain.models import Base
 
@@ -39,9 +40,15 @@ def sync_schema(engine: Engine) -> list[str]:
                 # 缺失的表交给 create_all 创建。
                 continue
 
-            existing_columns = {
-                col["name"] for col in inspector.get_columns(table_name)
-            }
+            try:
+                existing_columns = {
+                    col["name"] for col in inspector.get_columns(table_name)
+                }
+            except NoSuchTableError:
+                # ⚠️ 表在「快照 → 反射」之间被别的连接删/建了
+                #    （并发建表场景）⇒ 跳过这一张，交给下一轮 create_all。
+                continue
+
             for column in table.columns:
                 if column.name in existing_columns:
                     continue
@@ -51,7 +58,14 @@ def sync_schema(engine: Engine) -> list[str]:
                     f'ALTER TABLE "{table_name}" '
                     f'ADD COLUMN "{column.name}" {ddl_type}'
                 )
-                connection.execute(text(statement))
+                try:
+                    connection.execute(text(statement))
+                except OperationalError as exc:
+                    # ⚠️ 并发补列 ⇒ 另一连接已补好 ⇒ 不算失败。
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+                    logger.info("列已存在，跳过: %s", statement)
+                    continue
                 applied.append(statement)
                 logger.info("补齐数据库列: %s", statement)
 

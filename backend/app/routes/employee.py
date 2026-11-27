@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..dependencies import get_current_user
 from ..domain.models import DayPlan, Employee
-from ..services import workday_rule
+from ..services import plan_adjustment_service, workday_rule
 from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
@@ -265,9 +265,32 @@ async def download_employee_appeal_package(
 
 
 @router.post("/plan-adjustments")
-async def create_employee_plan_adjustment(data: dict, db: Session = Depends(get_db)) -> dict:
+async def create_employee_plan_adjustment(
+    data: JsonBody,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """发起计划调整申请。
 
     请求体：CreateEmployeePlanAdjustmentReq
+    响应结构：{ id, adjustmentNo, status }
+
+    ⚠️ **2026-11-26：原实现返回 ``{"id": 0, "adjustmentNo": ""}``**
+    —— 员工点了「申请调整」，**库里什么都没发生**，
+    领导端也就永远看不到这条申请 ⇒ 整条链路是断的。
+    ⇒ 现在**真落库**并返回真实的单号。
     """
-    return _ok({"id": 0, "adjustmentNo": "", "status": "PENDING"})
+    try:
+        item = plan_adjustment_service.create_adjustment(
+            db, dict(data), owner_id=current_user.id
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return _ok({
+        "id": item["id"],
+        "adjustmentNo": item["adjustmentNo"],
+        "status": item["status"],
+    })

@@ -4,7 +4,7 @@
       <div>
         <span class="eyebrow">EMPLOYEE ACCOUNT</span>
         <h1 class="page-title">员工注册</h1>
-        <p class="page-subtitle">管理员直接创建员工账号。系统自动生成8位数字账号，默认密码为123456。</p>
+        <p class="page-subtitle">管理员直接创建员工账号。系统自动生成8位数字账号与随机初始口令；员工首次登录后必须修改密码。</p>
       </div>
       <el-button @click="router.push('/system/employees')">进入员工管理</el-button>
     </div>
@@ -42,7 +42,7 @@
           <h2>{{ result.realName }}</h2>
           <dl>
             <div><dt>登录账号</dt><dd>{{ result.username }} <el-button text type="primary" @click="copy(result.username)">复制</el-button></dd></div>
-            <div><dt>默认密码</dt><dd>{{ result.initialPassword }} <el-button text type="primary" @click="copy(result.initialPassword)">复制</el-button></dd></div>
+            <div><dt>初始口令</dt><dd>{{ result.initialPassword }} <el-button text type="primary" @click="copy(result.initialPassword)">复制</el-button></dd></div>
             <div><dt>员工编号</dt><dd>{{ result.employeeNo }}</dd></div>
             <div><dt>岗位</dt><dd>{{ result.positionName || '未填写' }}</dd></div>
             <div><dt>归属组织</dt><dd>{{ result.departmentName }}</dd></div>

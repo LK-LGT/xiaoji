@@ -210,7 +210,10 @@ def build_user_item(db: Session, employee: Employee) -> dict[str, Any]:
         "employeeNo": employee.id,
         "realName": employee.name,
         "positionName": employee.position or "",
-        "mobile": "",
+        # ⚠️ **2026-11-26：真实手机号** —— 原先恒为 ""（字段在），
+        # 导致「员工管理」列表的手机号列**永远是空的**。
+        # 现在 ``employee.mobile`` 真的有值（见迁移 0046）。
+        "mobile": employee.mobile or "",
         "email": employee.email or "",
         "deptId": employee.department_id or "",
         "departmentName": _department_name(db, employee),
