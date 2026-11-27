@@ -18,14 +18,14 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..dependencies import build_access_context_for_user, get_current_user
 from ..domain.models import Employee
 from ..domain.result_models import Result, ResultEvidence
-from ..services import plan_approval, result_submission
+from ..services import plan_approval, project_package_service, result_submission
 from .shared import JsonBody
 
 logger = logging.getLogger(__name__)
@@ -360,12 +360,20 @@ async def list_leader_project_day_plan_packages(
     scopeOrgId: str | None = Query(None),
     planDate: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取项目日计划包列表。
 
     响应结构：ProjectDayPlanPackage[]（裸数组）
     """
-    return _ok([])
+    scope = _approval_scope(current_user, db)
+    try:
+        packages = project_package_service.day_packages(
+            db, scope, plan_date=planDate, scope_org_id=scopeOrgId
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _ok(packages)
 
 
 @router.get("/project-day-plan-packages/{group_id}")
@@ -373,17 +381,22 @@ async def get_leader_project_day_plan_package(
     group_id: str,
     planDate: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取项目日计划包详情。
 
     响应结构：ProjectDayPlanPackageDetail
     """
-    return _ok(
-        {
-            "packageInfo": _empty_day_plan_package(group_id),
-            "rows": [],
-        }
-    )
+    scope = _approval_scope(current_user, db)
+    try:
+        detail = project_package_service.day_package_detail(
+            db, scope, group_id, plan_date=planDate
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if detail is None:
+        raise HTTPException(status_code=403, detail="无权查看该项目的日计划包")
+    return _ok(detail)
 
 
 # ---------------------------------------------------------------------------
@@ -398,12 +411,20 @@ async def list_leader_project_week_plan_packages(
     scopeOrgId: str | None = Query(None),
     weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取项目周计划包列表。
 
     响应结构：ProjectWeekPlanPackage[]（裸数组）
     """
-    return _ok([])
+    scope = _approval_scope(current_user, db)
+    try:
+        packages = project_package_service.week_packages(
+            db, scope, week_start=weekStart, scope_org_id=scopeOrgId
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _ok(packages)
 
 
 @router.get("/project-week-plan-packages/{group_id}")
@@ -411,17 +432,22 @@ async def get_leader_project_week_plan_package(
     group_id: str,
     weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取项目周计划包详情。
 
     响应结构：ProjectWeekPlanPackageDetail
     """
-    return _ok(
-        {
-            "packageInfo": _empty_week_plan_package(group_id),
-            "rows": [],
-        }
-    )
+    scope = _approval_scope(current_user, db)
+    try:
+        detail = project_package_service.week_package_detail(
+            db, scope, group_id, week_start=weekStart
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if detail is None:
+        raise HTTPException(status_code=403, detail="无权查看该项目的周计划包")
+    return _ok(detail)
 
 
 @router.get("/project-week-plan-packages/{group_id}/excel")
@@ -429,13 +455,36 @@ async def download_leader_project_week_plan_excel(
     group_id: str,
     weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> Any:
-    """导出项目周计划 Excel。
-
-    响应结构：二进制文件流
-    """
-    # 尚无真实数据时返回 404，避免前端拿到损坏文件。
-    raise HTTPException(status_code=404, detail="暂无可导出的项目周计划数据")
+    """导出项目周计划 Excel（CSV，UTF-8 BOM，Excel 可直接打开）。"""
+    scope = _approval_scope(current_user, db)
+    try:
+        detail = project_package_service.week_package_detail(
+            db, scope, group_id, week_start=weekStart
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if detail is None or not detail["rows"]:
+        raise HTTPException(status_code=404, detail="暂无可导出的项目周计划数据")
+    content = project_package_service.to_csv(
+        detail["rows"],
+        [
+            ("employeeName", "姓名"),
+            ("workContent", "工作内容"),
+            ("completionStatus", "完成情况"),
+            ("deliverable", "交付物"),
+            ("quality", "质量标准"),
+        ],
+    )
+    return Response(
+        content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="project-week-plan.csv"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -450,12 +499,20 @@ async def list_leader_project_week_result_packages(
     scopeOrgId: str | None = Query(None),
     weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取项目周成果包列表。
 
     响应结构：ProjectWeekResultPackage[]（裸数组）
     """
-    return _ok([])
+    scope = _approval_scope(current_user, db)
+    try:
+        packages = project_package_service.week_result_packages(
+            db, scope, week_start=weekStart, scope_org_id=scopeOrgId
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _ok(packages)
 
 
 @router.get("/project-week-result-packages/{group_id}")
@@ -463,17 +520,22 @@ async def get_leader_project_week_result_package(
     group_id: str,
     weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """获取项目周成果包详情。
 
     响应结构：ProjectWeekResultPackageDetail
     """
-    return _ok(
-        {
-            "packageInfo": _empty_week_result_package(group_id),
-            "rows": [],
-        }
-    )
+    scope = _approval_scope(current_user, db)
+    try:
+        detail = project_package_service.week_result_package_detail(
+            db, scope, group_id, week_start=weekStart
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if detail is None:
+        raise HTTPException(status_code=403, detail="无权查看该项目的周成果包")
+    return _ok(detail)
 
 
 @router.get("/project-week-result-packages/{group_id}/excel")
@@ -481,13 +543,36 @@ async def download_leader_project_week_result_excel(
     group_id: str,
     weekStart: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> Any:
-    """导出项目周成果 Excel。
-
-    响应结构：二进制文件流
-    """
-    # 尚无真实数据时返回 404，避免前端拿到损坏文件。
-    raise HTTPException(status_code=404, detail="暂无可导出的项目周成果数据")
+    """导出项目周成果 Excel（CSV，UTF-8 BOM，Excel 可直接打开）。"""
+    scope = _approval_scope(current_user, db)
+    try:
+        detail = project_package_service.week_result_package_detail(
+            db, scope, group_id, week_start=weekStart
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if detail is None or not detail["rows"]:
+        raise HTTPException(status_code=404, detail="暂无可导出的项目周成果数据")
+    content = project_package_service.to_csv(
+        detail["rows"],
+        [
+            ("employeeName", "姓名"),
+            ("workContent", "工作内容"),
+            ("completionStatus", "完成情况"),
+            ("deliverable", "交付物"),
+            ("remark", "备注"),
+        ],
+    )
+    return Response(
+        content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="project-week-result.csv"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 def _empty_action_result(object_id: str, action: str) -> dict:
