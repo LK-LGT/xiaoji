@@ -1,0 +1,3 @@
+date,rule_type,description,force_report
+2026-01-01,HOLIDAY,元旦示例（按国务院公布替换）,false
+2026-02-14,WORKDAY,调休上班示例,true
