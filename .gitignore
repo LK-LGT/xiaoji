@@ -72,3 +72,6 @@ backend/_*.py
 # ⚠️ backend/scripts/ 下的下划线脚本同理 —— 它们是一次性排查产物，
 #    不该进版本库，也不该被 ruff 当成待修代码。
 backend/scripts/_*.py
+
+# Playwright MCP 运行产物
+.playwright-mcp/
