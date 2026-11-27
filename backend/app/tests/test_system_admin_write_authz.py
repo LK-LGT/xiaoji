@@ -450,16 +450,25 @@ class TestAiConfigReallyPersists:
         assert "sk-secret-value-123" not in (row.api_key_enc or "")
         assert row.api_key_enc.startswith("v1:")
 
-    def test_启用配置真的落库且唯一(self, client, db, org):
-        """🔴 「全局只能有一条启用」必须真的成立。"""
+    def test_启用配置真的落库且唯一(self, client, db, org, monkeypatch):
+        """🔴 「全局只能有一条启用」必须真的成立。
+
+        2026-11-27 起 enable 会先推送给 agent-service；本测试只关心
+        「数据库里启用态唯一」，因此把推送替换为 no-op。
+        """
+        from backend.app.services import ai_model_config_service
+
+        monkeypatch.setattr(
+            ai_model_config_service, "apply_runtime_config", lambda row: {"status": "applied"}
+        )
         first = client.post(
             "/v1/system/ai/configs",
-            json={"configName": "A", "modelName": "m", "baseUrl": "u"},
+            json={"configName": "A", "modelName": "m", "baseUrl": "u", "apiKey": "sk-a"},
             headers=_headers("E_HR"),
         ).json()["data"]
         second = client.post(
             "/v1/system/ai/configs",
-            json={"configName": "B", "modelName": "m", "baseUrl": "u"},
+            json={"configName": "B", "modelName": "m", "baseUrl": "u", "apiKey": "sk-b"},
             headers=_headers("E_HR"),
         ).json()["data"]
 

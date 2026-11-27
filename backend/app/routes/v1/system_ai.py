@@ -309,8 +309,11 @@ def _update_model_config(db: Session, config_id: int, payload: AiModelConfigPayl
 
 
 def _enable_model_config(db: Session, config_id: int) -> dict:
-    """启用模型配置（真实落库，并停用其它配置）。"""
-    result = ai_model_config_service.enable_config(db, config_id)
+    """启用模型配置（真实落库，并下发到 agent-service）。"""
+    try:
+        result = ai_model_config_service.enable_config(db, config_id)
+    except ai_model_config_service.AgentRuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"agent-service 未接受配置：{exc}") from exc
     if result is None:
         raise HTTPException(status_code=404, detail="模型配置不存在")
     return result

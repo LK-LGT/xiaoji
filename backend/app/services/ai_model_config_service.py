@@ -37,13 +37,61 @@ import logging
 import time
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..core.config import settings
 from ..domain.models import AiModelConfigRow, AiPromptRow
 from . import secret_box
 
 logger = logging.getLogger(__name__)
+
+
+class AgentRuntimeError(RuntimeError):
+    """把配置下发给 agent-service 失败。"""
+
+
+def _agent_payload(row: AiModelConfigRow) -> dict[str, Any]:
+    """构造运行时配置；API Key 只在内存中解密，绝不写日志。"""
+    if not row.api_key_enc:
+        raise AgentRuntimeError("配置缺少 API Key")
+    try:
+        api_key = secret_box.decrypt_secret(row.api_key_enc)
+    except Exception as exc:  # noqa: BLE001
+        raise AgentRuntimeError(f"API Key 解密失败：{exc}") from exc
+    return {
+        "mode": "openai",
+        "base_url": row.base_url or "",
+        "model": row.model_name or "",
+        "api_key": api_key,
+        "timeout_seconds": 60.0,
+        "max_retries": 2,
+    }
+
+
+def apply_runtime_config(row: AiModelConfigRow) -> dict[str, Any]:
+    """把启用的配置推给 agent-service，让它立即使用。"""
+    base = (settings.agent_service_url or "").rstrip("/")
+    if not base:
+        raise AgentRuntimeError("未配置 AGENT_SERVICE_URL")
+    if not settings.agent_shared_secret:
+        raise AgentRuntimeError("未配置 AGENT_SHARED_SECRET")
+    try:
+        response = httpx.post(
+            f"{base}/v1/agent/runtime-config",
+            headers={"Authorization": f"Bearer {settings.agent_shared_secret}"},
+            json=_agent_payload(row),
+            timeout=10.0,
+            trust_env=False,
+        )
+    except httpx.HTTPError as exc:
+        raise AgentRuntimeError(f"agent-service 不可达：{exc}") from exc
+    if response.status_code != 200:
+        raise AgentRuntimeError(
+            f"agent-service 拒绝配置：HTTP {response.status_code} {response.text[:200]}"
+        )
+    return response.json()
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +254,10 @@ def enable_config(db: Session, config_id: int) -> dict[str, Any] | None:
     if row is None:
         return None
 
+    # ⚠️ 先让 agent-service 真正切过去，再改数据库状态。
+    #    否则会出现「页面显示已启用、实际调用仍是旧模型」的假成功。
+    apply_runtime_config(row)
+
     for other in db.execute(
         select(AiModelConfigRow).where(
             AiModelConfigRow.id != config_id,
@@ -218,6 +270,26 @@ def enable_config(db: Session, config_id: int) -> dict[str, Any] | None:
     db.commit()
     db.refresh(row)
     return serialize_config(row)
+
+
+def apply_enabled_config_on_startup(db: Session) -> dict[str, Any] | None:
+    """后端启动时把已启用的配置重新推给 agent-service（best effort）。
+
+    agent-service 重启后运行时配置会丢；后端重启/部署时补推一次。
+    推不动只记日志，不阻塞启动 —— 等管理员在页面上重新启用即可。
+    """
+    row = db.execute(
+        select(AiModelConfigRow).where(AiModelConfigRow.status == "ENABLED")
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    try:
+        result = apply_runtime_config(row)
+        logger.info("已把 AI 模型配置推送到 agent-service：%s", result.get("model"))
+        return result
+    except AgentRuntimeError as exc:
+        logger.warning("启动时推送 AI 模型配置失败（不影响启动）：%s", exc)
+        return None
 
 
 def test_config(db: Session, config_id: int) -> dict[str, Any]:
@@ -262,14 +334,58 @@ def test_config(db: Session, config_id: int) -> dict[str, Any]:
             "message": f"配置不完整，缺少：{'、'.join(missing)}",
         }
 
+    try:
+        api_key = secret_box.decrypt_secret(row.api_key_enc)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "success": False,
+            "providerCode": row.provider_code,
+            "modelName": row.model_name,
+            "latencyMs": 0,
+            "message": f"API Key 解密失败：{exc}",
+        }
+
+    base = (row.base_url or "").rstrip("/")
+    url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
     started = time.perf_counter()
+    try:
+        response = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": row.model_name,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+                "stream": False,
+            },
+            timeout=10.0,
+            trust_env=False,
+        )
+    except httpx.HTTPError as exc:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return {
+            "success": False,
+            "providerCode": row.provider_code,
+            "modelName": row.model_name,
+            "latencyMs": elapsed,
+            "message": f"连接失败：{exc}",
+        }
+
     elapsed = int((time.perf_counter() - started) * 1000)
+    if 200 <= response.status_code < 300:
+        return {
+            "success": True,
+            "providerCode": row.provider_code,
+            "modelName": row.model_name,
+            "latencyMs": elapsed,
+            "message": "连接成功",
+        }
     return {
-        "success": True,
+        "success": False,
         "providerCode": row.provider_code,
         "modelName": row.model_name,
         "latencyMs": elapsed,
-        "message": "配置完整，可以启用（真模型供应商选型后此处将做真实连通性探测）",
+        "message": f"HTTP {response.status_code}：{response.text[:200]}",
     }
 
 

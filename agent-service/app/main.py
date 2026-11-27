@@ -15,6 +15,7 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from .agents import build_agents
 from .base import AgentResult, EchoModelClient, ModelClient, NullModelClient
-from .openai_client import build_client_from_env
+from .openai_client import OpenAICompatibleClient, build_client_from_env
 from .plan import PlanRequest, PlanResponse, run_plan
 from .qa import QARequest, QAResponse, answer_question
 from .sanitize import sanitize_comment
@@ -99,6 +100,8 @@ def _build_client() -> ModelClient:
 
 _client = _build_client()
 _agents = build_agents(_client)
+_client_lock = threading.Lock()
+_runtime_info: dict[str, Any] = {"mode": (os.getenv("MODEL_MODE") or "echo").lower(), "model": _client.model}
 
 
 def _verify_token(authorization: str | None) -> None:
@@ -281,6 +284,17 @@ class EvidenceCheckRequest(BaseModel):
     question_text: str = ""
 
 
+class RuntimeConfigRequest(BaseModel):
+    """运行时模型配置（由业务层下发；不落 agent-service 磁盘）。"""
+
+    mode: str = "openai"  # openai | echo | null
+    base_url: str = ""
+    model: str = ""
+    api_key: str = ""
+    timeout_seconds: float = 60.0
+    max_retries: int = 2
+
+
 class EvidenceCheckResponse(BaseModel):
     summary: str = ""
     is_weak: bool = True
@@ -300,7 +314,7 @@ class EvidenceCheckResponse(BaseModel):
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "model": _MODEL_NAME,
+        "model": getattr(_client, "model", _MODEL_NAME),
         "agents": list(_agents.keys()),
     }
 
@@ -662,6 +676,58 @@ def plan(req: PlanRequest, _auth: None = Depends(require_service_token)) -> Plan
     return run_plan(req, _client)
 
 
+@app.get("/v1/agent/runtime-config")
+def get_runtime_config(_auth: None = Depends(require_service_token)) -> dict[str, Any]:
+    """返回当前运行时模型（**绝不返回 API Key**）。"""
+    return dict(_runtime_info)
+
+
+@app.post("/v1/agent/runtime-config")
+def set_runtime_config(
+    req: RuntimeConfigRequest,
+    _auth: None = Depends(require_service_token),
+) -> dict[str, Any]:
+    """业务层下发运行时模型配置，立即生效（无需重启）。
+
+    ⚠️ 只接受 openai / echo / null；openai 缺字段直接 422。
+    ⚠️ 响应/日志**绝不包含 API Key**。
+    """
+    global _client, _agents, _runtime_info
+    mode = (req.mode or "echo").strip().lower()
+    if mode == "null":
+        new_client: ModelClient = NullModelClient()
+        info = {"mode": "null", "model": new_client.model, "baseUrl": ""}
+    elif mode == "echo":
+        new_client = EchoModelClient()
+        info = {"mode": "echo", "model": new_client.model, "baseUrl": ""}
+    elif mode == "openai":
+        if not (req.api_key and req.base_url and req.model):
+            raise HTTPException(status_code=422, detail="openai 模式需要 api_key / base_url / model")
+        new_client = OpenAICompatibleClient(
+            api_key=req.api_key,
+            base_url=req.base_url,
+            model=req.model,
+            timeout=req.timeout_seconds,
+            max_retries=req.max_retries,
+        )
+        info = {"mode": "openai", "model": req.model, "baseUrl": req.base_url}
+    else:
+        raise HTTPException(status_code=422, detail=f"不支持的 mode：{mode}")
+
+    old_client: ModelClient = _client
+    with _client_lock:
+        _client = new_client
+        _agents = build_agents(new_client)
+        _runtime_info = info
+    close = getattr(old_client, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # pragma: no cover - 关闭旧客户端失败不影响新配置
+            logger.warning("关闭旧模型客户端失败", exc_info=True)
+    return {"status": "applied", **info}
+
+
 @app.post("/v1/agent/reload")
 def reload_agents(_auth: None = Depends(require_service_token)) -> dict[str, Any]:
     """重载模型客户端与智能体（换模型配置后调用，无需重启）。
@@ -670,7 +736,12 @@ def reload_agents(_auth: None = Depends(require_service_token)) -> dict[str, Any
     这个端点会重建模型客户端，等价于「切换后端模型」的控制面 ——
     免鉴权意味着任何人都能让你换掉正在服务的模型。
     """
-    global _client, _agents
-    _client = _build_client()
-    _agents = build_agents(_client)
+    global _client, _agents, _runtime_info
+    with _client_lock:
+        _client = _build_client()
+        _agents = build_agents(_client)
+        _runtime_info = {
+            "mode": (os.getenv("MODEL_MODE") or "echo").lower(),
+            "model": _client.model,
+        }
     return {"status": "reloaded", "model": _client.model}

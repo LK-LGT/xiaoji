@@ -515,6 +515,19 @@ except Exception as e:
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    # 把数据库里「已启用」的 AI 模型配置补推给 agent-service（best effort）。
+    try:
+        from .core.db import get_sessionmaker
+        from .services import ai_model_config_service
+
+        db = get_sessionmaker()()
+        try:
+            ai_model_config_service.apply_enabled_config_on_startup(db)
+        finally:
+            db.close()
+    except Exception:
+        logging.getLogger(__name__).exception("启动时下发 AI 模型配置失败（不阻塞启动）")
+
     from .services.notification_scheduler import start as start_notifications
 
     start_notifications()
