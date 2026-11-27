@@ -155,7 +155,7 @@ export function listAiPromptsApi() {
   return http.get<unknown, AiPrompt[]>('/system/ai/prompts')
 }
 
-export function publishAiPromptApi(payload: { sceneCode: string; systemPrompt: string; userTemplate: string; outputSchemaVersion: string }) {
+export function publishAiPromptApi(payload: { sceneCode: string; versionNo: string; systemPrompt: string; userTemplate: string; outputSchemaVersion: string }) {
   return http.post<typeof payload, AiPrompt>('/system/ai/prompts/publish', payload)
 }
 

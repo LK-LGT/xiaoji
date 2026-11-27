@@ -986,17 +986,37 @@ async def comment_daily_review(
     return _ok(_action_result(review_id, "COMMENTED"))
 
 
+def _mark_day_plan_risk(
+    db: Session, current_user: Employee, review_id: str, data: JsonBody
+) -> dict:
+    _assert_can_approve_plan(current_user, review_id, plan_approval.PLAN_TYPE_DAY, db)
+    plan = db.get(plan_approval.plan_model(plan_approval.PLAN_TYPE_DAY), review_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="日计划不存在")
+    level = str(data.get("riskLevel") or data.get("risk_level") or "HIGH").upper()
+    if level not in {"LOW", "MEDIUM", "HIGH"}:
+        raise HTTPException(status_code=422, detail="风险等级只能是 LOW / MEDIUM / HIGH")
+    plan.risk_level = level
+    plan.review_status = "RISK_MARKED"
+    comment = data.get("comment")
+    if comment:
+        plan.leader_comment = str(comment)
+    db.commit()
+    return _action_result(review_id, "RISK_MARKED", message=f"已标记为{level}风险")
+
+
 @router.post("/daily-reviews/{review_id}/risk")
 async def mark_daily_review_risk(
     review_id: str,
     data: JsonBody,
     db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
 ) -> dict:
     """标记日计划风险。
 
     响应结构：ActionResult
     """
-    return _ok(_action_result(review_id, "RISK_MARKED"))
+    return _ok(_mark_day_plan_risk(db, current_user, review_id, data))
 
 
 @router.post("/daily-reviews/batch-comment")
@@ -1022,13 +1042,30 @@ async def batch_comment_daily_reviews(
 
 
 @router.post("/daily-reviews/batch-risk")
-async def batch_mark_daily_reviews_risk(data: dict, db: Session = Depends(get_db)) -> dict:
+async def batch_mark_daily_reviews_risk(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+) -> dict:
     """批量标记日计划风险。
 
-    请求体：{ ids: string[] }
+    请求体：{ ids: string[], riskLevel?: LOW/MEDIUM/HIGH, comment?: string }
     响应结构：ActionResult[]（裸数组）
     """
-    return _ok(_batch_action_results(data, "RISK_MARKED"))
+    ids = data.get("ids") or []
+    if not isinstance(ids, list):
+        ids = []
+    results = []
+    for review_id in ids:
+        try:
+            results.append(
+                _mark_day_plan_risk(db, current_user, str(review_id), JsonBody(**dict(data)))
+            )
+        except HTTPException as exc:
+            results.append(
+                _action_result(str(review_id), "FAILED", message=str(exc.detail))
+            )
+    return _ok(results)
 
 
 # ---------------------------------------------------------------------------

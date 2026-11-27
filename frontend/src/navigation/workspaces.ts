@@ -76,7 +76,6 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
       //    「能看部门树」≠「能改板块开通范围」
       { label: '部门功能板块', path: '/system/department-modules', icon: '◫', permission: 'system:department-module:manage' },
       { label: '工作日规则', path: '/system/workday-rules', icon: '◷', permission: 'system:workday:view' },
-      { label: '周计划补录', path: '/system/week-plan-standard-supplements', icon: '!', permission: 'system:week-standard:view' },
       { label: '审计日志', path: '/system/audits', icon: '≡', permission: 'system:audit:view' },
       { label: 'AI 配置', path: '/system/ai', icon: '✦', permission: 'system:dashboard:view' },
       { label: '绩效分析', path: '/system/performance-analytics', icon: '◫', permission: 'system:dashboard:view' },

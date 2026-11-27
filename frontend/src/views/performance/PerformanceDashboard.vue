@@ -107,7 +107,7 @@
                 link
                 type="primary"
                 size="small"
-                @click="viewTaskDetails(row.task_id)"
+                @click="viewTaskDetails(row)"
               >
                 查看详情
               </el-button>
@@ -189,7 +189,7 @@
                 link
                 type="primary"
                 size="small"
-                @click="viewRecordDetails(row.id)"
+                @click="viewRecordDetails(row)"
               >
                 查看记录
               </el-button>
@@ -291,6 +291,33 @@
       :tool="execTool"
       :task-id="execToolTaskId"
     />
+
+    <el-dialog v-model="taskDetailVisible" title="任务详情" width="min(720px, 92vw)">
+      <div v-loading="taskDetailLoading" class="detail-body">
+        <template v-if="taskDetail">
+          <p><strong>{{ taskDetail.name }}</strong></p>
+          <p>周期：{{ taskDetail.period }} · 状态：{{ taskDetail.status }} · 记录数：{{ taskDetail.total_records }}</p>
+          <p>创建时间：{{ taskDetail.created_at }}</p>
+          <el-table :data="Object.entries(taskDetail.status_breakdown).map(([status, count]) => ({ status, count }))" size="small">
+            <el-table-column prop="status" label="记录状态" />
+            <el-table-column prop="count" label="数量" width="100" align="right" />
+          </el-table>
+        </template>
+      </div>
+    </el-dialog>
+
+    <el-dialog v-model="recordDetailVisible" title="记录详情" width="min(620px, 92vw)">
+      <template v-if="recordDetail">
+        <p><strong>{{ recordDetail.employee_name }}</strong> · {{ recordDetail.name }}</p>
+        <p>周期：{{ recordDetail.period }}</p>
+        <p>状态：{{ recordDetail.status }}</p>
+        <p>是否本人：{{ recordDetail.is_own ? '是' : '否' }}</p>
+      </template>
+      <template #footer>
+        <el-button @click="recordDetailVisible = false">关闭</el-button>
+        <el-button type="primary" @click="router.push('/performance/scheme-filling')">去按方案填报</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
@@ -307,7 +334,9 @@ import {
   confirmTask as confirmTaskApi,
   createPerformanceTask as createPerformanceTaskApi,
   fetchDashboard,
+  getTaskDetail,
   type PerformanceRecordRow,
+  type PerformanceTaskDetail,
   type PerformanceTaskRow,
 } from '@/api/performanceDashboard'
 
@@ -361,6 +390,11 @@ const stats = reactive({
  */
 const tasks = ref<PerformanceTaskRow[]>([])
 const recentRecords = ref<PerformanceRecordRow[]>([])
+const taskDetailVisible = ref(false)
+const taskDetailLoading = ref(false)
+const taskDetail = ref<PerformanceTaskDetail | null>(null)
+const recordDetailVisible = ref(false)
+const recordDetail = ref<PerformanceRecordRow | null>(null)
 
 const createTaskForm = reactive({
   name: '',
@@ -586,18 +620,23 @@ async function createTask() {
 }
 
 // 查看任务详情
-function viewTaskDetails(taskId: string) {
-  // ⚠️ **2026-11-24 修**：之前跳 `/performance/tasks/{id}`，
-  //   而**这个路由根本不存在** ⇒ 点「查看详情」进空白页。
-  //   任务详情在「按方案填报与评价」页里（列表可点进记录抽屉）。
-  router.push('/performance/scheme-filling')
+async function viewTaskDetails(row: PerformanceTaskRow) {
+  taskDetailVisible.value = true
+  taskDetailLoading.value = true
+  taskDetail.value = null
+  try {
+    taskDetail.value = await getTaskDetail(row.task_id)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '加载任务详情失败')
+  } finally {
+    taskDetailLoading.value = false
+  }
 }
 
 // 查看记录详情
-function viewRecordDetails(recordId: string) {
-  // ⚠️ **2026-11-24 修**：之前跳 `/performance/records/{id}`，该路由也不存在。
-  //   记录详情统一在「按方案填报与评价」页的抽屉里。
-  router.push('/performance/scheme-filling')
+function viewRecordDetails(row: PerformanceRecordRow) {
+  recordDetail.value = row
+  recordDetailVisible.value = true
 }
 
 // 确认成绩
@@ -652,6 +691,9 @@ onMounted(loadDashboard)
 </script>
 
 <style scoped>
+.detail-body { min-height: 120px; }
+.detail-body p { margin: 6px 0; }
+
 .performance-dashboard {
   padding: 20px;
 }

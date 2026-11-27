@@ -91,7 +91,7 @@ import OrgManagement from '@/views/system/OrgManagement.vue'
 import RetiredRoleManagement from '@/views/system/RetiredRoleManagement.vue'
 import DepartmentModules from '@/views/system/DepartmentModules.vue'
 import WorkdayRules from '@/views/system/WorkdayRules.vue'
-import WeekPlanStandardSupplement from '@/views/system/WeekPlanStandardSupplement.vue'
+import RetiredWeekPlanSupplement from '@/views/system/RetiredWeekPlanSupplement.vue'
 import AuditLog from '@/views/system/AuditLog.vue'
 import AiManagement from '@/views/system/AiManagement.vue'
 import PerformanceAnalytics from '@/views/system/PerformanceAnalytics.vue'
@@ -282,7 +282,7 @@ const router = createRouter({
     // ⚠️ 用 `system:department-module:manage` —— HR 专属动作位
     withAppShell('/system/department-modules', DepartmentModules, { permission: 'system:department-module:manage' }),
     withAppShell('/system/workday-rules', WorkdayRules, { permission: 'system:workday:view' }),
-    withAppShell('/system/week-plan-standard-supplements', WeekPlanStandardSupplement, { permission: 'system:week-standard:view' }),
+    withAppShell('/system/week-plan-standard-supplements', RetiredWeekPlanSupplement, { permission: 'system:week-standard:view' }),
     withAppShell('/system/audits', AuditLog, { permission: 'system:audit:view' }),
     withAppShell('/system/ai', AiManagement, { permission: 'system:dashboard:view' }),
     withAppShell('/system/performance-analytics', PerformanceAnalytics, { permission: 'system:dashboard:view' }),

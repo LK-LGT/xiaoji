@@ -151,6 +151,8 @@
         两者的审批节奏与风险面都不一样。
       -->
       <el-tab-pane label="Prompt 灰度" name="prompts">
+        <PromptManagementPanel />
+        <el-divider content-position="left">人工反馈</el-divider>
         <FeedbackPanel can-manage title="Prompt 版本与人工反馈" />
       </el-tab-pane>
     </el-tabs>
@@ -276,6 +278,7 @@ import { Connection, Edit, Plus, RefreshLeft, Search, SwitchButton } from '@elem
 import AiInputSummary from '@/components/AiInputSummary.vue'
 import DataSourcePolicyPanel from '@/components/DataSourcePolicyPanel.vue'
 import FeedbackPanel from '@/components/FeedbackPanel.vue'
+import PromptManagementPanel from '@/views/system/components/PromptManagementPanel.vue'
 import { isTechnicalEvent, normalizeTraceEvent, semanticEvidenceText } from '@/utils/aiTracePresentation'
 import {
   createAiConfigApi,

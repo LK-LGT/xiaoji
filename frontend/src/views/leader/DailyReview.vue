@@ -26,7 +26,7 @@
 
     <div v-if="selectedRows.length" class="batch-bar daily-review-batch">
       <div>已选择 <strong>{{ selectedRows.length }}</strong> 条日计划。</div>
-      <div class="batch-actions"><el-button size="small" type="primary" :loading="batchAction === 'comment'" :disabled="!selectedReviewableRows.length || (actionBusy && batchAction !== 'comment')" @click="batchComment">批量点评</el-button><el-button size="small" :disabled="actionBusy" @click="clearSelection">清空选择</el-button></div>
+      <div class="batch-actions"><el-button size="small" type="primary" :loading="batchAction === 'comment'" :disabled="!selectedReviewableRows.length || (actionBusy && batchAction !== 'comment')" @click="batchComment">批量点评</el-button><el-button size="small" type="danger" :disabled="!selectedReviewableRows.length || actionBusy" @click="batchRisk">批量标风险</el-button><el-button size="small" :disabled="actionBusy" @click="clearSelection">清空选择</el-button></div>
     </div>
 
     <el-table ref="tableRef" class="daily-review-table" :data="pagedRows" row-key="id" border highlight-current-row empty-text="暂无符合条件的日计划" @selection-change="onSelectionChange" @row-dblclick="openDetail">
@@ -35,7 +35,7 @@
       <el-table-column label="员工" min-width="176"><template #default="{ row }"><button type="button" class="daily-review-person" @click.stop="openDetail(row)"><strong>{{ row.employee }}</strong><span>{{ row.group || '未分配组织' }}</span><small>{{ row.date }}</small></button></template></el-table-column>
       <el-table-column label="日计划内容" min-width="360"><template #default="{ row }"><button type="button" class="daily-review-content" @click.stop="openDetail(row)">{{ row.content || '未填写日计划内容' }}</button></template></el-table-column>
       <el-table-column label="点评状态" min-width="168"><template #default="{ row }"><div class="daily-review-state"><el-tag :type="reviewStatusTag(row.reviewStatus)">{{ row.reviewStatus }}</el-tag><span :class="{ 'is-warning': row.missing !== '无' }">{{ row.missing === '无' ? '字段完整' : row.missing }}</span></div></template></el-table-column>
-      <el-table-column label="操作" width="180" fixed="right"><template #default="{ row }"><div class="daily-review-actions" @click.stop><el-button link type="primary" :icon="View" @click="openDetail(row)">查看</el-button><el-button link type="primary" :icon="EditPen" :disabled="!canReview(row) || actionBusy" @click="openComment(row)">点评</el-button></div></template></el-table-column>
+      <el-table-column label="操作" width="180" fixed="right"><template #default="{ row }"><div class="daily-review-actions" @click.stop><el-button link type="primary" :icon="View" @click="openDetail(row)">查看</el-button><el-button link type="primary" :icon="EditPen" :disabled="!canReview(row) || actionBusy" @click="openComment(row)">点评</el-button><el-button link type="danger" :disabled="!canReview(row) || actionBusy" @click="markRisk(row)">标风险</el-button></div></template></el-table-column>
     </el-table>
 
     <div class="pagination-row daily-review-pagination"><el-pagination v-model:current-page="currentPage" v-model:page-size="pageSize" :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next, jumper" :total="tableRows.length" background /></div>
@@ -76,7 +76,9 @@ import { EditPen, Printer, Refresh, Search, View } from '@element-plus/icons-vue
 import DailyPlanPrintSheet from '@/components/DailyPlanPrintSheet.vue'
 import {
   batchCommentDailyReviewsApi,
+  batchMarkDailyReviewRisksApi,
   commentDailyReviewApi,
+  markDailyReviewRiskApi,
   getDailyReviewApi,
   listDailyReviewsApi,
 } from '@/api/leader'
@@ -240,6 +242,41 @@ async function printSelected() {
     window.print()
   } finally {
     printing.value = false
+  }
+}
+
+async function markRisk(row: { id: string; employee: string; riskLevel?: string }) {
+  try {
+    await ElMessageBox.confirm(
+      `确认将「${row.employee}」的日计划标记为高风险？`,
+      '标记风险',
+      { type: 'warning', confirmButtonText: '标记' },
+    )
+    await markDailyReviewRiskApi(row.id, { riskLevel: 'HIGH', comment: '日计划点评标记风险' } as any)
+    ElMessage.success('已标记风险')
+    await refresh()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(error instanceof Error ? error.message : '标记风险失败')
+    }
+  }
+}
+
+async function batchRisk() {
+  const rows = [...selectedReviewableRows.value]
+  if (!rows.length || actionBusy.value) return
+  try {
+    await ElMessageBox.confirm(`确认将选中的 ${rows.length} 条日计划标记为高风险？`, '批量标风险', { type: 'warning' })
+    batchAction.value = 'risk'
+    await batchMarkDailyReviewRisksApi({ ids: rows.map((row) => row.id), riskLevel: 'HIGH' } as any)
+    ElMessage.success('已批量标记风险')
+    await refresh()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(error instanceof Error ? error.message : '批量标记风险失败')
+    }
+  } finally {
+    batchAction.value = ''
   }
 }
 
