@@ -15,6 +15,11 @@
 
     python backend/scripts/clean_e2e_test_data.py
     python backend/scripts/clean_e2e_test_data.py --confirm
+
+可选：同时处理 ``E2E_*`` 测试账号（**只停用，不删除历史**）::
+
+    python backend/scripts/clean_e2e_test_data.py --include-e2e-employees
+    python backend/scripts/clean_e2e_test_data.py --confirm --include-e2e-employees
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ from backend.app.domain.models import (  # noqa: E402
     MonthPlan,
     WeekPlan,
 )
+from backend.app.domain.notification_models import Notification  # noqa: E402
 from backend.app.domain.plan_models import PlanApproval  # noqa: E402
 from backend.app.domain.result_models import Result  # noqa: E402
 
@@ -82,9 +88,29 @@ def _collect(db):
     return month_plans, week_plans, day_plans, results, approvals, plan_refs
 
 
+def _collect_e2e_employees(db):
+    employees = (
+        db.execute(select(Employee).where(Employee.id.like("E2E_%")))
+        .scalars()
+        .all()
+    )
+    ids = [employee.id for employee in employees]
+    notifications = (
+        db.execute(select(Notification).where(Notification.employee_id.in_(ids or ["__none__"])))
+        .scalars()
+        .all()
+    )
+    return employees, notifications
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="清理 2099 E2E 测试数据")
-    parser.add_argument("--confirm", action="store_true", help="真正删除；不加只演练")
+    parser = argparse.ArgumentParser(description="清理 2099 / E2E 测试数据")
+    parser.add_argument("--confirm", action="store_true", help="真正执行；不加只演练")
+    parser.add_argument(
+        "--include-e2e-employees",
+        action="store_true",
+        help="同时停用 E2E_* 测试账号并删除其通知（保留历史考核/审计）",
+    )
     args = parser.parse_args()
 
     session = get_sessionmaker()()
@@ -99,6 +125,17 @@ def main() -> int:
         for plan_type, plan_id, owner_id, period in plan_refs[:30]:
             print(f"  {plan_type:5} {plan_id}  归属={_owner_name(session, owner_id)}  周期={period}")
 
+        e2e_employees, e2e_notifications = ([], [])
+        if args.include_e2e_employees:
+            e2e_employees, e2e_notifications = _collect_e2e_employees(session)
+            print(f"\nE2E_* 测试员工: {len(e2e_employees)}")
+            for employee in e2e_employees:
+                print(
+                    f"  {employee.id} {employee.name} "
+                    f"状态={employee.employment_status}/{employee.account_status}"
+                )
+            print(f"E2E_* 关联通知: {len(e2e_notifications)}")
+
         if not args.confirm:
             print("\n⚠️ 演练模式：未删除任何数据。确认无误后加 --confirm。")
             return 0
@@ -110,8 +147,16 @@ def main() -> int:
             session.delete(approval)
         for plan in day_plans + week_plans + month_plans:
             session.delete(plan)
+        if args.include_e2e_employees:
+            for row in e2e_notifications:
+                session.delete(row)
+            for employee in e2e_employees:
+                employee.employment_status = "exited"
+                employee.account_status = "disabled"
         session.commit()
         print("✅ 已删除；成果附件文件仍保留在证据目录，可按需手工清理。")
+        if args.include_e2e_employees:
+            print(f"✅ E2E_* 账号已停用 {len(e2e_employees)} 个，删除通知 {len(e2e_notifications)} 条；历史考核/审计保留。")
         return 0
     finally:
         session.close()
