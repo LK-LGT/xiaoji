@@ -26,8 +26,9 @@ import sys
 from pathlib import Path
 
 # backend/scripts/ -> backend/ -> 仓库根
+# ⚠️ 统一用 ``parents[2]``（仓库根）—— 因为脚本用 ``backend.app.*`` 全路径导入。
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = BACKEND_ROOT.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_API_DIR = REPO_ROOT / "frontend" / "src" / "api"
 
 # 前端调用提取：匹配 http.get/post/put/delete<...>('路径'
@@ -268,12 +269,14 @@ def collect_backend_endpoints() -> set[tuple[str, str]]:
     包在 _IncludedRouter 里，需展平后才能拿到完整路径。OpenAPI schema 是
     最终对外契约的唯一事实源，直接用它最可靠。
     """
-    sys.path.insert(0, str(BACKEND_ROOT))
+    sys.path.insert(0, str(REPO_ROOT))
 
     # main.py 在 import 时会 print([APP] ...) 注册日志，会污染 --json 的 stdout。
     # 这里临时把 stdout 重定向到 stderr，保证 JSON 输出可被 CI 直接解析。
+    # ⚠️ 用 ``backend.app.*`` 全路径 —— 顶层 ``app`` 会被 agent-service
+    # 的 ``app`` 包抢占（仓库根 conftest 会把 agent-service 放进 sys.path）。
     with contextlib.redirect_stdout(sys.stderr):
-        from app.main import app  # noqa: PLC0415
+        from backend.app.main import app  # noqa: PLC0415
 
     endpoints: set[tuple[str, str]] = set()
     for path, operations in app.openapi().get("paths", {}).items():
