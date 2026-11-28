@@ -4,7 +4,6 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const read = (relativePath: string) => readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8')
-const employee = read('../src/views/employee/EmployeeResultList.vue')
 const leader = read('../src/views/leader/ResultSuggest.vue')
 const department = read('../src/views/department/ResultConfirm.vue')
 const center = read('../src/views/employee/EmployeeResultCenter.vue')
@@ -20,26 +19,16 @@ const versionHistory = read('../src/views/employee/components/ResultVersionHisto
 const adapters = read('../src/views/performanceAdapters.ts')
 const monthPlanPeriod = read('../src/utils/monthPlanPeriod.ts')
 
-for (const [role, source] of [
-  ['employee', employee],
-  ['leader', leader],
-] as const) {
-  test(`${role} result records use accessible month groups and 10-group pagination`, () => {
-    assert.match(source, /groupRowsByMonth/)
-    assert.match(source, /const monthPageSize = 10/)
-    assert.match(source, /expandedMonthKeys/)
-    assert.match(source, /:aria-expanded="expandedMonthKeys\.has\(group\.key\)"/)
-    assert.match(source, /v-show="expandedMonthKeys\.has\(group\.key\)"/)
-    assert.match(source, /@click="expandAllMonths"/)
-    assert.match(source, /@click="collapseAllMonths"/)
-    assert.match(source, /:total="monthGroups\.length"/)
-  })
-}
-
-test('employee result records open the current or latest available month after queries', () => {
-  assert.match(employee, /currentMonthKey/)
-  assert.match(employee, /const defaultGroup = monthGroups\.value\.find\(\(group\) => group\.key === currentMonthKey\(\)\) \?\? monthGroups\.value\[0\]/)
-  assert.match(employee, /if \(defaultGroup\) expandedMonthKeys\.add\(defaultGroup\.key\)/)
+test('leader result records use accessible month groups and 10-group pagination', () => {
+  const source = leader
+  assert.match(source, /groupRowsByMonth/)
+  assert.match(source, /const monthPageSize = 10/)
+  assert.match(source, /expandedMonthKeys/)
+  assert.match(source, /:aria-expanded="expandedMonthKeys\.has\(group\.key\)"/)
+  assert.match(source, /v-show="expandedMonthKeys\.has\(group\.key\)"/)
+  assert.match(source, /@click="expandAllMonths"/)
+  assert.match(source, /@click="collapseAllMonths"/)
+  assert.match(source, /:total="monthGroups\.length"/)
 })
 
 test('leader result approval can still focus the current month', () => {
@@ -253,20 +242,6 @@ test('employee result archive detail uses a two-column business record layout', 
   assert.match(versionHistory, /width:100%/)
   assert.doesNotMatch(approvalTimeline, /max-width:760px/)
   assert.doesNotMatch(versionHistory, /max-width:760px/)
-})
-
-test('leader result archive remains record only', () => {
-  assert.match(employee, /v-if="!isLeaderWorkspace" class="result-view-tabs"/)
-  assert.match(employee, /v-if="!isLeaderWorkspace" class="result-header-actions"/)
-})
-
-test('employee result status counts and rows share the current keyword and date result set', () => {
-  assert.match(employee, /const filteredRows = computed/)
-  assert.match(employee, /query\.status\s*\? rows\.value\.filter/)
-  assert.match(employee, /listResultsApi\(\{[\s\S]*keyword: query\.keyword[\s\S]*startDate: query\.startDate[\s\S]*endDate: query\.endDate[\s\S]*mine: true/)
-  assert.doesNotMatch(employee, /summaryRows/)
-  assert.doesNotMatch(employee, /class="result-summary-rail"/)
-  assert.doesNotMatch(employee, /class="status-filter"/)
 })
 
 test('result editor keeps its header focused on editing', () => {

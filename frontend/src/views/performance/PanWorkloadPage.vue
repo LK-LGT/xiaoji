@@ -13,7 +13,7 @@
       ⇒ 现在按**后端下发的岗位角色**切 ⇒ 与飞书端口径完全一致。
     -->
     <template v-if="canResolve">
-      <PanWorkloadPanel :period="period" can-resolve @employee-selected="onEmployeeSelected" />
+      <PanWorkloadPanel :period="period" can-resolve />
       <el-divider content-position="left">
         <span class="divider-text">我的填报与异议</span>
       </el-divider>
@@ -49,12 +49,6 @@ const canResolve = computed(() =>
   hasPermission(auth.user?.permissions || [], 'pan:workload:resolve'),
 )
 
-/** 主管点了某人的「明细」⇒ 员工侧切到那个人。 */
-function onEmployeeSelected(employeeId: string) {
-  // ⚠️ 员工侧是「我的」视角 —— 主管点别人时没有对应的员工侧界面，
-  //    所以这里只提示，不做跨人切换（避免做出「冒充员工」的界面）。
-  void employeeId
-}
 </script>
 
 <style scoped>

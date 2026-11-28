@@ -1861,17 +1861,6 @@ class Result(BaseModel):
     status: str
     ownerUserId: int
     deptId: str | None = None
-async def get_planning_stats(db: Session = Depends(get_db)):
-    """获取仪表板统计数据。"""
-    return {
-        "code": 0,
-        "data": {
-            "pendingDayPlans": 12,
-            "overduePendingDayPlans": 3,
-            "currentMonthResults": 45,
-            "closureRate": "87%",
-        }
-    }
 
 
 # ============================================================================

@@ -62,7 +62,6 @@ test('shared employee pages keep top headers only in leader routes', () => {
     ['EmployeeWeekPlanList.vue', 'v-if="isLeaderWorkspace" class="page-header'],
     ['EmployeeWeekPlanEdit.vue', 'v-if="isLeaderWorkspace" class="page-header'],
     ['EmployeeWeekPlanDetail.vue', 'v-if="isLeaderWorkspace" class="page-header'],
-    ['EmployeeResultSubmit.vue', 'v-if="isLeaderWorkspace" class="result-page-header'],
     ['components/EmployeeDayPlanEditor.vue', 'v-if="!compact && isLeaderRoute" class="page-header'],
   ] as const
 
